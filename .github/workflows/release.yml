@@ -1,0 +1,161 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Apple Silicon
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            arch: aarch64
+          # Intel Mac
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            arch: x86_64
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ── Code signing (optional) ───────────────────────────────────────────
+          # Without these secrets the build succeeds but produces an UNSIGNED DMG.
+          # Users of unsigned builds need to run:  xattr -cr /Applications/Minutae.app
+          #
+          # To enable signing, add these in repo Settings → Secrets → Actions:
+          #   APPLE_CERTIFICATE           base64-encoded .p12 signing certificate
+          #   APPLE_CERTIFICATE_PASSWORD  password used when exporting the .p12
+          #   APPLE_SIGNING_IDENTITY      "Developer ID Application: Your Name (TEAMID)"
+          #   APPLE_ID                    your Apple ID email (for notarization)
+          #   APPLE_PASSWORD              app-specific password from appleid.apple.com
+          #   APPLE_TEAM_ID               10-char string from developer.apple.com/account
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Minutae ${{ github.ref_name }}"
+          releaseBody: |
+            ## What's new
+
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+
+            ---
+
+            ## Downloads
+
+            | Platform | File |
+            | --- | --- |
+            | macOS Apple Silicon (M1/M2/M3/M4) | `Minutae_*_aarch64.dmg` |
+            | macOS Intel | `Minutae_*_x64.dmg` |
+
+            SHA-256 checksums are listed below each asset. Verify before running:
+            ```bash
+            shasum -a 256 ~/Downloads/Minutae_*.dmg
+            ```
+
+            ---
+
+            ## ⚠️ Unsigned build — Gatekeeper notice
+
+            These DMGs are **not signed** with an Apple Developer certificate.
+            macOS will block the app on first launch. After dragging to `/Applications`:
+
+            ```bash
+            xattr -cr /Applications/Minutae.app
+            ```
+
+            Then open normally. You won't see this again.
+
+            **Alternatively**, right-click → **Open** in Finder and click "Open" in the dialog.
+
+            **Prefer zero friction?** Build from source — locally-built apps are never quarantined:
+            ```bash
+            git clone https://github.com/${{ github.repository }}
+            cd minutae && pnpm install && pnpm tauri build
+            ```
+
+            ---
+
+            ## Minimum requirements
+
+            - macOS 12 Monterey or later
+            - Apple Silicon or Intel (separate binaries above)
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+
+  # Attach SHA-256 checksums to the release as a separate text file
+  checksums:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download ${{ github.ref_name }} \
+            --repo ${{ github.repository }} \
+            --pattern "*.dmg" \
+            --dir ./artifacts
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum *.dmg > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload checksums to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.ref_name }} \
+            ./artifacts/SHA256SUMS.txt \
+            --repo ${{ github.repository }} \
+            --clobber
