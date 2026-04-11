@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core"
 import { desc, eq } from "drizzle-orm"
 import { getDb } from "./client"
 import { meetings, type NewMeeting } from "./schema"
@@ -27,4 +28,9 @@ export async function updateMeeting(id: string, data: Partial<Omit<NewMeeting, "
 export async function deleteMeeting(id: string) {
 	const db = await getDb()
 	await db.delete(meetings).where(eq(meetings.id, id))
+}
+
+export async function deleteMeetingAndAssets(id: string) {
+	await invoke("delete_meeting_assets", { meetingId: id })
+	await deleteMeeting(id)
 }

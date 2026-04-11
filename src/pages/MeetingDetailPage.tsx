@@ -1,9 +1,11 @@
-import { Link, useParams } from "@tanstack/react-router"
+import { Link, useNavigate, useParams } from "@tanstack/react-router"
 import { useCallback, useEffect, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
+import { toast } from "sonner"
 import { getActionItems, toggleActionItem } from "@/lib/db/action-items"
-import { getMeeting, updateMeeting } from "@/lib/db/meetings"
+import { deleteMeetingAndAssets, getMeeting, updateMeeting } from "@/lib/db/meetings"
+import { getRecording } from "@/lib/db/recordings"
 import type { ActionItem, Meeting, Segment, Summary, Transcript } from "@/lib/db/schema"
 import { getSummary } from "@/lib/db/summaries"
 import { getSegments, getTranscript } from "@/lib/db/transcripts"
@@ -13,6 +15,7 @@ type Tab = "summary" | "transcript" | "actions" | "recording"
 
 export function MeetingDetailPage() {
 	const { id } = useParams({ from: "/meetings/$id" })
+	const navigate = useNavigate()
 	const [tab, setTab] = useState<Tab>("summary")
 
 	const [meeting, setMeeting] = useState<Meeting | null>(null)
@@ -23,6 +26,8 @@ export function MeetingDetailPage() {
 	const [loading, setLoading] = useState(true)
 	const [editingTitle, setEditingTitle] = useState(false)
 	const [titleDraft, setTitleDraft] = useState("")
+	const [deleting, setDeleting] = useState(false)
+	const [confirmingDelete, setConfirmingDelete] = useState(false)
 
 	const load = useCallback(async () => {
 		const [m, t, s, a] = await Promise.all([
@@ -53,6 +58,21 @@ export function MeetingDetailPage() {
 	async function handleToggleAction(actionId: string, done: boolean) {
 		await toggleActionItem(actionId, !done)
 		setActions((prev) => prev.map((a) => (a.id === actionId ? { ...a, done: !done } : a)))
+	}
+
+	async function handleDeleteMeeting() {
+		if (!meeting || deleting) return
+
+		setDeleting(true)
+		try {
+			await deleteMeetingAndAssets(meeting.id)
+			toast.success("Meeting deleted")
+			navigate({ to: "/" })
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error)
+			toast.error("Couldn't delete meeting", { description: message })
+			setDeleting(false)
+		}
 	}
 
 	if (loading) {
@@ -131,10 +151,22 @@ export function MeetingDetailPage() {
 					</button>
 				)}
 
-				<p className="text-xs text-[var(--color-text-muted)] mb-4">
-					{formatDate(meeting.startedAt)}
-					{meeting.durationSeconds != null && <> · {formatDurationLong(meeting.durationSeconds)}</>}
-				</p>
+				<div className="mb-4 flex items-center justify-between gap-3">
+					<p className="text-xs text-[var(--color-text-muted)]">
+						{formatDate(meeting.startedAt)}
+						{meeting.durationSeconds != null && (
+							<> · {formatDurationLong(meeting.durationSeconds)}</>
+						)}
+					</p>
+					<button
+						type="button"
+						onClick={() => setConfirmingDelete(true)}
+						disabled={deleting}
+						className="rounded-[var(--radius-sm)] border border-[var(--color-border)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-destructive)] hover:bg-[var(--color-destructive)]/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+					>
+						{deleting ? "Deleting…" : "Delete Meeting"}
+					</button>
+				</div>
 
 				{/* Tabs */}
 				<div className="flex gap-1 -mb-px">
@@ -157,6 +189,35 @@ export function MeetingDetailPage() {
 
 			{/* Tab content */}
 			<div className="flex-1 overflow-y-auto">
+				{confirmingDelete && (
+					<div className="mx-6 mt-5 rounded-[var(--radius-md)] border border-[var(--color-destructive)]/30 bg-[var(--color-destructive)]/8 p-4">
+						<p className="text-sm font-medium text-[var(--color-text)]">
+							Delete this meeting and all associated local data?
+						</p>
+						<p className="mt-1 text-xs leading-relaxed text-[var(--color-text-muted)]">
+							This removes the meeting row, transcript, summary, action items, embeddings, and
+							matching local recording and summary files from your Mac.
+						</p>
+						<div className="mt-3 flex items-center gap-2">
+							<button
+								type="button"
+								onClick={handleDeleteMeeting}
+								disabled={deleting}
+								className="rounded-[var(--radius-sm)] bg-[var(--color-destructive)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+							>
+								{deleting ? "Deleting…" : "Yes, delete it"}
+							</button>
+							<button
+								type="button"
+								onClick={() => setConfirmingDelete(false)}
+								disabled={deleting}
+								className="rounded-[var(--radius-sm)] border border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+							>
+								Cancel
+							</button>
+						</div>
+					</div>
+				)}
 				{tab === "summary" && <SummaryTab summary={summary} />}
 				{tab === "transcript" && <TranscriptTab transcript={transcript} segments={segments} />}
 				{tab === "actions" && <ActionsTab actions={actions} onToggle={handleToggleAction} />}
@@ -329,19 +390,51 @@ function ActionRow({
 function RecordingTab({ meetingId }: { meetingId: string }) {
 	const audioRef = useRef<HTMLAudioElement>(null)
 	const [src, setSrc] = useState<string | null>(null)
+	const [error, setError] = useState<string | null>(null)
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: meetingId is a prop — reset src when it changes
 	useEffect(() => {
-		// Recording playback via Tauri asset protocol — wired up in a later phase
-		// when the recordings table row is fetched and the file path is known.
-		setSrc(null)
+		let objectUrl: string | null = null
+		let cancelled = false
+
+		async function loadRecording() {
+			setSrc(null)
+			setError(null)
+
+			try {
+				const recording = await getRecording(meetingId)
+				if (!recording) return
+
+				const { readFile } = await import("@tauri-apps/plugin-fs")
+				const bytes = await readFile(recording.filePath)
+				if (cancelled) return
+
+				const mimeType = recording.filePath.endsWith(".wav") ? "audio/wav" : "audio/webm"
+				objectUrl = URL.createObjectURL(new Blob([bytes], { type: mimeType }))
+				setSrc(objectUrl)
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err)
+				if (!cancelled) setError(message)
+			}
+		}
+
+		loadRecording()
+
+		return () => {
+			cancelled = true
+			if (objectUrl) URL.revokeObjectURL(objectUrl)
+		}
 	}, [meetingId])
 
 	return (
 		<div className="px-6 py-5 flex flex-col items-center gap-4">
 			{src ? (
-				// biome-ignore lint/a11y/useMediaCaption: recording playback
-				<audio ref={audioRef} controls src={src} className="w-full max-w-md" />
+				<div className="w-full max-w-md space-y-2">
+					{/* biome-ignore lint/a11y/useMediaCaption: local recording playback has no generated caption track yet */}
+					<audio ref={audioRef} controls src={src} className="w-full" />
+					<p className="text-xs text-[var(--color-text-muted)] text-center">
+						Playback is loaded from the saved local `.webm` recording.
+					</p>
+				</div>
 			) : (
 				<div className="flex flex-col items-center gap-2 text-center">
 					<div className="w-10 h-10 rounded-xl bg-[var(--color-surface)] flex items-center justify-center">
@@ -360,9 +453,11 @@ function RecordingTab({ meetingId }: { meetingId: string }) {
 							/>
 						</svg>
 					</div>
-					<p className="text-sm text-[var(--color-text-muted)]">Recording playback coming soon.</p>
+					<p className="text-sm text-[var(--color-text-muted)]">
+						{error ? "Couldn't load recording." : "No saved recording found yet."}
+					</p>
 					<p className="text-xs text-[var(--color-text-muted)]">
-						Find the file at ~/Library/Minutae/recordings/
+						{error ? error : "Find the file at ~/Library/Minutae/recordings/"}
 					</p>
 				</div>
 			)}

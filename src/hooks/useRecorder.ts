@@ -1,115 +1,182 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 
 export type RecorderState = "idle" | "recording" | "paused" | "stopped"
 
 interface UseRecorderReturn {
 	state: RecorderState
-	audioLevel: number // 0–1 RMS value
+	audioLevel: number
 	start: () => Promise<void>
 	pause: () => void
 	resume: () => void
 	stop: () => Promise<Blob>
+	debugState: () => { state: RecorderState; mediaRecorderState: string | null; hasStream: boolean }
+}
+
+type Snapshot = {
+	state: RecorderState
+	audioLevel: number
+}
+
+let snapshot: Snapshot = {
+	state: "idle",
+	audioLevel: 0,
+}
+
+const listeners = new Set<(next: Snapshot) => void>()
+
+let mediaRecorder: MediaRecorder | null = null
+let stream: MediaStream | null = null
+let chunks: Blob[] = []
+let resolveStop: ((blob: Blob) => void) | null = null
+let animFrame: number | null = null
+let audioContext: AudioContext | null = null
+
+function logRecorder(event: string, details?: Record<string, unknown>) {
+	console.debug("[recorder]", event, {
+		state: mediaRecorder?.state ?? null,
+		hasRecorder: Boolean(mediaRecorder),
+		hasStream: Boolean(stream),
+		...details,
+	})
+}
+
+function emit(next: Partial<Snapshot>) {
+	snapshot = { ...snapshot, ...next }
+	for (const listener of listeners) listener(snapshot)
+}
+
+function cleanupLevelMeter() {
+	if (animFrame != null) {
+		cancelAnimationFrame(animFrame)
+		animFrame = null
+	}
+	if (audioContext) {
+		void audioContext.close().catch(() => {})
+		audioContext = null
+	}
+	emit({ audioLevel: 0 })
+}
+
+function startLevelMeter(nextStream: MediaStream) {
+	audioContext = new AudioContext()
+	const source = audioContext.createMediaStreamSource(nextStream)
+	const analyser = audioContext.createAnalyser()
+	analyser.fftSize = 256
+	source.connect(analyser)
+
+	const data = new Uint8Array(analyser.frequencyBinCount)
+
+	function tick() {
+		analyser.getByteTimeDomainData(data)
+		let sum = 0
+		for (const value of data) {
+			const normalized = (value - 128) / 128
+			sum += normalized * normalized
+		}
+		emit({ audioLevel: Math.sqrt(sum / data.length) })
+		animFrame = requestAnimationFrame(tick)
+	}
+
+	animFrame = requestAnimationFrame(tick)
+}
+
+async function startRecording() {
+	logRecorder("start:requested")
+	if (mediaRecorder && mediaRecorder.state !== "inactive") return
+
+	if (!navigator.mediaDevices?.getUserMedia) {
+		logRecorder("start:unsupported-media-devices")
+		throw new Error("Microphone capture is unavailable in this app context")
+	}
+
+	stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+	chunks = []
+
+	const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+		? "audio/webm;codecs=opus"
+		: "audio/webm"
+
+	const recorder = new MediaRecorder(stream, { mimeType })
+	mediaRecorder = recorder
+
+	recorder.ondataavailable = (event) => {
+		if (event.data.size > 0) chunks.push(event.data)
+	}
+
+	recorder.onstop = () => {
+		logRecorder("stop:event", { chunkCount: chunks.length })
+		const blob = new Blob(chunks, { type: mimeType })
+		resolveStop?.(blob)
+		resolveStop = null
+
+		if (stream) {
+			for (const track of stream.getTracks()) track.stop()
+		}
+		stream = null
+		mediaRecorder = null
+		cleanupLevelMeter()
+		emit({ state: "stopped" })
+	}
+
+	recorder.start(1000)
+	startLevelMeter(stream)
+	emit({ state: "recording" })
+	logRecorder("start:completed")
+}
+
+function pauseRecording() {
+	logRecorder("pause:requested")
+	mediaRecorder?.pause()
+	emit({ state: "paused" })
+	logRecorder("pause:completed")
+}
+
+function resumeRecording() {
+	logRecorder("resume:requested")
+	mediaRecorder?.resume()
+	emit({ state: "recording" })
+	logRecorder("resume:completed")
+}
+
+function stopRecording(): Promise<Blob> {
+	logRecorder("stop:requested")
+	if (!mediaRecorder || mediaRecorder.state === "inactive") {
+		logRecorder("stop:rejected")
+		return Promise.reject(new Error("No active recording to stop"))
+	}
+
+	return new Promise((resolve) => {
+		resolveStop = resolve
+		mediaRecorder?.stop()
+		logRecorder("stop:signal-sent")
+	})
+}
+
+function getDebugState() {
+	return {
+		state: snapshot.state,
+		mediaRecorderState: mediaRecorder?.state ?? null,
+		hasStream: Boolean(stream),
+	}
 }
 
 export function useRecorder(): UseRecorderReturn {
-	const [state, setState] = useState<RecorderState>("idle")
-	const [audioLevel, setAudioLevel] = useState(0)
+	const [localSnapshot, setLocalSnapshot] = useState(snapshot)
 
-	const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-	const chunksRef = useRef<Blob[]>([])
-	const resolveStopRef = useRef<((blob: Blob) => void) | null>(null)
-	const analyserRef = useRef<AnalyserNode | null>(null)
-	const animFrameRef = useRef<number | null>(null)
-	const streamRef = useRef<MediaStream | null>(null)
-
-	// Stable refs so useCallback deps stay empty
-	const startLevelMeter = useRef((stream: MediaStream) => {
-		const ctx = new AudioContext()
-		const source = ctx.createMediaStreamSource(stream)
-		const analyser = ctx.createAnalyser()
-		analyser.fftSize = 256
-		source.connect(analyser)
-		analyserRef.current = analyser
-
-		const data = new Uint8Array(analyser.frequencyBinCount)
-
-		function tick() {
-			analyser.getByteTimeDomainData(data)
-			let sum = 0
-			for (const v of data) {
-				const normalized = (v - 128) / 128
-				sum += normalized * normalized
-			}
-			setAudioLevel(Math.sqrt(sum / data.length))
-			animFrameRef.current = requestAnimationFrame(tick)
-		}
-		animFrameRef.current = requestAnimationFrame(tick)
-	})
-
-	const stopLevelMeter = useRef(() => {
-		if (animFrameRef.current) {
-			cancelAnimationFrame(animFrameRef.current)
-			animFrameRef.current = null
-		}
-		setAudioLevel(0)
-	})
-
-	const start = useCallback(async () => {
-		const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-		streamRef.current = stream
-		chunksRef.current = []
-
-		const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-			? "audio/webm;codecs=opus"
-			: "audio/webm"
-
-		const mr = new MediaRecorder(stream, { mimeType })
-		mediaRecorderRef.current = mr
-
-		mr.ondataavailable = (e) => {
-			if (e.data.size > 0) chunksRef.current.push(e.data)
-		}
-
-		mr.onstop = () => {
-			const blob = new Blob(chunksRef.current, { type: mimeType })
-			resolveStopRef.current?.(blob)
-			resolveStopRef.current = null
-			for (const t of stream.getTracks()) t.stop()
-			stopLevelMeter.current()
-		}
-
-		mr.start(1000) // collect chunks every 1s
-		setState("recording")
-		startLevelMeter.current(stream)
-	}, [])
-
-	const pause = useCallback(() => {
-		mediaRecorderRef.current?.pause()
-		setState("paused")
-	}, [])
-
-	const resume = useCallback(() => {
-		mediaRecorderRef.current?.resume()
-		setState("recording")
-	}, [])
-
-	const stop = useCallback((): Promise<Blob> => {
-		return new Promise((resolve) => {
-			resolveStopRef.current = resolve
-			mediaRecorderRef.current?.stop()
-			setState("stopped")
-		})
-	}, [])
-
-	// Cleanup on unmount
 	useEffect(() => {
+		listeners.add(setLocalSnapshot)
 		return () => {
-			stopLevelMeter.current()
-			if (streamRef.current) {
-				for (const t of streamRef.current.getTracks()) t.stop()
-			}
+			listeners.delete(setLocalSnapshot)
 		}
 	}, [])
 
-	return { state, audioLevel, start, pause, resume, stop }
+	return {
+		state: localSnapshot.state,
+		audioLevel: localSnapshot.audioLevel,
+		start: startRecording,
+		pause: pauseRecording,
+		resume: resumeRecording,
+		stop: stopRecording,
+		debugState: getDebugState,
+	}
 }

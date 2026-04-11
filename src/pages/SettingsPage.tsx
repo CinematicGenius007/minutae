@@ -1,15 +1,115 @@
+import { invoke } from "@tauri-apps/api/core"
+import { listen } from "@tauri-apps/api/event"
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
 import { getAllSettings, setSetting } from "@/lib/db/settings-repo"
 import type { AppSettings } from "@/lib/settings"
 
+interface LocalTranscriptionStatus {
+	whisper_binary_path: string
+	model_path: string
+	binary_exists: boolean
+	model_exists: boolean
+}
+
+interface WhisperModelDownloadResult {
+	model_path: string
+	source_url: string
+}
+
+interface WhisperDownloadProgress {
+	model: string
+	downloaded_bytes: number
+	total_bytes: number | null
+	percent: number | null
+}
+
 export function SettingsPage() {
 	const [settings, setSettings] = useState<AppSettings | null>(null)
 	const [saving, setSaving] = useState<string | null>(null)
+	const [localStatus, setLocalStatus] = useState<LocalTranscriptionStatus | null>(null)
+	const [downloadingModel, setDownloadingModel] = useState(false)
+	const [downloadProgress, setDownloadProgress] = useState<WhisperDownloadProgress | null>(null)
 
 	useEffect(() => {
 		getAllSettings().then(setSettings)
 	}, [])
+
+	useEffect(() => {
+		if (!settings || settings.transcriptionProvider !== "local") return
+
+		invoke<LocalTranscriptionStatus>("get_local_transcription_status", {
+			model: settings.whisperModel,
+		})
+			.then(setLocalStatus)
+			.catch(() => setLocalStatus(null))
+	}, [settings])
+
+	useEffect(() => {
+		if (!settings || settings.transcriptionProvider !== "local") return
+
+		let isMounted = true
+		let unlisten: (() => void) | null = null
+
+		listen<WhisperDownloadProgress>("whisper:model-download-progress", (event) => {
+			if (!isMounted) return
+			if (event.payload.model === settings.whisperModel) {
+				setDownloadProgress(event.payload)
+			}
+		})
+			.then((fn) => {
+				unlisten = fn
+			})
+			.catch(() => {})
+
+		return () => {
+			isMounted = false
+			unlisten?.()
+		}
+	}, [settings])
+
+	async function refreshLocalStatus(model: AppSettings["whisperModel"]) {
+		try {
+			const status = await invoke<LocalTranscriptionStatus>("get_local_transcription_status", {
+				model,
+			})
+			setLocalStatus(status)
+		} catch {
+			setLocalStatus(null)
+		}
+	}
+
+	async function downloadSelectedModel() {
+		if (!settings) return
+		setDownloadingModel(true)
+		setDownloadProgress({
+			model: settings.whisperModel,
+			downloaded_bytes: 0,
+			total_bytes: null,
+			percent: null,
+		})
+		try {
+			const result = await invoke<WhisperModelDownloadResult>("download_whisper_model", {
+				model: settings.whisperModel,
+			})
+			await refreshLocalStatus(settings.whisperModel)
+			toast.success("Whisper model downloaded", {
+				description: result.model_path,
+			})
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error)
+			toast.error("Couldn't download Whisper model", {
+				description: message,
+			})
+		} finally {
+			setDownloadingModel(false)
+		}
+	}
+
+	function formatBytes(bytes: number) {
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+	}
 
 	async function save<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
 		setSaving(key)
@@ -63,6 +163,7 @@ export function SettingsPage() {
 				{/* ── Transcription ── */}
 				<Section title="Transcription">
 					<RadioGroup
+						name="transcription-provider"
 						label="Provider"
 						value={settings.transcriptionProvider}
 						options={[
@@ -82,21 +183,106 @@ export function SettingsPage() {
 						}
 					/>
 					{settings.transcriptionProvider === "local" && (
-						<RadioGroup
-							label="Model"
-							value={settings.whisperModel}
-							options={[
-								{ value: "tiny", label: "Tiny", description: "~75MB · fastest, lower accuracy." },
-								{
-									value: "base",
-									label: "Base",
-									description: "~142MB · good balance. Recommended.",
-								},
-								{ value: "small", label: "Small", description: "~466MB · better accuracy." },
-								{ value: "medium", label: "Medium", description: "~1.5GB · best accuracy, slow." },
-							]}
-							onChange={(v) => save("whisperModel", v as AppSettings["whisperModel"])}
-						/>
+						<>
+							<RadioGroup
+								name="whisper-model"
+								label="Model"
+								value={settings.whisperModel}
+								options={[
+									{ value: "tiny", label: "Tiny", description: "~75MB · fastest, lower accuracy." },
+									{
+										value: "base",
+										label: "Base",
+										description: "~142MB · good balance. Recommended.",
+									},
+									{ value: "small", label: "Small", description: "~466MB · better accuracy." },
+									{
+										value: "medium",
+										label: "Medium",
+										description: "~1.5GB · best accuracy, slow.",
+									},
+								]}
+								onChange={(v) => save("whisperModel", v as AppSettings["whisperModel"])}
+							/>
+							{localStatus && (
+								<div className="rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface-raised)] px-3 py-2 text-xs space-y-1">
+									<p className="text-[var(--color-text)] font-medium">Local whisper.cpp status</p>
+									<p
+										className={
+											localStatus.binary_exists
+												? "text-[var(--color-success)]"
+												: "text-[var(--color-destructive)]"
+										}
+									>
+										Binary: {localStatus.binary_exists ? "Found" : "Missing"}
+									</p>
+									<p
+										className={
+											localStatus.model_exists
+												? "text-[var(--color-success)]"
+												: "text-[var(--color-destructive)]"
+										}
+									>
+										Model: {localStatus.model_exists ? "Found" : "Missing"}
+									</p>
+									{!localStatus.binary_exists && (
+										<p className="text-[var(--color-text-muted)] break-all">
+											Expected binary at: {localStatus.whisper_binary_path}
+										</p>
+									)}
+									{!localStatus.model_exists && (
+										<p className="text-[var(--color-text-muted)] break-all">
+											Expected model at: {localStatus.model_path}
+										</p>
+									)}
+									<div className="pt-2 flex items-center gap-2">
+										<button
+											type="button"
+											onClick={downloadSelectedModel}
+											disabled={downloadingModel}
+											className="rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+										>
+											{downloadingModel ? "Downloading…" : "Download selected model"}
+										</button>
+										<a
+											href="https://huggingface.co/ggerganov/whisper.cpp/tree/main"
+											target="_blank"
+											rel="noreferrer"
+											className="text-[var(--color-accent)] hover:underline"
+										>
+											Manual models →
+										</a>
+									</div>
+									{downloadingModel && downloadProgress && (
+										<div className="pt-2 space-y-1">
+											<div className="flex items-center justify-between text-[11px] text-[var(--color-text-muted)]">
+												<span>
+													Downloading {downloadProgress.model} model
+													{downloadProgress.percent != null &&
+														` · ${Math.floor(downloadProgress.percent)}%`}
+												</span>
+												<span>
+													{formatBytes(downloadProgress.downloaded_bytes)}
+													{downloadProgress.total_bytes != null &&
+														` / ${formatBytes(downloadProgress.total_bytes)}`}
+												</span>
+											</div>
+											<div className="h-2 rounded-full bg-[var(--color-border)] overflow-hidden">
+												<div
+													className="h-full bg-[var(--color-accent)] transition-[width] duration-150"
+													style={{
+														width:
+															downloadProgress.percent != null
+																? `${Math.max(4, downloadProgress.percent)}%`
+																: "20%",
+													}}
+												/>
+											</div>
+										</div>
+									)}
+								</div>
+							)}
+						</>
 					)}
 					{settings.transcriptionProvider === "whisper-api" && (
 						<ApiKeyField
@@ -112,6 +298,7 @@ export function SettingsPage() {
 				{/* ── AI Summary ── */}
 				<Section title="AI Summary">
 					<RadioGroup
+						name="summary-provider"
 						label="Provider"
 						value={settings.summaryProvider}
 						options={[
@@ -246,11 +433,13 @@ function Toggle({
 }
 
 function RadioGroup({
+	name,
 	label,
 	value,
 	options,
 	onChange,
 }: {
+	name: string
 	label: string
 	value: string
 	options: { value: string; label: string; description?: string }[]
@@ -271,7 +460,7 @@ function RadioGroup({
 					>
 						<input
 							type="radio"
-							name={label}
+							name={name}
 							value={opt.value}
 							checked={value === opt.value}
 							onChange={() => onChange(opt.value)}

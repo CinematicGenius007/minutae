@@ -4,6 +4,8 @@ import { listMeetings } from "@/lib/db/meetings"
 import type { Meeting } from "@/lib/db/schema"
 import { formatDate, formatDurationLong } from "@/lib/utils"
 import { useRecordingStore } from "@/store/recording"
+import { useSummaryStore } from "@/store/summary"
+import { useTranscriptionStore } from "@/store/transcription"
 
 const STATUS_BADGE: Record<Meeting["status"], { label: string; className: string }> = {
 	recording: {
@@ -26,6 +28,11 @@ export function MeetingsPage() {
 	const [meetings, setMeetings] = useState<Meeting[]>([])
 	const [loading, setLoading] = useState(true)
 	const recordingStatus = useRecordingStore((s) => s.status)
+	const transcriptionJobs = useTranscriptionStore((s) => s.jobs)
+	const summaryJobs = useSummaryStore((s) => s.jobs)
+	const jobRefreshKey = `${recordingStatus}:${transcriptionJobs
+		.map((job) => `${job.meetingId}:${job.status}`)
+		.join("|")}:${summaryJobs.map((job) => `${job.meetingId}:${job.status}`).join("|")}`
 
 	const load = useCallback(async () => {
 		const rows = await listMeetings()
@@ -39,15 +46,16 @@ export function MeetingsPage() {
 
 	// Refresh list when a recording finishes
 	useEffect(() => {
-		if (recordingStatus === "done") load()
-	}, [recordingStatus, load])
+		void jobRefreshKey
+		load()
+	}, [jobRefreshKey, load])
 
 	return (
 		<div className="flex flex-col h-full">
 			{/* Header */}
-			<div className="px-6 pt-5 pb-4 border-b border-[var(--color-border)] flex items-center justify-between">
-				<h1 className="text-base font-semibold text-[var(--color-text)]">Meetings</h1>
-				<span className="text-xs text-[var(--color-text-muted)]">
+			<div className="px-6 pt-5 pb-4 border-b border-border flex items-center justify-between">
+				<h1 className="text-base font-semibold text-text">Meetings</h1>
+				<span className="text-xs text-text-muted">
 					{meetings.length > 0
 						? `${meetings.length} meeting${meetings.length === 1 ? "" : "s"}`
 						: ""}
@@ -57,14 +65,19 @@ export function MeetingsPage() {
 			{/* Content */}
 			{loading ? (
 				<div className="flex-1 flex items-center justify-center">
-					<span className="text-sm text-[var(--color-text-muted)]">Loading…</span>
+					<span className="text-sm text-text-muted">Loading…</span>
 				</div>
 			) : meetings.length === 0 ? (
 				<EmptyState />
 			) : (
-				<ul className="flex-1 overflow-y-auto divide-y divide-[var(--color-border)]">
+				<ul className="flex-1 overflow-y-auto divide-y divide-border">
 					{meetings.map((m) => (
-						<MeetingRow key={m.id} meeting={m} />
+						<MeetingRow
+							key={m.id}
+							meeting={m}
+							transcriptionJobs={transcriptionJobs}
+							summaryJobs={summaryJobs}
+						/>
 					))}
 				</ul>
 			)}
@@ -72,8 +85,28 @@ export function MeetingsPage() {
 	)
 }
 
-function MeetingRow({ meeting }: { meeting: Meeting }) {
-	const badge = STATUS_BADGE[meeting.status]
+function MeetingRow({
+	meeting,
+	transcriptionJobs,
+	summaryJobs,
+}: {
+	meeting: Meeting
+	transcriptionJobs: { meetingId: string; status: string }[]
+	summaryJobs: { meetingId: string; status: string }[]
+}) {
+	const transcriptionJob = transcriptionJobs.find(
+		(job) => job.meetingId === meeting.id && job.status !== "done",
+	)
+	const summaryJob = summaryJobs.find(
+		(job) => job.meetingId === meeting.id && job.status !== "done",
+	)
+
+	const badge =
+		meeting.status === "processing" && transcriptionJob?.status === "transcribing"
+			? { label: "Transcribing", className: "bg-amber-500/15 text-amber-400" }
+			: meeting.status === "processing" && summaryJob?.status === "summarizing"
+				? { label: "Summarizing", className: "bg-sky-500/15 text-sky-400" }
+				: STATUS_BADGE[meeting.status]
 
 	return (
 		<li>
@@ -116,7 +149,7 @@ function MeetingRow({ meeting }: { meeting: Meeting }) {
 				{/* Chevron */}
 				<svg
 					aria-hidden="true"
-					className="w-3.5 h-3.5 text-[var(--color-border)] group-hover:text-[var(--color-text-muted)] transition-colors flex-shrink-0"
+					className="w-3.5 h-3.5 text-border group-hover:text-text-muted transition-colors shrink-0"
 					fill="none"
 					viewBox="0 0 24 24"
 					stroke="currentColor"
@@ -132,10 +165,10 @@ function MeetingRow({ meeting }: { meeting: Meeting }) {
 function EmptyState() {
 	return (
 		<div className="flex-1 flex flex-col items-center justify-center gap-3 px-8 text-center">
-			<div className="w-12 h-12 rounded-xl bg-[var(--color-surface)] flex items-center justify-center">
+			<div className="w-12 h-12 rounded-xl bg-surface flex items-center justify-center">
 				<svg
 					aria-hidden="true"
-					className="w-6 h-6 text-[var(--color-text-muted)]"
+					className="w-6 h-6 text-text-muted"
 					fill="none"
 					viewBox="0 0 24 24"
 					stroke="currentColor"
@@ -149,8 +182,8 @@ function EmptyState() {
 				</svg>
 			</div>
 			<div>
-				<p className="text-sm font-medium text-[var(--color-text)]">No meetings yet</p>
-				<p className="text-xs text-[var(--color-text-muted)] mt-1 max-w-xs">
+				<p className="text-sm font-medium text-text">No meetings yet</p>
+				<p className="text-xs text-text-muted mt-1 max-w-xs">
 					Minutae will detect when your mic is active in Zoom, Meet, or Teams and ask if you'd like
 					to record.
 				</p>

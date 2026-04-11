@@ -22,6 +22,8 @@ interface RecordingStore {
 	pauseRecording: () => void
 	resumeRecording: () => void
 	stopMeeting: () => void
+	completeMeeting: () => void
+	failMeeting: () => void
 	setStatus: (status: RecordingStatus) => void
 	tickDuration: () => void
 }
@@ -72,6 +74,24 @@ export const useRecordingStore = create<RecordingStore>((set, get) => ({
 	stopMeeting: () =>
 		set({
 			status: "processing",
+			micActive: false,
+		}),
+
+	completeMeeting: () =>
+		set({
+			status: "done",
+			currentMeeting: null,
+			startedAt: null,
+			durationSeconds: 0,
+			micActive: false,
+		}),
+
+	failMeeting: () =>
+		set({
+			status: "idle",
+			currentMeeting: null,
+			startedAt: null,
+			durationSeconds: 0,
 			micActive: false,
 		}),
 

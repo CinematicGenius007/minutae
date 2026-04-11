@@ -1,12 +1,22 @@
 import { useEffect, useRef, useState } from "react"
-import { createMeeting } from "@/lib/db/meetings"
 import { nanoid } from "@/lib/utils"
 import { useRecordingStore } from "@/store/recording"
 
 const AUTO_DISMISS_MS = 30_000
 
-export function MeetingPrompt() {
-	const { micActive, promptDismissed, status, dismissPrompt, startMeeting } = useRecordingStore()
+interface MeetingPromptProps {
+	onStartRecording: (meeting: {
+		id: string
+		title: string
+		startedAt: string
+		endedAt: null
+		durationSeconds: null
+		status: "recording"
+	}) => Promise<void>
+}
+
+export function MeetingPrompt({ onStartRecording }: MeetingPromptProps) {
+	const { micActive, promptDismissed, status, dismissPrompt } = useRecordingStore()
 
 	const [visible, setVisible] = useState(false)
 	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -45,8 +55,7 @@ export function MeetingPrompt() {
 			durationSeconds: null,
 			status: "recording" as const,
 		}
-		await createMeeting(meeting)
-		startMeeting(meeting)
+		await onStartRecording(meeting)
 		setVisible(false)
 	}
 

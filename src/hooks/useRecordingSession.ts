@@ -1,13 +1,29 @@
 import { invoke } from "@tauri-apps/api/core"
 import { useEffect, useRef } from "react"
-import { updateMeeting } from "@/lib/db/meetings"
+import { toast } from "sonner"
+import { createMeeting, updateMeeting } from "@/lib/db/meetings"
+import { createRecording } from "@/lib/db/recordings"
+import { nanoid } from "@/lib/utils"
 import { useRecordingStore } from "@/store/recording"
 import { useTranscriptionStore } from "@/store/transcription"
 import { useRecorder } from "./useRecorder"
 
+type SessionMeeting = {
+	id: string
+	title: string
+	startedAt: string
+	endedAt: null
+	durationSeconds: null
+	status: "recording"
+}
+
 /**
  * Orchestrates the full recording session lifecycle.
  * Connects useRecorder → Zustand store → Tauri save command → transcription queue.
+ *
+ * Two entry points:
+ *  - startRecording()      called by MeetingPrompt after it creates the meeting row
+ *  - startManualSession()  creates the meeting row itself, then starts recording
  */
 export function useRecordingSession() {
 	const recorder = useRecorder()
@@ -31,9 +47,51 @@ export function useRecordingSession() {
 		}
 	}, [store.status, store.tickDuration])
 
-	async function startRecording() {
-		await recorder.start()
-		// Meeting row was already created in MeetingPrompt before calling this
+	async function beginRecording(meeting: SessionMeeting) {
+		try {
+			await recorder.start()
+			store.startMeeting(meeting)
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error)
+			await updateMeeting(meeting.id, { status: "failed" }).catch(() => {})
+			store.failMeeting()
+			console.error("[recording-session] start failed", {
+				meetingId: meeting.id,
+				storeStatus: store.status,
+				debug: recorder.debugState(),
+				error: message,
+			})
+			toast.error("Couldn't start recording", {
+				description: message,
+				duration: 6000,
+			})
+		}
+	}
+
+	/** Called from MeetingPrompt. */
+	async function startRecording(meeting: SessionMeeting) {
+		await createMeeting(meeting)
+		await beginRecording(meeting)
+	}
+
+	/**
+	 * Called from the manual "New Recording" button or Cmd+Shift+R.
+	 * Creates the meeting row and starts recording immediately — no prompt needed.
+	 */
+	async function startManualSession() {
+		if (store.status !== "idle" && store.status !== "detecting") return
+
+		const meeting = {
+			id: nanoid(),
+			title: "Untitled Meeting",
+			startedAt: new Date().toISOString(),
+			endedAt: null,
+			durationSeconds: null,
+			status: "recording" as const,
+		}
+
+		await createMeeting(meeting)
+		await beginRecording(meeting)
 	}
 
 	async function pauseRecording() {
@@ -56,16 +114,43 @@ export function useRecordingSession() {
 		const meeting = store.currentMeeting
 		if (!meeting) return
 
-		const blob = await recorder.stop()
+		let blob: Blob
+		try {
+			blob = await recorder.stop()
+		} catch (error) {
+			const debug = recorder.debugState()
+			const message = error instanceof Error ? error.message : String(error)
+			console.error("[recording-session] stop failed", {
+				meetingId: meeting.id,
+				storeStatus: store.status,
+				debug,
+				error: message,
+			})
+			toast.error("Couldn't stop recording", {
+				description: `${message} (${debug.mediaRecorderState ?? "no-recorder"})`,
+				duration: 6000,
+			})
+			return
+		}
 		store.stopMeeting()
 
 		const durationSeconds = store.durationSeconds
 		const dateStr = new Date().toISOString().slice(0, 10)
-		const filename = `${dateStr}-${meeting.id}.webm`
+		const wavBytes = await convertBlobToWav(blob)
+		const filename = `${dateStr}-${meeting.id}.wav`
 
 		// Save audio file via Tauri
-		const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()))
-		const filePath = await invoke<string>("save_recording", { bytes, filename })
+		const filePath = await invoke<string>("save_recording", {
+			bytes: Array.from(wavBytes),
+			filename,
+		})
+		await createRecording({
+			id: nanoid(),
+			meetingId: meeting.id,
+			filePath,
+			fileSizeBytes: wavBytes.byteLength,
+			createdAt: new Date().toISOString(),
+		})
 
 		// Update meeting row
 		await updateMeeting(meeting.id, {
@@ -78,14 +163,78 @@ export function useRecordingSession() {
 		enqueueTranscription({ meetingId: meeting.id, audioPath: filePath })
 	}
 
+	const isIdle = store.status === "idle" || store.status === "detecting"
+
 	return {
 		status: store.status,
 		durationSeconds: store.durationSeconds,
 		audioLevel: recorder.audioLevel,
 		currentMeeting: store.currentMeeting,
+		canStartManual: isIdle,
 		startRecording,
+		startManualSession,
 		pauseRecording,
 		resumeRecording,
 		stopRecording,
+	}
+}
+
+async function convertBlobToWav(blob: Blob): Promise<Uint8Array> {
+	const arrayBuffer = await blob.arrayBuffer()
+	const audioContext = new AudioContext()
+
+	try {
+		const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0))
+		return encodeAudioBufferAsWav(audioBuffer)
+	} finally {
+		await audioContext.close().catch(() => {})
+	}
+}
+
+function encodeAudioBufferAsWav(audioBuffer: AudioBuffer): Uint8Array {
+	const channelCount = audioBuffer.numberOfChannels
+	const sampleRate = audioBuffer.sampleRate
+	const frameCount = audioBuffer.length
+	const bitsPerSample = 16
+	const blockAlign = channelCount * (bitsPerSample / 8)
+	const byteRate = sampleRate * blockAlign
+	const dataSize = frameCount * blockAlign
+	const buffer = new ArrayBuffer(44 + dataSize)
+	const view = new DataView(buffer)
+
+	writeAscii(view, 0, "RIFF")
+	view.setUint32(4, 36 + dataSize, true)
+	writeAscii(view, 8, "WAVE")
+	writeAscii(view, 12, "fmt ")
+	view.setUint32(16, 16, true)
+	view.setUint16(20, 1, true)
+	view.setUint16(22, channelCount, true)
+	view.setUint32(24, sampleRate, true)
+	view.setUint32(28, byteRate, true)
+	view.setUint16(32, blockAlign, true)
+	view.setUint16(34, bitsPerSample, true)
+	writeAscii(view, 36, "data")
+	view.setUint32(40, dataSize, true)
+
+	const channels = Array.from({ length: channelCount }, (_, index) =>
+		audioBuffer.getChannelData(index),
+	)
+	let offset = 44
+
+	for (let frame = 0; frame < frameCount; frame++) {
+		for (let channel = 0; channel < channelCount; channel++) {
+			const sample = Math.max(-1, Math.min(1, channels[channel][frame] ?? 0))
+			const pcm = sample < 0 ? sample * 0x8000 : sample * 0x7fff
+			view.setInt16(offset, pcm, true)
+			offset += 2
+		}
+	}
+
+	return new Uint8Array(buffer)
+}
+
+function writeAscii(view: DataView, offset: number, value: string) {
+	for (let index = 0; index < value.length; index++) {
+		view.setUint8(offset + index, value.charCodeAt(index))
 	}
 }

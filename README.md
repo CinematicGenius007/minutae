@@ -11,7 +11,7 @@ Minutae detects when your mic goes live in Zoom, Meet, or Teams, records the aud
 ## What it does
 
 1. **Detects meetings automatically** — watches for mic activity from other apps via CoreAudio. When it spots a call starting, it asks if you want to record.
-2. **Records locally** — captures mic audio as `.webm` using the Web MediaRecorder API. Files stay on your disk.
+2. **Records locally** — captures mic audio with the Web MediaRecorder API, converts it to `.wav` for local Whisper compatibility, and stores files on your disk.
 3. **Transcribes offline** — runs `whisper.cpp` locally (no API key, no internet required). Cloud Whisper API available as an opt-in fallback.
 4. **Summarizes with AI** — sends the transcript to Gemini Flash by default. Claude and OpenAI are drop-in alternatives. The AI provider is a pluggable interface, not a hard dependency.
 5. **Writes plain markdown** — every meeting produces a `.md` file with YAML frontmatter, a summary, key decisions, and an action item checklist. Your data is just files.
@@ -58,7 +58,7 @@ date: 2026-04-11T14:30:00
 duration: 32m 14s
 participants: [Alice, Bob, Carol]
 tags: []
-recording: ../recordings/2026-04-11-abc123.webm
+recording: ../recordings/2026-04-11-abc123.wav
 ---
 
 ## Summary
@@ -137,6 +137,39 @@ pnpm tauri dev
 ```
 
 The app hot-reloads as you edit frontend code. Rust code requires a restart.
+
+### Local Whisper Setup
+
+If you want offline transcription with `Local (whisper.cpp)`, you need both:
+
+- the `whisper.cpp` executable
+- a GGML model file such as `ggml-base.bin`
+
+On macOS with Homebrew:
+
+```bash
+brew install whisper-cpp
+```
+
+Then in Minutae:
+
+1. Open **Settings → Transcription**
+2. Choose **Local (whisper.cpp)**
+3. Pick a model like **Base**
+4. Click **Download selected model**
+
+Minutae shows:
+
+- whether the local `whisper.cpp` binary was found
+- whether the selected model file is already present
+- live download progress while the model is being fetched
+
+The app will store models in `~/Library/Minutae/models/`.
+
+If you prefer the manual path, model files are available from:
+
+- [ggerganov/whisper.cpp on Hugging Face](https://huggingface.co/ggerganov/whisper.cpp/tree/main)
+- [ggml.ggerganov.com](https://ggml.ggerganov.com/)
 
 ---
 

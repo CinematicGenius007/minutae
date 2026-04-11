@@ -100,10 +100,10 @@ Frontend prompt: "Start recording?"
     ↓ user clicks Start
 useRecordingStore.startMeeting()
     → INSERT into meetings (status=recording)
-    → useRecorder.start() — MediaRecorder(audio/webm)
+    → useRecorder.start() — MediaRecorder capture
         ↓ user clicks Stop
 useRecordingStore.stopMeeting()
-    → save .webm via Tauri save_recording command
+    → convert to .wav and save via Tauri save_recording command
     → UPDATE meetings (ended_at, status=processing)
     → enqueue transcription job
         ↓ whisper.cpp (local) or Whisper API
@@ -126,7 +126,7 @@ Located at: `~/Library/Minutae/minutae.db`
 | Table | Purpose |
 |---|---|
 | `meetings` | One row per session: title, started_at, ended_at, duration, status |
-| `recordings` | File path + size for each .webm |
+| `recordings` | File path + size for each saved local audio file (`.wav`) |
 | `transcripts` | Raw text + provider used |
 | `segments` | Word-level timestamps (start_ms, end_ms, text, speaker_label) |
 | `summaries` | Markdown content, model used |
@@ -172,7 +172,7 @@ date: 2026-04-11T14:30:00
 duration: 32m 14s
 participants: [Alice, Bob, Carol]
 tags: []
-recording: ../recordings/2026-04-11-abc123.webm
+recording: ../recordings/2026-04-11-abc123.wav
 ---
 
 ## Summary
@@ -212,6 +212,19 @@ interface AppSettings {
 ```
 
 API keys are encrypted at rest via OS keychain (Tauri stronghold or macOS `security`).
+
+## Local Whisper Setup Notes
+
+- Local transcription needs both a `whisper.cpp` binary and a GGML model file.
+- The app now checks common locations for the binary:
+  - bundled Tauri resources
+  - `src-tauri/resources/` in dev
+  - system `PATH`
+  - Homebrew `whisper-cpp`
+  - `MINUTAE_WHISPER_PATH`
+- Models live at `~/Library/Minutae/models/ggml-{model}.bin`.
+- Settings includes a `Download selected model` action that fetches models from the official `ggerganov/whisper.cpp` Hugging Face repo.
+- Settings also shows binary/model availability and live model download progress.
 
 ---
 
@@ -256,7 +269,7 @@ See `PLAN.md` for the full 11-phase checklist. Current status:
 - [x] **Phase 0** — Scaffolding complete (Tauri + React + TypeScript, Biome, Tailwind v4, TanStack Router, Zustand, folder structure, husky)
 - [x] **Phase 1** — Data layer (SQLite schema, Drizzle, migrations, all 9 tables)
 - [x] **Phase 2** — Mic detection (CoreAudio `kAudioDevicePropertyDeviceIsRunningSomewhere`, 2s poll, Tauri events)
-- [x] **Phase 3** — Recording (MediaRecorder + webm/opus, VU meter, save via Tauri fs command)
+- [x] **Phase 3** — Recording (MediaRecorder capture, WAV save pipeline, VU meter, Tauri fs command)
 - [x] **Phase 4** — Transcription (whisper.cpp shell command, WhisperAPIProvider fallback, sequential job queue)
 - [x] **Phase 5** — AI summaries (GeminiProvider default, ClaudeProvider + OpenAIProvider, Zod validation, .md file output, action items extracted)
 - [x] **Phase 6** — Semantic search (@xenova/transformers WASM, all-MiniLM-L6-v2, FTS5 triggers, cosine similarity in JS, Cmd+K SearchModal with cmdk)

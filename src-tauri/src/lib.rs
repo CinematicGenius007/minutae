@@ -26,6 +26,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations("sqlite:minutae.db", migrations)
@@ -36,9 +37,12 @@ pub fn run() {
             commands::fs::ensure_app_dirs,
             commands::fs::save_recording,
             commands::fs::write_summary_file,
+            commands::fs::delete_meeting_assets,
             commands::mic::start_mic_monitor,
             commands::mic::stop_mic_monitor,
             models::whisper::transcribe_local,
+            models::whisper::get_local_transcription_status,
+            models::whisper::download_whisper_model,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

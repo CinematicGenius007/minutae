@@ -1,12 +1,16 @@
+import { sendNotification } from "@tauri-apps/plugin-notification"
+import { toast } from "sonner"
 import { create } from "zustand"
 import { createActionItems } from "@/lib/db/action-items"
 import { getMeeting, updateMeeting } from "@/lib/db/meetings"
+import { getRecording } from "@/lib/db/recordings"
 import { getAllSettings } from "@/lib/db/settings-repo"
 import { createSummary } from "@/lib/db/summaries"
 import { writeSummaryFile } from "@/lib/markdown"
 import { getSummaryProvider } from "@/lib/providers/summary"
 import { nanoid } from "@/lib/utils"
 import { useEmbeddingsStore } from "@/store/embeddings"
+import { useRecordingStore } from "@/store/recording"
 
 export interface SummaryJob {
 	id: string
@@ -52,6 +56,7 @@ export const useSummaryStore = create<SummaryStore>((set, get) => ({
 			if (!provider) {
 				// No provider configured — mark done without summary
 				await updateMeeting(next.meetingId, { status: "done" })
+				useRecordingStore.getState().completeMeeting()
 				set((s) => ({
 					jobs: s.jobs.map((j) => (j.id === next.id ? { ...j, status: "done" } : j)),
 				}))
@@ -83,8 +88,9 @@ export const useSummaryStore = create<SummaryStore>((set, get) => ({
 			)
 
 			// Update meeting title + status
-			const recordingFilename = `${next.meetingId}.webm`
 			const meeting = await getMeeting(next.meetingId)
+			const recording = await getRecording(next.meetingId)
+			const recordingFilename = recording?.filePath.split("/").pop() ?? `${next.meetingId}.wav`
 			if (meeting) {
 				await updateMeeting(next.meetingId, {
 					title: result.title,
@@ -93,9 +99,27 @@ export const useSummaryStore = create<SummaryStore>((set, get) => ({
 				await writeSummaryFile({ ...meeting, title: result.title }, result, recordingFilename)
 			}
 
+			useRecordingStore.getState().completeMeeting()
+
 			set((s) => ({
 				jobs: s.jobs.map((j) => (j.id === next.id ? { ...j, status: "done" } : j)),
 			}))
+
+			// In-app toast
+			toast.success(`Summary ready: ${result.title}`, {
+				description: "Transcription and summary complete.",
+				duration: 6000,
+			})
+
+			// OS notification (fires even when app is in background)
+			try {
+				sendNotification({
+					title: "Minutae — Summary ready",
+					body: `"${result.title}" has been transcribed and summarized.`,
+				})
+			} catch {
+				// Notifications may be blocked by the OS; fail silently
+			}
 
 			// Kick off background embedding (non-blocking; fails silently)
 			useEmbeddingsStore.getState().enqueue({
@@ -110,6 +134,12 @@ export const useSummaryStore = create<SummaryStore>((set, get) => ({
 				),
 			}))
 			await updateMeeting(next.meetingId, { status: "failed" }).catch(() => {})
+			useRecordingStore.getState().failMeeting()
+
+			toast.error("Summary failed", {
+				description: message,
+				duration: 8000,
+			})
 		}
 
 		get()._processNext()

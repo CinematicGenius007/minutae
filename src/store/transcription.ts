@@ -1,9 +1,11 @@
+import { toast } from "sonner"
 import { create } from "zustand"
 import { updateMeeting } from "@/lib/db/meetings"
 import { getAllSettings } from "@/lib/db/settings-repo"
 import { createTranscript, insertSegments } from "@/lib/db/transcripts"
 import { getTranscriptionProvider } from "@/lib/providers/transcription"
 import { nanoid } from "@/lib/utils"
+import { useRecordingStore } from "./recording"
 import { useSummaryStore } from "./summary"
 
 export interface TranscriptionJob {
@@ -103,6 +105,11 @@ export const useTranscriptionStore = create<TranscriptionStore>((set, get) => ({
 					),
 				}))
 				await updateMeeting(next.meetingId, { status: "failed" })
+				useRecordingStore.getState().failMeeting()
+				toast.error("Transcription failed", {
+					description: message,
+					duration: 8000,
+				})
 			}
 		}
 

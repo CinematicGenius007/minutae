@@ -9,6 +9,7 @@ let _db: ReturnType<typeof drizzle> | null = null
 export async function getSqlite(): Promise<InstanceType<typeof Database>> {
 	if (_sqlite) return _sqlite
 	_sqlite = await Database.load("sqlite:minutae.db")
+	await _sqlite.execute("PRAGMA foreign_keys = ON")
 	return _sqlite
 }
 

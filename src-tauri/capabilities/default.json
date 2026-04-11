@@ -11,6 +11,9 @@
     "sql:allow-select",
     "sql:allow-load",
     "fs:default",
-    "fs:allow-read-file"
+    "fs:allow-read-file",
+    "fs:allow-appdata-read-recursive",
+    "notification:default",
+    "notification:allow-notify"
   ]
 }

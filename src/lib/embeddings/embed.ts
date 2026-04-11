@@ -1,33 +1,47 @@
-import { env, pipeline } from "@xenova/transformers"
-
-// Disable worker proxy — run ONNX inference on the main thread.
-// This avoids worker script path issues inside Tauri's WebView.
-env.backends.onnx.wasm.proxy = false
-
 // ─── Singleton pipeline ───────────────────────────────────────────────────────
+//
+// @xenova/transformers is imported DYNAMICALLY inside getEmbedder() so the
+// ONNX Runtime never runs at module-load time.  Importing it statically at the
+// top of the file triggers ort-web initialisation immediately, which crashes
+// Vite's dev server (and causes a white screen in the app) before any UI
+// has rendered.
+//
+// The lazy import means ONNX only loads the first time a user actually
+// requests an embedding (i.e. triggers semantic search or a meeting finishes).
 
-type FeatureExtractionPipeline = Awaited<ReturnType<typeof pipeline<"feature-extraction">>>
+// biome-ignore lint/suspicious/noExplicitAny: pipeline type is resolved dynamically
+type AnyPipeline = any
 
-let _pipe: FeatureExtractionPipeline | null = null
+let _pipe: AnyPipeline | null = null
 let _loading = false
-const _callbacks: Array<(pipe: FeatureExtractionPipeline) => void> = []
+const _callbacks: Array<(pipe: AnyPipeline) => void> = []
 
 /**
- * Lazily loads the all-MiniLM-L6-v2 model (downloaded from HuggingFace on
- * first use, then cached in the WebView's Cache Storage — persists across
- * app restarts).
+ * Lazily loads `@xenova/transformers` + the all-MiniLM-L6-v2 model on first
+ * call (downloaded from HuggingFace, then cached in Cache Storage permanently).
+ *
+ * Subsequent calls return the cached singleton immediately.
+ * Concurrent callers while loading is in progress are queued and resolved
+ * together once the model is ready.
  */
-export async function getEmbedder(): Promise<FeatureExtractionPipeline> {
+export async function getEmbedder(): Promise<AnyPipeline> {
 	if (_pipe) return _pipe
 
-	// If already loading, queue until ready
 	if (_loading) {
 		return new Promise((resolve) => _callbacks.push(resolve))
 	}
 
 	_loading = true
+
+	// Dynamic import — deferred until first use, never runs at module load time.
+	const { pipeline, env } = await import("@xenova/transformers")
+
+	// Run ONNX on the main thread — avoids worker script path issues in
+	// Tauri's WebView (blob: worker URLs are blocked by some CSP setups).
+	env.backends.onnx.wasm.proxy = false
+
 	const pipe = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2")
-	_pipe = pipe as FeatureExtractionPipeline
+	_pipe = pipe
 	_loading = false
 
 	for (const cb of _callbacks.splice(0)) {
@@ -41,7 +55,7 @@ export async function getEmbedder(): Promise<FeatureExtractionPipeline> {
 
 /**
  * Returns a normalised 384-dim Float32Array for the given text.
- * Throws if the model hasn't been downloaded yet and there is no internet.
+ * Throws if the model is not cached and there is no internet connection.
  */
 export async function embed(text: string): Promise<Float32Array> {
 	const pipe = await getEmbedder()
@@ -54,8 +68,8 @@ export async function embed(text: string): Promise<Float32Array> {
 /**
  * Splits `text` into overlapping word-based chunks suitable for embedding.
  *
- * @param text        Raw transcript text
- * @param chunkWords  Target words per chunk (default 200)
+ * @param text         Raw transcript text
+ * @param chunkWords   Target words per chunk (default 200)
  * @param overlapWords Words of overlap between chunks (default 20)
  */
 export function chunkText(text: string, chunkWords = 200, overlapWords = 20): string[] {
@@ -78,8 +92,7 @@ export function chunkText(text: string, chunkWords = 200, overlapWords = 20): st
 
 /**
  * Cosine similarity between two equal-length numeric arrays.
- * Works on normalised vectors (dot product = cosine similarity) and
- * unnormalised vectors alike.
+ * Works on normalised (dot product = cosine) and unnormalised vectors alike.
  */
 export function cosineSimilarity(a: number[], b: number[]): number {
 	let dot = 0
