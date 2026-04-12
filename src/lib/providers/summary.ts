@@ -80,6 +80,12 @@ function humanizeProviderError(error: unknown, provider: string): Error {
 		return new Error("OpenAI rate limit reached. Check your plan, billing, or retry shortly.")
 	}
 
+	if (provider === "openrouter" && (raw.includes('"code":429') || raw.includes("Rate limit"))) {
+		return new Error(
+			"OpenRouter rate limit reached. Check your credits, provider limits, or retry shortly.",
+		)
+	}
+
 	if (provider === "claude" && (raw.includes('"code":429') || raw.includes("rate_limit"))) {
 		return new Error("Claude rate limit reached. Check your plan, billing, or retry shortly.")
 	}
@@ -223,12 +229,72 @@ export class OpenAIProvider implements SummaryProvider {
 	}
 }
 
+// ─── OpenRouter ──────────────────────────────────────────────────────────────
+
+export class OpenRouterProvider implements SummaryProvider {
+	name = "openrouter"
+
+	constructor(
+		private apiKey: string,
+		private model: string,
+	) {}
+
+	async summarize(transcript: string, meetingId: string): Promise<SummaryResult> {
+		try {
+			const OpenAI = (await import("openai")).default
+			const client = new OpenAI({
+				apiKey: this.apiKey,
+				baseURL: "https://openrouter.ai/api/v1",
+				dangerouslyAllowBrowser: true,
+				defaultHeaders: {
+					"HTTP-Referer": "https://github.com/cinematicgenius007/minutae",
+					"X-Title": "Minutae",
+				},
+			})
+
+			const res = await client.chat.completions.create({
+				model: this.model,
+				messages: [
+					{ role: "system", content: SUMMARIZE_SYSTEM },
+					{ role: "user", content: SUMMARIZE_USER(transcript) },
+				],
+			})
+
+			const text = res.choices[0]?.message?.content ?? ""
+			const inputTokens = res.usage?.prompt_tokens ?? 0
+			const outputTokens = res.usage?.completion_tokens ?? 0
+
+			await logApiUsage({
+				id: nanoid(),
+				meetingId,
+				provider: "openrouter",
+				model: this.model,
+				endpoint: "chat/completions",
+				inputTokens,
+				outputTokens,
+				// Pricing varies by routed model/provider, so track usage but not estimated cost.
+				costUsd: 0,
+				createdAt: new Date().toISOString(),
+			})
+
+			return parseResult(text)
+		} catch (error) {
+			throw humanizeProviderError(error, "openrouter")
+		}
+	}
+}
+
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 export function getSummaryProvider(
 	settings: Pick<
 		AppSettings,
-		"summaryProvider" | "geminiApiKey" | "anthropicApiKey" | "summaryOpenaiApiKey"
+		| "summaryProvider"
+		| "geminiApiKey"
+		| "anthropicApiKey"
+		| "summaryOpenaiApiKey"
+		| "openRouterApiKey"
+		| "openRouterModel"
 	>,
 ): SummaryProvider | null {
 	switch (settings.summaryProvider) {
@@ -238,6 +304,10 @@ export function getSummaryProvider(
 			return settings.anthropicApiKey ? new ClaudeProvider(settings.anthropicApiKey) : null
 		case "openai":
 			return settings.summaryOpenaiApiKey ? new OpenAIProvider(settings.summaryOpenaiApiKey) : null
+		case "openrouter":
+			return settings.openRouterApiKey
+				? new OpenRouterProvider(settings.openRouterApiKey, settings.openRouterModel)
+				: null
 		default:
 			return null
 	}

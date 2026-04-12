@@ -78,7 +78,7 @@ export function MeetingDetailPage() {
 	if (loading) {
 		return (
 			<div className="flex h-full items-center justify-center">
-				<span className="text-sm text-[var(--color-text-muted)]">Loading…</span>
+				<span className="text-sm text-text-muted">Loading…</span>
 			</div>
 		)
 	}
@@ -86,8 +86,8 @@ export function MeetingDetailPage() {
 	if (!meeting) {
 		return (
 			<div className="flex h-full flex-col items-center justify-center gap-3">
-				<p className="text-sm text-[var(--color-text-muted)]">Meeting not found.</p>
-				<Link to="/" className="text-xs text-[var(--color-accent)] hover:underline">
+				<p className="text-sm text-text-muted">Meeting not found.</p>
+				<Link to="/" className="text-xs text-accent hover:underline">
 					← Back to meetings
 				</Link>
 			</div>
@@ -104,10 +104,10 @@ export function MeetingDetailPage() {
 	return (
 		<div className="flex flex-col h-full">
 			{/* Header */}
-			<div className="px-6 pt-5 pb-0 border-b border-[var(--color-border)]">
+			<div className="px-6 pt-5 pb-0 border-b border-border">
 				<Link
 					to="/"
-					className="text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)] flex items-center gap-1 mb-3 w-fit transition-colors"
+					className="text-xs text-text-muted hover:text-text flex items-center gap-1 mb-3 w-fit transition-colors"
 				>
 					<svg
 						aria-hidden="true"
@@ -135,7 +135,7 @@ export function MeetingDetailPage() {
 								if (e.key === "Enter") handleTitleSave()
 								if (e.key === "Escape") setEditingTitle(false)
 							}}
-							className="flex-1 bg-transparent text-lg font-semibold text-[var(--color-text)] border-b border-[var(--color-accent)] outline-none pb-0.5"
+							className="flex-1 bg-transparent text-lg font-semibold text-text border-b border-accent outline-none pb-0.5"
 						/>
 					</div>
 				) : (
@@ -145,14 +145,14 @@ export function MeetingDetailPage() {
 							setTitleDraft(meeting.title)
 							setEditingTitle(true)
 						}}
-						className="text-lg font-semibold text-[var(--color-text)] hover:text-[var(--color-accent)] transition-colors text-left mb-1 w-full truncate"
+						className="text-lg font-semibold text-text hover:text-accent transition-colors text-left mb-1 w-full truncate"
 					>
 						{meeting.title}
 					</button>
 				)}
 
 				<div className="mb-4 flex items-center justify-between gap-3">
-					<p className="text-xs text-[var(--color-text-muted)]">
+					<p className="text-xs text-text-muted">
 						{formatDate(meeting.startedAt)}
 						{meeting.durationSeconds != null && (
 							<> · {formatDurationLong(meeting.durationSeconds)}</>
@@ -162,7 +162,7 @@ export function MeetingDetailPage() {
 						type="button"
 						onClick={() => setConfirmingDelete(true)}
 						disabled={deleting}
-						className="rounded-[var(--radius-sm)] border border-[var(--color-border)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-destructive)] hover:bg-[var(--color-destructive)]/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+						className="rounded-sm border border-border px-2.5 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
 					>
 						{deleting ? "Deleting…" : "Delete Meeting"}
 					</button>
@@ -177,8 +177,8 @@ export function MeetingDetailPage() {
 							onClick={() => setTab(t.key)}
 							className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
 								tab === t.key
-									? "border-[var(--color-accent)] text-[var(--color-text)]"
-									: "border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+									? "border-accent text-text"
+									: "border-transparent text-text-muted hover:text-text"
 							}`}
 						>
 							{t.label}
@@ -190,11 +190,11 @@ export function MeetingDetailPage() {
 			{/* Tab content */}
 			<div className="flex-1 overflow-y-auto">
 				{confirmingDelete && (
-					<div className="mx-6 mt-5 rounded-[var(--radius-md)] border border-[var(--color-destructive)]/30 bg-[var(--color-destructive)]/8 p-4">
-						<p className="text-sm font-medium text-[var(--color-text)]">
+					<div className="mx-6 mt-5 rounded-md border border-destructive/30 bg-destructive/8 p-4">
+						<p className="text-sm font-medium text-text">
 							Delete this meeting and all associated local data?
 						</p>
-						<p className="mt-1 text-xs leading-relaxed text-[var(--color-text-muted)]">
+						<p className="mt-1 text-xs leading-relaxed text-text-muted">
 							This removes the meeting row, transcript, summary, action items, embeddings, and
 							matching local recording and summary files from your Mac.
 						</p>
@@ -203,7 +203,7 @@ export function MeetingDetailPage() {
 								type="button"
 								onClick={handleDeleteMeeting}
 								disabled={deleting}
-								className="rounded-[var(--radius-sm)] bg-[var(--color-destructive)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+								className="rounded-sm bg-destructive px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
 							>
 								{deleting ? "Deleting…" : "Yes, delete it"}
 							</button>
@@ -211,7 +211,7 @@ export function MeetingDetailPage() {
 								type="button"
 								onClick={() => setConfirmingDelete(false)}
 								disabled={deleting}
-								className="rounded-[var(--radius-sm)] border border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+								className="rounded-sm border border-border px-3 py-1.5 text-xs text-text-muted hover:text-text hover:bg-surface-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
 							>
 								Cancel
 							</button>
@@ -233,8 +233,8 @@ function SummaryTab({ summary }: { summary: Summary | null }) {
 	if (!summary) {
 		return (
 			<div className="flex flex-col items-center justify-center h-full gap-2 text-center px-8">
-				<p className="text-sm text-[var(--color-text-muted)]">No summary yet.</p>
-				<p className="text-xs text-[var(--color-text-muted)]">
+				<p className="text-sm text-text-muted">No summary yet.</p>
+				<p className="text-xs text-text-muted">
 					Add an AI provider in Settings to generate summaries automatically.
 				</p>
 			</div>
@@ -245,11 +245,11 @@ function SummaryTab({ summary }: { summary: Summary | null }) {
 		<div className="px-6 py-5 max-w-2xl">
 			<div
 				className="prose prose-sm prose-invert max-w-none
-				[&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-[var(--color-text)] [&_h2]:mt-5 [&_h2]:mb-2
-				[&_p]:text-[var(--color-text-muted)] [&_p]:leading-relaxed
-				[&_ul]:text-[var(--color-text-muted)] [&_li]:my-0.5
-				[&_a]:text-[var(--color-accent)]
-				[&_input[type=checkbox]]:accent-[var(--color-accent)]"
+				[&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-text [&_h2]:mt-5 [&_h2]:mb-2
+				[&_p]:text-text-muted [&_p]:leading-relaxed
+				[&_ul]:text-text-muted [&_li]:my-0.5
+				[&_a]:text-accent
+				[&_input[type=checkbox]]:accent-accent"
 			>
 				<ReactMarkdown remarkPlugins={[remarkGfm]}>{summary.markdownContent}</ReactMarkdown>
 			</div>
@@ -267,7 +267,7 @@ function TranscriptTab({
 	if (!transcript) {
 		return (
 			<div className="flex items-center justify-center h-full">
-				<p className="text-sm text-[var(--color-text-muted)]">No transcript yet.</p>
+				<p className="text-sm text-text-muted">No transcript yet.</p>
 			</div>
 		)
 	}
@@ -284,15 +284,15 @@ function TranscriptTab({
 				<div className="space-y-3">
 					{segments.map((seg) => (
 						<div key={seg.id} className="flex gap-3">
-							<span className="text-[10px] font-mono text-[var(--color-text-muted)] pt-0.5 w-10 flex-shrink-0 tabular-nums">
+							<span className="text-[10px] font-mono text-text-muted pt-0.5 w-10 shrink-0 tabular-nums">
 								{msToTimestamp(seg.startMs)}
 							</span>
-							<p className="text-sm text-[var(--color-text)] leading-relaxed">{seg.text}</p>
+							<p className="text-sm text-text-muted leading-relaxed">{seg.text}</p>
 						</div>
 					))}
 				</div>
 			) : (
-				<p className="text-sm text-[var(--color-text)] leading-relaxed whitespace-pre-wrap">
+				<p className="text-sm text-text-muted leading-relaxed whitespace-pre-wrap">
 					{transcript.rawText}
 				</p>
 			)}
@@ -313,7 +313,7 @@ function ActionsTab({
 	if (actions.length === 0) {
 		return (
 			<div className="flex items-center justify-center h-full">
-				<p className="text-sm text-[var(--color-text-muted)]">No action items found.</p>
+				<p className="text-sm text-text-muted">No action items found.</p>
 			</div>
 		)
 	}
@@ -322,7 +322,7 @@ function ActionsTab({
 		<div className="px-6 py-5 max-w-xl space-y-6">
 			{pending.length > 0 && (
 				<section>
-					<h3 className="text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider mb-3">
+					<h3 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
 						To do · {pending.length}
 					</h3>
 					<ul className="space-y-2">
@@ -334,7 +334,7 @@ function ActionsTab({
 			)}
 			{completed.length > 0 && (
 				<section>
-					<h3 className="text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider mb-3">
+					<h3 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
 						Done · {completed.length}
 					</h3>
 					<ul className="space-y-2 opacity-60">
@@ -360,10 +360,8 @@ function ActionRow({
 			<button
 				type="button"
 				onClick={() => onToggle(action.id, action.done)}
-				className={`mt-0.5 flex-shrink-0 w-4 h-4 rounded border transition-colors ${
-					action.done
-						? "bg-[var(--color-success)] border-[var(--color-success)]"
-						: "border-[var(--color-border)] hover:border-[var(--color-text-muted)]"
+				className={`mt-0.5 shrink-0 w-4 h-4 rounded border transition-colors ${
+					action.done ? "bg-success border-success" : "border-border hover:border-text-muted"
 				}`}
 			>
 				{action.done && (
@@ -379,7 +377,7 @@ function ActionRow({
 				)}
 			</button>
 			<span
-				className={`text-sm leading-relaxed ${action.done ? "line-through text-[var(--color-text-muted)]" : "text-[var(--color-text)]"}`}
+				className={`text-sm leading-relaxed ${action.done ? "line-through text-text-muted" : "text-text"}`}
 			>
 				{action.text}
 			</span>
@@ -431,16 +429,16 @@ function RecordingTab({ meetingId }: { meetingId: string }) {
 				<div className="w-full max-w-md space-y-2">
 					{/* biome-ignore lint/a11y/useMediaCaption: local recording playback has no generated caption track yet */}
 					<audio ref={audioRef} controls src={src} className="w-full" />
-					<p className="text-xs text-[var(--color-text-muted)] text-center">
+					<p className="text-xs text-text-muted text-center">
 						Playback is loaded from the saved local `.webm` recording.
 					</p>
 				</div>
 			) : (
 				<div className="flex flex-col items-center gap-2 text-center">
-					<div className="w-10 h-10 rounded-xl bg-[var(--color-surface)] flex items-center justify-center">
+					<div className="w-10 h-10 rounded-xl bg-surface flex items-center justify-center">
 						<svg
 							aria-hidden="true"
-							className="w-5 h-5 text-[var(--color-text-muted)]"
+							className="w-5 h-5 text-text-muted"
 							fill="none"
 							viewBox="0 0 24 24"
 							stroke="currentColor"
@@ -453,10 +451,10 @@ function RecordingTab({ meetingId }: { meetingId: string }) {
 							/>
 						</svg>
 					</div>
-					<p className="text-sm text-[var(--color-text-muted)]">
+					<p className="text-sm text-text-muted">
 						{error ? "Couldn't load recording." : "No saved recording found yet."}
 					</p>
-					<p className="text-xs text-[var(--color-text-muted)]">
+					<p className="text-xs text-text-muted">
 						{error ? error : "Find the file at ~/Library/Minutae/recordings/"}
 					</p>
 				</div>

@@ -14,6 +14,8 @@ const DEFAULTS: AppSettings = {
 	geminiApiKey: null,
 	anthropicApiKey: null,
 	summaryOpenaiApiKey: null,
+	openRouterApiKey: null,
+	openRouterModel: "google/gemma-4-31b-it:free",
 	maxRecordingAgeDays: null,
 }
 

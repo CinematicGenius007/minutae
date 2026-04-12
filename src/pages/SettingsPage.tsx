@@ -309,6 +309,11 @@ export function SettingsPage() {
 							},
 							{ value: "claude", label: "Claude Haiku", description: "Anthropic's fastest model." },
 							{ value: "openai", label: "GPT-4o mini", description: "OpenAI's efficient model." },
+							{
+								value: "openrouter",
+								label: "OpenRouter",
+								description: "Use OpenRouter's OpenAI-compatible API and model routing.",
+							},
 						]}
 						onChange={(v) => save("summaryProvider", v as AppSettings["summaryProvider"])}
 					/>
@@ -342,6 +347,29 @@ export function SettingsPage() {
 							onChange={(v) => save("summaryOpenaiApiKey", v || null)}
 							isSaving={saving === "summaryOpenaiApiKey"}
 						/>
+					)}
+					{settings.summaryProvider === "openrouter" && (
+						<>
+							<ApiKeyField
+								label="OpenRouter API key"
+								value={settings.openRouterApiKey ?? ""}
+								placeholder="sk-or-…"
+								helpUrl="https://openrouter.ai/settings/keys"
+								helpLabel="Get a key →"
+								onChange={(v) => save("openRouterApiKey", v || null)}
+								isSaving={saving === "openRouterApiKey"}
+							/>
+							<TextField
+								label="OpenRouter model"
+								description="Model slug to route through OpenRouter."
+								value={settings.openRouterModel}
+								placeholder="google/gemma-4-31b-it:free"
+								helpUrl="https://openrouter.ai/models"
+								helpLabel="Browse models →"
+								onChange={(v) => save("openRouterModel", v || "google/gemma-4-31b-it:free")}
+								isSaving={saving === "openRouterModel"}
+							/>
+						</>
 					)}
 				</Section>
 
@@ -540,6 +568,72 @@ function ApiKeyField({
 					type="button"
 					disabled={isSaving || draft === value}
 					onClick={() => onChange(draft)}
+					className="px-3 py-2 text-xs font-medium bg-[var(--color-accent)] text-white rounded-[var(--radius-sm)] hover:bg-[var(--color-accent-hover)] disabled:opacity-40 transition-colors"
+				>
+					{isSaving ? "Saving…" : "Save"}
+				</button>
+			</div>
+		</div>
+	)
+}
+
+function TextField({
+	label,
+	description,
+	value,
+	placeholder,
+	helpUrl,
+	helpLabel,
+	onChange,
+	isSaving,
+}: {
+	label: string
+	description?: string
+	value: string
+	placeholder?: string
+	helpUrl?: string
+	helpLabel?: string
+	onChange: (v: string) => void
+	isSaving: boolean
+}) {
+	const [draft, setDraft] = useState(value)
+
+	useEffect(() => {
+		setDraft(value)
+	}, [value])
+
+	return (
+		<div className="space-y-1.5">
+			<div className="flex items-center justify-between gap-3">
+				<div>
+					<span className="text-sm text-[var(--color-text)]">{label}</span>
+					{description && (
+						<p className="text-xs text-[var(--color-text-muted)] mt-0.5">{description}</p>
+					)}
+				</div>
+				{helpUrl && (
+					<a
+						href={helpUrl}
+						target="_blank"
+						rel="noreferrer"
+						className="text-xs text-[var(--color-accent)] hover:underline"
+					>
+						{helpLabel ?? "Learn more →"}
+					</a>
+				)}
+			</div>
+			<div className="flex gap-2">
+				<input
+					type="text"
+					value={draft}
+					placeholder={placeholder}
+					onChange={(e) => setDraft(e.target.value)}
+					className="flex-1 bg-[var(--color-surface-raised)] border border-[var(--color-border)] rounded-[var(--radius-sm)] px-3 py-2 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-muted)] font-mono focus:outline-none focus:border-[var(--color-accent)]"
+				/>
+				<button
+					type="button"
+					disabled={isSaving || draft === value}
+					onClick={() => onChange(draft.trim())}
 					className="px-3 py-2 text-xs font-medium bg-[var(--color-accent)] text-white rounded-[var(--radius-sm)] hover:bg-[var(--color-accent-hover)] disabled:opacity-40 transition-colors"
 				>
 					{isSaving ? "Saving…" : "Save"}

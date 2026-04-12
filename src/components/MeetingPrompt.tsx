@@ -68,22 +68,20 @@ export function MeetingPrompt({ onStartRecording }: MeetingPromptProps) {
 
 	return (
 		<div
-			className="fixed top-4 right-4 z-50 w-72 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-xl"
+			className="fixed top-4 right-4 z-50 w-72 rounded-md border border-border bg-surface p-4 shadow-xl"
 			role="alertdialog"
 			aria-label="Meeting detected"
 		>
 			<div className="flex items-start gap-3">
 				{/* Pulsing mic indicator */}
-				<span className="mt-0.5 flex h-3 w-3 flex-shrink-0">
-					<span className="absolute inline-flex h-3 w-3 animate-ping rounded-full bg-[var(--color-accent)] opacity-75" />
-					<span className="relative inline-flex h-3 w-3 rounded-full bg-[var(--color-accent)]" />
+				<span className="mt-0.5 flex h-3 w-3 shrink-0">
+					<span className="absolute inline-flex h-3 w-3 animate-ping rounded-full bg-accent opacity-75" />
+					<span className="relative inline-flex h-3 w-3 rounded-full bg-accent" />
 				</span>
 
 				<div className="flex-1 min-w-0">
-					<p className="text-sm font-medium text-[var(--color-text)]">
-						Looks like you're in a meeting
-					</p>
-					<p className="mt-0.5 text-xs text-[var(--color-text-muted)]">
+					<p className="text-sm font-medium text-text">Looks like you're in a meeting</p>
+					<p className="mt-0.5 text-xs text-text-muted">
 						Start recording to get a summary and action items.
 					</p>
 
@@ -91,14 +89,14 @@ export function MeetingPrompt({ onStartRecording }: MeetingPromptProps) {
 						<button
 							type="button"
 							onClick={handleStart}
-							className="flex-1 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--color-accent-hover)] transition-colors"
+							className="flex-1 rounded-sm bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover transition-colors"
 						>
 							Start Recording
 						</button>
 						<button
 							type="button"
 							onClick={handleDismiss}
-							className="rounded-[var(--radius-sm)] px-3 py-1.5 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-raised)] transition-colors"
+							className="rounded-sm px-3 py-1.5 text-xs text-text-muted hover:text-text hover:bg-surface-raised transition-colors"
 						>
 							Dismiss
 						</button>
