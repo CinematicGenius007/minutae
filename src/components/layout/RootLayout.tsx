@@ -1,16 +1,19 @@
 import { Link, Outlet } from "@tanstack/react-router"
 import { useCallback, useEffect, useState } from "react"
+import { ChartIcon, MeetingsIcon, MicIcon, SearchIcon, SettingsIcon } from "@/components/icons"
 import { MeetingPrompt } from "@/components/MeetingPrompt"
 import { RecordingPill } from "@/components/RecordingPill"
 import { SearchModal } from "@/components/SearchModal"
 import { useMicMonitor } from "@/hooks/useMicMonitor"
 import { useRecordingSession } from "@/hooks/useRecordingSession"
+import { formatDuration } from "@/lib/utils"
 import { useRecordingStore } from "@/store/recording"
 
 const navItems = [
-	{ to: "/", label: "Meetings" },
-	{ to: "/usage", label: "Usage" },
-	{ to: "/settings", label: "Settings" },
+	{ to: "/", label: "Meetings", icon: MeetingsIcon },
+	{ to: "/dictate", label: "Dictate", icon: MicIcon },
+	{ to: "/usage", label: "Usage", icon: ChartIcon },
+	{ to: "/settings", label: "Settings", icon: SettingsIcon },
 ] as const
 
 export function RootLayout() {
@@ -22,23 +25,18 @@ export function RootLayout() {
 
 	const session = useRecordingSession()
 
-	// Global keyboard shortcuts
 	const handleKeyDown = useCallback(
 		(e: KeyboardEvent) => {
 			const meta = e.metaKey || e.ctrlKey
 
-			// Cmd+K → search
 			if (meta && !e.shiftKey && e.key === "k") {
 				e.preventDefault()
 				setSearchOpen((prev) => !prev)
 			}
 
-			// Cmd+Shift+R → new recording (only when not already recording)
-			if (meta && e.shiftKey && e.key === "r") {
+			if (meta && e.shiftKey && e.key.toLowerCase() === "r") {
 				e.preventDefault()
-				if (session.canStartManual) {
-					session.startManualSession()
-				}
+				if (session.canStartManual) session.startManualSession()
 			}
 		},
 		[session],
@@ -49,119 +47,89 @@ export function RootLayout() {
 		return () => document.removeEventListener("keydown", handleKeyDown)
 	}, [handleKeyDown])
 
-	const isRecording = status === "recording" || status === "paused" || status === "processing"
+	const isLive = status === "recording" || status === "paused"
+	const busy = isLive || status === "processing"
 
 	return (
-		<div className="flex h-screen w-screen overflow-hidden bg-bg">
-			{/* Sidebar */}
-			<aside className="w-60 shrink-0 border-r border-border flex flex-col">
-				{/* Title bar drag area + app name */}
-				{/* pl-20 reserves space for macOS traffic lights (~80px) */}
-				<div className="h-10" />
-				{/* <div
-					className="h-8 flex justify-end items-center pr-2 select-none"
-					style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
-				>
-					<span className="font-semibold text-text tracking-tight">Minutae</span>
-				</div> */}
+		<div className="flex h-screen w-screen overflow-hidden bg-bg text-text">
+			<aside className="flex w-[232px] shrink-0 flex-col border-r border-border bg-surface">
+				{/* Drag strip clears the macOS traffic lights */}
+				<div data-tauri-drag-region className="h-12 shrink-0" />
 
-				{/* New Recording button */}
-				<div className="px-2 pb-1">
+				<div className="px-3 pb-3">
 					<button
 						type="button"
 						onClick={() => session.startManualSession()}
 						disabled={!session.canStartManual}
-						title="New Recording (⌘⇧R)"
-						className="w-full flex items-center gap-2 px-3 py-2 rounded-sm text-sm font-medium bg-accent text-white hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+						title="Start a recording (⌘⇧R)"
+						className="flex w-full items-center gap-2.5 rounded-sm bg-accent px-3 py-2 text-[13px] font-medium text-on-accent transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
 					>
-						<svg
-							aria-hidden="true"
-							className="w-3.5 h-3.5 shrink-0"
-							viewBox="0 0 24 24"
-							fill="currentColor"
-						>
-							<circle cx="12" cy="12" r="6" />
-						</svg>
-						<span className="flex-1 text-left">{isRecording ? "Recording…" : "New Recording"}</span>
-						{!isRecording && (
-							<kbd className="text-[9px] opacity-70 border border-white/30 rounded px-1 py-0.5">
-								⌘⇧R
-							</kbd>
-						)}
+						<span className="size-2 rounded-full bg-on-accent" />
+						<span className="flex-1 text-left">{busy ? "Recording…" : "Record"}</span>
+						{!busy && <kbd className="font-sans text-[11px] opacity-70">⌘⇧R</kbd>}
 					</button>
-				</div>
 
-				{/* Search button */}
-				<div className="px-2 pb-1">
 					<button
 						type="button"
 						onClick={() => setSearchOpen(true)}
-						className="w-full flex items-center gap-2 px-3 py-2 rounded-sm text-sm text-text-muted hover:bg-surface hover:text-text transition-colors"
+						className="mt-2 flex w-full items-center gap-2.5 rounded-sm border border-border bg-bg px-3 py-2 text-[13px] text-text-muted transition-colors hover:border-text-muted"
 					>
-						<svg
-							aria-hidden="true"
-							className="w-3.5 h-3.5 shrink-0"
-							fill="none"
-							viewBox="0 0 24 24"
-							stroke="currentColor"
-							strokeWidth={2}
-						>
-							<circle cx="11" cy="11" r="8" />
-							<path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35" />
-						</svg>
+						<SearchIcon size={14} />
 						<span className="flex-1 text-left">Search</span>
-						<kbd className="text-[10px] border border-border rounded px-1.5 py-0.5">⌘K</kbd>
+						<kbd className="font-sans text-[11px]">⌘K</kbd>
 					</button>
 				</div>
 
-				{/* Nav */}
-				<nav className="flex-1 px-2 py-1 space-y-0.5">
+				<nav className="flex-1 space-y-0.5 px-3">
 					{navItems.map((item) => (
 						<Link
 							key={item.to}
 							to={item.to}
-							className="block px-3 py-2 rounded-sm text-sm text-text-muted hover:bg-surface hover:text-text transition-colors"
-							activeProps={{
-								className: "block px-3 py-2 rounded-sm text-sm bg-surface text-text",
-							}}
 							activeOptions={{ exact: item.to === "/" }}
+							className="flex items-center gap-2.5 rounded-sm px-3 py-2 text-[13px] font-medium text-text-muted transition-colors hover:bg-surface-raised hover:text-text"
+							activeProps={{
+								className:
+									"flex items-center gap-2.5 rounded-sm px-3 py-2 text-[13px] font-medium bg-bg text-text shadow-[0_0_0_1px_var(--color-border)]",
+							}}
 						>
+							<item.icon size={16} />
 							{item.label}
 						</Link>
 					))}
 				</nav>
 
-				{/* Mic / recording status */}
-				<div className="px-4 py-4 border-t border-border">
-					{status === "recording" || status === "paused" ? (
-						<div className="flex items-center gap-2 text-xs text-accent">
-							<span className="relative flex h-2 w-2">
-								{status === "recording" && (
-									<span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent opacity-75" />
-								)}
-								<span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
-							</span>
+				<div className="border-t border-border px-4 py-3.5 text-xs">
+					{isLive ? (
+						<div className="flex items-center gap-2 font-medium text-text">
+							<span
+								className={`size-2 rounded-full ${status === "recording" ? "live-dot" : "bg-text-muted"}`}
+							/>
 							{status === "recording" ? "Recording" : "Paused"}
+							<span className="ml-auto tabular-nums text-text-muted">
+								{formatDuration(session.durationSeconds)}
+							</span>
+						</div>
+					) : status === "processing" ? (
+						<div className="flex items-center gap-2 text-text-muted">
+							<span className="size-2 animate-pulse rounded-full bg-accent" />
+							Transcribing &amp; summarizing
 						</div>
 					) : (
-						<div className="flex items-center gap-2 text-xs text-text-muted">
-							<span
-								className={`w-2 h-2 rounded-full transition-colors ${
-									micActive ? "bg-success" : "bg-border"
-								}`}
-							/>
-							{micActive ? "Mic active" : "Idle"}
+						<div className="flex items-center gap-2 text-text-muted">
+							<span className={`size-2 rounded-full ${micActive ? "bg-success" : "bg-border"}`} />
+							{micActive ? "Mic in use by another app" : "Listening for meetings"}
 						</div>
 					)}
 				</div>
 			</aside>
 
-			{/* Main content */}
-			<main className="flex-1 overflow-y-auto">
-				<Outlet />
+			<main className="relative flex-1 overflow-y-auto">
+				<div data-tauri-drag-region className="sticky top-0 z-10 h-6 w-full" />
+				<div className="-mt-6">
+					<Outlet />
+				</div>
 			</main>
 
-			{/* Floating overlays */}
 			<MeetingPrompt onStartRecording={session.startRecording} />
 			<RecordingPill
 				durationSeconds={session.durationSeconds}

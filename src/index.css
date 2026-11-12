@@ -1,27 +1,78 @@
 @import "tailwindcss";
 
+/*
+ * Minutae design tokens — "ink & signal".
+ * Neutral ink-on-paper surfaces, ONE cobalt accent for action, and a live red
+ * that appears only while audio is being captured. Light by default, follows the
+ * OS, and can be forced from Settings → Appearance (html[data-theme]).
+ */
 @theme {
-  --color-bg: #0e0e10;
-  --color-surface: #1a1a1e;
-  --color-surface-raised: #242428;
-  --color-border: #2e2e34;
-  --color-text: #e8e8ed;
-  --color-text-muted: #8e8e99;
-  --color-accent: #7c6df0;
-  --color-accent-hover: #6b5de0;
-  --color-destructive: #f04f4f;
-  --color-success: #3ecf8e;
+  --color-bg: #ffffff;
+  --color-surface: #f6f6f8;
+  --color-surface-raised: #eceef2;
+  --color-border: #e3e5ea;
+  --color-text: #0b0c10;
+  --color-text-muted: #596070;
+  --color-accent: #2a4bff;
+  --color-accent-hover: #1d38d6;
+  --color-accent-soft: #e9edff;
+  --color-on-accent: #ffffff;
+  --color-destructive: #d92d20;
+  --color-success: #0f8a5f;
+  --color-warning: #a35f00;
+  --color-live: #ff3b30;
 
-  --font-sans: "Geist", system-ui, sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, monospace;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 16px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
 }
 
 :root {
+  color-scheme: light;
+  --shadow-pop: 0 1px 2px rgb(10 12 20 / 0.06), 0 12px 32px -8px rgb(10 12 20 / 0.18);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --color-bg: #0a0a0c;
+    --color-surface: #111114;
+    --color-surface-raised: #1a1a1f;
+    --color-border: #25252b;
+    --color-text: #f3f3f6;
+    --color-text-muted: #9b9ba8;
+    --color-accent: #7b93ff;
+    --color-accent-hover: #93a7ff;
+    --color-accent-soft: #171c3a;
+    --color-on-accent: #0a0a0c;
+    --color-destructive: #ff6b5e;
+    --color-success: #3dd68c;
+    --color-warning: #f0b04a;
+    --color-live: #ff5247;
+    --shadow-pop: 0 1px 2px rgb(0 0 0 / 0.5), 0 16px 40px -8px rgb(0 0 0 / 0.7);
+  }
+}
+
+:root[data-theme="dark"] {
   color-scheme: dark;
+  --color-bg: #0a0a0c;
+  --color-surface: #111114;
+  --color-surface-raised: #1a1a1f;
+  --color-border: #25252b;
+  --color-text: #f3f3f6;
+  --color-text-muted: #9b9ba8;
+  --color-accent: #7b93ff;
+  --color-accent-hover: #93a7ff;
+  --color-accent-soft: #171c3a;
+  --color-on-accent: #0a0a0c;
+  --color-destructive: #ff6b5e;
+  --color-success: #3dd68c;
+  --color-warning: #f0b04a;
+  --color-live: #ff5247;
+  --shadow-pop: 0 1px 2px rgb(0 0 0 / 0.5), 0 16px 40px -8px rgb(0 0 0 / 0.7);
 }
 
 body {
@@ -30,28 +81,111 @@ body {
   font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.5;
+  letter-spacing: -0.006em;
   -webkit-font-smoothing: antialiased;
   margin: 0;
   padding: 0;
   overflow: hidden; /* Tauri app — no page scrolling */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Content people want to copy stays selectable. */
+.selectable,
+.selectable * {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 * {
   box-sizing: border-box;
 }
 
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--color-accent-soft);
+  color: var(--color-text);
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: var(--color-border);
-  border-radius: 3px;
+  border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-muted);
+}
+
+/* Rendered markdown (summaries) — no typography plugin needed. */
+.md h1,
+.md h2 {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin: 28px 0 10px;
+}
+.md h1:first-child,
+.md h2:first-child {
+  margin-top: 0;
+}
+.md p,
+.md li {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--color-text);
+}
+.md ul {
+  margin: 0;
+  padding-left: 18px;
+  list-style: disc;
+}
+.md li {
+  margin: 6px 0;
+}
+.md li::marker {
+  color: var(--color-text-muted);
+}
+.md a {
+  color: var(--color-accent);
+}
+.md input[type="checkbox"] {
+  accent-color: var(--color-accent);
+  margin-right: 8px;
+}
+.md ul:has(input[type="checkbox"]),
+.md li:has(> input[type="checkbox"]) {
+  list-style: none;
+  padding-left: 0;
+}
+
+@keyframes live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-live) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+.live-dot {
+  background: var(--color-live);
+  border-radius: 9999px;
+  animation: live-pulse 1.6s ease-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-dot {
+    animation: none;
+  }
 }

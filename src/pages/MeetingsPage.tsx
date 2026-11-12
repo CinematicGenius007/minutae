@@ -1,32 +1,22 @@
 import { Link } from "@tanstack/react-router"
-import { useCallback, useEffect, useState } from "react"
+import { invoke } from "@tauri-apps/api/core"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { CheckIcon, SearchIcon } from "@/components/icons"
 import { listMeetings } from "@/lib/db/meetings"
 import type { Meeting } from "@/lib/db/schema"
-import { formatDate, formatDurationLong } from "@/lib/utils"
+import { getAllSettings } from "@/lib/db/settings-repo"
+import type { AppSettings } from "@/lib/settings"
+import { formatDurationLong } from "@/lib/utils"
 import { useRecordingStore } from "@/store/recording"
 import { useSummaryStore } from "@/store/summary"
 import { useTranscriptionStore } from "@/store/transcription"
 
-const STATUS_BADGE: Record<Meeting["status"], { label: string; className: string }> = {
-	recording: {
-		label: "Recording",
-		className: "bg-[var(--color-accent)]/15 text-[var(--color-accent)]",
-	},
-	paused: {
-		label: "Paused",
-		className: "bg-[var(--color-text-muted)]/15 text-[var(--color-text-muted)]",
-	},
-	processing: { label: "Processing", className: "bg-amber-500/15 text-amber-400" },
-	done: { label: "Done", className: "bg-[var(--color-success)]/15 text-[var(--color-success)]" },
-	failed: {
-		label: "Failed",
-		className: "bg-[var(--color-destructive)]/15 text-[var(--color-destructive)]",
-	},
-}
+type Chip = { label: string; tone: "live" | "work" | "bad" | "muted" } | null
 
 export function MeetingsPage() {
 	const [meetings, setMeetings] = useState<Meeting[]>([])
 	const [loading, setLoading] = useState(true)
+	const [filter, setFilter] = useState("")
 	const recordingStatus = useRecordingStore((s) => s.status)
 	const transcriptionJobs = useTranscriptionStore((s) => s.jobs)
 	const summaryJobs = useSummaryStore((s) => s.jobs)
@@ -35,54 +25,111 @@ export function MeetingsPage() {
 		.join("|")}:${summaryJobs.map((job) => `${job.meetingId}:${job.status}`).join("|")}`
 
 	const load = useCallback(async () => {
-		const rows = await listMeetings()
-		setMeetings(rows)
+		setMeetings(await listMeetings())
 		setLoading(false)
 	}, [])
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: jobRefreshKey is the refresh trigger
 	useEffect(() => {
 		load()
-	}, [load])
+	}, [load, jobRefreshKey])
 
-	// Refresh list when a recording finishes
-	useEffect(() => {
-		void jobRefreshKey
-		load()
-	}, [jobRefreshKey, load])
+	const visible = useMemo(() => {
+		const q = filter.trim().toLowerCase()
+		return q ? meetings.filter((m) => m.title.toLowerCase().includes(q)) : meetings
+	}, [meetings, filter])
+
+	const groups = useMemo(() => groupByDay(visible), [visible])
 
 	return (
-		<div className="flex flex-col h-full">
-			{/* Header */}
-			<div className="px-6 pt-5 pb-4 border-b border-border flex items-center justify-between">
-				<h1 className="text-base font-semibold text-text">Meetings</h1>
-				<span className="text-xs text-text-muted">
-					{meetings.length > 0
-						? `${meetings.length} meeting${meetings.length === 1 ? "" : "s"}`
-						: ""}
-				</span>
-			</div>
-
-			{/* Content */}
-			{loading ? (
-				<div className="flex-1 flex items-center justify-center">
-					<span className="text-sm text-text-muted">Loading…</span>
+		<div className="mx-auto flex min-h-full max-w-3xl flex-col px-8 pt-14 pb-24">
+			<header className="flex items-end justify-between gap-4">
+				<div>
+					<h1 className="text-[28px] font-semibold tracking-tight text-text">Meetings</h1>
+					<p className="mt-1 text-[13px] text-text-muted">
+						{loading
+							? " "
+							: meetings.length === 0
+								? "Nothing recorded yet."
+								: `${meetings.length} recorded · everything stays on this Mac`}
+					</p>
 				</div>
-			) : meetings.length === 0 ? (
-				<EmptyState />
-			) : (
-				<ul className="flex-1 overflow-y-auto divide-y divide-border">
-					{meetings.map((m) => (
-						<MeetingRow
-							key={m.id}
-							meeting={m}
-							transcriptionJobs={transcriptionJobs}
-							summaryJobs={summaryJobs}
+				{meetings.length > 4 && (
+					<label className="flex w-56 items-center gap-2 rounded-sm border border-border px-3 py-1.5 text-[13px] text-text-muted focus-within:border-accent">
+						<SearchIcon size={14} />
+						<input
+							value={filter}
+							onChange={(e) => setFilter(e.target.value)}
+							placeholder="Filter by title"
+							className="min-w-0 flex-1 bg-transparent text-text outline-none placeholder:text-text-muted"
 						/>
+					</label>
+				)}
+			</header>
+
+			<SetupChecklist />
+
+			{loading ? null : meetings.length === 0 ? (
+				<EmptyState />
+			) : visible.length === 0 ? (
+				<p className="mt-16 text-center text-[13px] text-text-muted">
+					No meetings match “{filter}”.
+				</p>
+			) : (
+				<div className="mt-8 space-y-8">
+					{groups.map((group) => (
+						<section key={group.label}>
+							<h2 className="mb-1 text-[11px] font-semibold tracking-[0.08em] text-text-muted uppercase">
+								{group.label}
+							</h2>
+							<ul className="divide-y divide-border border-y border-border">
+								{group.items.map((m) => (
+									<MeetingRow
+										key={m.id}
+										meeting={m}
+										transcriptionJobs={transcriptionJobs}
+										summaryJobs={summaryJobs}
+									/>
+								))}
+							</ul>
+						</section>
 					))}
-				</ul>
+				</div>
 			)}
 		</div>
 	)
+}
+
+function groupByDay(meetings: Meeting[]) {
+	const today = startOfDay(new Date()).getTime()
+	const day = 86_400_000
+	const order: string[] = []
+	const map = new Map<string, Meeting[]>()
+
+	for (const m of meetings) {
+		const t = startOfDay(new Date(m.startedAt)).getTime()
+		const label =
+			t >= today
+				? "Today"
+				: t >= today - day
+					? "Yesterday"
+					: new Date(m.startedAt).toLocaleDateString("en-US", {
+							weekday: "long",
+							month: "short",
+							day: "numeric",
+						})
+		if (!map.has(label)) {
+			map.set(label, [])
+			order.push(label)
+		}
+		map.get(label)?.push(m)
+	}
+
+	return order.map((label) => ({ label, items: map.get(label) ?? [] }))
+}
+
+function startOfDay(d: Date) {
+	return new Date(d.getFullYear(), d.getMonth(), d.getDate())
 }
 
 function MeetingRow({
@@ -94,100 +141,171 @@ function MeetingRow({
 	transcriptionJobs: { meetingId: string; status: string }[]
 	summaryJobs: { meetingId: string; status: string }[]
 }) {
-	const transcriptionJob = transcriptionJobs.find(
-		(job) => job.meetingId === meeting.id && job.status !== "done",
+	const transcribing = transcriptionJobs.some(
+		(j) => j.meetingId === meeting.id && j.status === "transcribing",
 	)
-	const summaryJob = summaryJobs.find(
-		(job) => job.meetingId === meeting.id && job.status !== "done",
+	const summarizing = summaryJobs.some(
+		(j) => j.meetingId === meeting.id && j.status === "summarizing",
 	)
 
-	const badge =
-		meeting.status === "processing" && transcriptionJob?.status === "transcribing"
-			? { label: "Transcribing", className: "bg-amber-500/15 text-amber-400" }
-			: meeting.status === "processing" && summaryJob?.status === "summarizing"
-				? { label: "Summarizing", className: "bg-sky-500/15 text-sky-400" }
-				: STATUS_BADGE[meeting.status]
+	const chip: Chip =
+		meeting.status === "recording"
+			? { label: "Recording", tone: "live" }
+			: meeting.status === "paused"
+				? { label: "Paused", tone: "muted" }
+				: meeting.status === "failed"
+					? { label: "Needs attention", tone: "bad" }
+					: meeting.status === "processing"
+						? {
+								label: transcribing ? "Transcribing" : summarizing ? "Summarizing" : "Queued",
+								tone: "work",
+							}
+						: null
+
+	const time = new Date(meeting.startedAt).toLocaleTimeString("en-US", {
+		hour: "numeric",
+		minute: "2-digit",
+	})
 
 	return (
 		<li>
 			<Link
 				to="/meetings/$id"
 				params={{ id: meeting.id }}
-				className="flex items-center gap-4 px-6 py-3.5 hover:bg-[var(--color-surface)] transition-colors group"
+				className="group -mx-3 flex items-center gap-4 rounded-sm px-3 py-3.5 transition-colors hover:bg-surface"
 			>
-				{/* Colour stripe */}
-				<span
-					className={`w-1 h-8 rounded-full flex-shrink-0 ${
-						meeting.status === "recording"
-							? "bg-[var(--color-accent)]"
-							: meeting.status === "done"
-								? "bg-[var(--color-success)]"
-								: meeting.status === "failed"
-									? "bg-[var(--color-destructive)]"
-									: "bg-[var(--color-border)]"
-					}`}
-				/>
-
-				{/* Title + date */}
-				<div className="flex-1 min-w-0">
-					<p className="text-sm font-medium text-[var(--color-text)] truncate">{meeting.title}</p>
-					<p className="text-xs text-[var(--color-text-muted)] mt-0.5">
-						{formatDate(meeting.startedAt)}
-						{meeting.durationSeconds != null && (
-							<> · {formatDurationLong(meeting.durationSeconds)}</>
-						)}
-					</p>
-				</div>
-
-				{/* Status badge */}
-				<span
-					className={`text-[10px] font-medium px-2 py-0.5 rounded-full flex-shrink-0 ${badge.className}`}
-				>
-					{badge.label}
+				<span className="w-[68px] shrink-0 font-mono text-xs text-text-muted tabular-nums">
+					{time}
 				</span>
-
-				{/* Chevron */}
-				<svg
-					aria-hidden="true"
-					className="w-3.5 h-3.5 text-border group-hover:text-text-muted transition-colors shrink-0"
-					fill="none"
-					viewBox="0 0 24 24"
-					stroke="currentColor"
-					strokeWidth={2}
-				>
-					<path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-				</svg>
+				<span className="min-w-0 flex-1 truncate text-[15px] font-medium text-text">
+					{meeting.title}
+				</span>
+				{chip && <StatusChip chip={chip} />}
+				<span className="w-14 shrink-0 text-right font-mono text-xs text-text-muted tabular-nums">
+					{meeting.durationSeconds != null ? formatDurationLong(meeting.durationSeconds) : ""}
+				</span>
 			</Link>
 		</li>
 	)
 }
 
+function StatusChip({ chip }: { chip: NonNullable<Chip> }) {
+	const tone = {
+		live: "text-live",
+		work: "text-accent",
+		bad: "text-destructive",
+		muted: "text-text-muted",
+	}[chip.tone]
+
+	return (
+		<span className={`flex shrink-0 items-center gap-1.5 text-xs font-medium ${tone}`}>
+			<span
+				className={`size-1.5 rounded-full bg-current ${chip.tone === "live" ? "live-dot" : chip.tone === "work" ? "animate-pulse" : ""}`}
+			/>
+			{chip.label}
+		</span>
+	)
+}
+
+// ─── First-run setup ─────────────────────────────────────────────────────────
+
+interface LocalStatus {
+	binary_exists: boolean
+	model_exists: boolean
+}
+
+function hasSummaryKey(s: AppSettings) {
+	switch (s.summaryProvider) {
+		case "gemini":
+			return Boolean(s.geminiApiKey)
+		case "claude":
+			return Boolean(s.anthropicApiKey)
+		case "openai":
+			return Boolean(s.summaryOpenaiApiKey)
+		case "openrouter":
+			return Boolean(s.openRouterApiKey)
+	}
+}
+
+function SetupChecklist() {
+	const [steps, setSteps] = useState<{ label: string; hint: string; done: boolean }[] | null>(null)
+
+	useEffect(() => {
+		let cancelled = false
+		async function check() {
+			const settings = await getAllSettings()
+			let transcriptionReady =
+				settings.transcriptionProvider === "whisper-api" && Boolean(settings.openaiApiKey)
+			if (settings.transcriptionProvider === "local") {
+				const status = await invoke<LocalStatus>("get_local_transcription_status", {
+					model: settings.whisperModel,
+				}).catch(() => null)
+				transcriptionReady = Boolean(status?.binary_exists && status?.model_exists)
+			}
+			if (cancelled) return
+			setSteps([
+				{
+					label: "Transcription engine",
+					hint: "Download a Whisper model so audio never leaves your Mac.",
+					done: transcriptionReady,
+				},
+				{
+					label: "Summary provider",
+					hint: "Add one API key to get notes and action items.",
+					done: hasSummaryKey(settings),
+				},
+			])
+		}
+		check().catch(() => {})
+		return () => {
+			cancelled = true
+		}
+	}, [])
+
+	if (!steps || steps.every((s) => s.done)) return null
+
+	return (
+		<section className="mt-8 rounded-md border border-border bg-surface p-5">
+			<div className="flex items-baseline justify-between">
+				<h2 className="text-[15px] font-semibold text-text">Finish setup</h2>
+				<Link to="/settings" className="text-[13px] font-medium text-accent hover:underline">
+					Open settings
+				</Link>
+			</div>
+			<ul className="mt-3 space-y-2.5">
+				{steps.map((step) => (
+					<li key={step.label} className="flex items-start gap-3">
+						<span
+							className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border ${step.done ? "border-success bg-success text-on-accent" : "border-border bg-bg"}`}
+						>
+							{step.done && <CheckIcon size={12} strokeWidth={3} />}
+						</span>
+						<div>
+							<p
+								className={`text-[13px] font-medium ${step.done ? "text-text-muted line-through" : "text-text"}`}
+							>
+								{step.label}
+							</p>
+							{!step.done && <p className="text-[13px] text-text-muted">{step.hint}</p>}
+						</div>
+					</li>
+				))}
+			</ul>
+		</section>
+	)
+}
+
 function EmptyState() {
 	return (
-		<div className="flex-1 flex flex-col items-center justify-center gap-3 px-8 text-center">
-			<div className="w-12 h-12 rounded-xl bg-surface flex items-center justify-center">
-				<svg
-					aria-hidden="true"
-					className="w-6 h-6 text-text-muted"
-					fill="none"
-					viewBox="0 0 24 24"
-					stroke="currentColor"
-					strokeWidth={1.5}
-				>
-					<path
-						strokeLinecap="round"
-						strokeLinejoin="round"
-						d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"
-					/>
-				</svg>
-			</div>
-			<div>
-				<p className="text-sm font-medium text-text">No meetings yet</p>
-				<p className="text-xs text-text-muted mt-1 max-w-xs">
-					Minutae will detect when your mic is active in Zoom, Meet, or Teams and ask if you'd like
-					to record.
-				</p>
-			</div>
+		<div className="mt-20 text-center">
+			<p className="text-[22px] font-semibold tracking-tight text-text">
+				Open a call. We’ll notice.
+			</p>
+			<p className="mx-auto mt-2 max-w-sm text-[14px] leading-relaxed text-text-muted">
+				When your mic goes live in Zoom, Meet or Teams, Minutae offers to record. Or press{" "}
+				<kbd className="rounded border border-border px-1.5 py-0.5 font-sans text-xs">⌘⇧R</kbd> to
+				start any time.
+			</p>
 		</div>
 	)
 }
