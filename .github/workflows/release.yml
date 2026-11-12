@@ -40,6 +40,7 @@ jobs:
         with:
           node-version: "22"
           cache: "pnpm"
+          cache-dependency-path: legacy/pnpm-lock.yaml
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -49,9 +50,10 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./src-tauri -> target"
+          workspaces: "./legacy/src-tauri -> target"
 
       - name: Install frontend dependencies
+        working-directory: legacy
         run: pnpm install
 
       - name: Build Tauri app
@@ -76,6 +78,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
+          projectPath: legacy
           tagName: ${{ github.ref_name }}
           releaseName: "Minutae ${{ github.ref_name }}"
           releaseBody: |
@@ -115,7 +118,7 @@ jobs:
             **Prefer zero friction?** Build from source — locally-built apps are never quarantined:
             ```bash
             git clone https://github.com/${{ github.repository }}
-            cd minutae && pnpm install && pnpm tauri build
+            cd minutae/legacy && pnpm install && pnpm tauri build
             ```
 
             ---

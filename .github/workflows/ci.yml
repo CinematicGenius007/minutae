@@ -10,7 +10,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
+  legacy:
+    defaults:
+      run:
+        working-directory: legacy
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -26,6 +29,7 @@ jobs:
         with:
           node-version: "22"
           cache: pnpm
+          cache-dependency-path: legacy/pnpm-lock.yaml
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -35,7 +39,7 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./src-tauri -> target"
+          workspaces: "./legacy/src-tauri -> target"
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -46,10 +50,24 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Build frontend
+        run: pnpm build
+
       - name: Cargo check
-        working-directory: src-tauri
+        working-directory: legacy/src-tauri
         run: cargo check
 
       - name: Cargo clippy
-        working-directory: src-tauri
+        working-directory: legacy/src-tauri
         run: cargo clippy -- -D warnings
+
+  native:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+      - name: Build and test app
+        run: xcodebuild build test -project Minutae.xcodeproj -scheme Minutae CODE_SIGNING_ALLOWED=NO
+      - name: Test packages
+        run: for package in Packages/*; do swift test --package-path "$package"; done
