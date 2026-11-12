@@ -1,21 +1,28 @@
 # LLM provider research (LLM-01)
 
-Verified on this machine on 2026-11-12. Commands below were run against the real binaries, not shell functions. No CLI config directory was read. No permission-skipping flag was passed. Prompts were the single sentence `Reply with the single word pong.` via stdin or a temp file, in an empty `0700` temp directory, except Cursor, whose help only accepts the prompt as an argument.
+## Decisions accepted 2026-11-12
 
-A second Codex run with `--ignore-user-config` and a second Cursor print attempt were not completed. Those two commands are marked unverified below.
+These override `docs/ARCHITECTURE.md` and `docs/TASKS.md` where they conflict.
+
+1. Do not build `LLM-03` (Claude CLI). Claude is reachable only through the optional Advanced `api` transport, with the key stored in the Keychain.
+2. Cursor is dropped from v1. Do not build the Cursor half of `LLM-05`. Gemini is skipped too.
+3. v1 subscription transports are `codex-cli` and `grok-cli`. Ollama is the offline fallback. API keys remain an optional Advanced transport.
+4. Unchanged: hold `⌥Space` dictation hotkey, dictation audio kept by default, macOS 14.4 or newer, and every dictation is logged in the app.
+
+`TransportId` is `'codex-cli' | 'grok-cli' | 'ollama' | 'api'`.
+
+Verified on this machine on 2026-11-12. Commands below were run against the real binaries, not shell functions. No CLI config directory was read. No permission-skipping flag was passed. Prompts were the single sentence `Reply with the single word pong.` via stdin or a temp file, in an empty `0700` temp directory, except Cursor, whose help only accepts the prompt as an argument.
 
 ## Verdicts
 
 | Transport | Installed | Headless result | Terms | Ship? |
 |---|---|---|---|---|
-| `claude-cli` | yes, `2.1.322` | works | **no-go** | Do not build `LLM-03` |
-| `codex-cli` | yes, `0.167.0` | works, but the verified run loaded user MCP config | **go**, only with the flags in the Codex section | May build `LLM-04` after `LLM-02` |
-| `grok-cli` | yes, `1.0.77` | works | **go** | May build the Grok half of `LLM-05` |
-| `cursor-cli` | binary exists, `2026.11.05-86047df` | print mode says not authenticated | **unavailable** | Do not build the Cursor half of `LLM-05` |
-| `gemini-cli` | yes, `0.37.1` | auth rejected | **unavailable** | Do not build the Gemini half of `LLM-05` |
-| `ollama` | yes, `0.40.13`, server up | local HTTP works | **go** | May build `LLM-06`. The only installed model is not offline |
-
-Owner review is required before any transport marked no-go or unavailable is implemented. This note is that review packet.
+| `claude-cli` | yes, `2.1.322` | works | **no-go** | Do not build `LLM-03`. Advanced `api` only |
+| `codex-cli` | yes, `0.167.0` | ignore-config run did not load MCP; the turn failed on the default model | **go**, only with the flags in the Codex section | Build `LLM-04` after `LLM-02`. Must pass `--model` |
+| `grok-cli` | yes, `1.0.77` | works | **go** | Build the Grok half of `LLM-05` |
+| `cursor-cli` | binary exists, `2026.11.05-86047df` | print mode says not authenticated, including the retry | **unavailable** | Dropped from v1 |
+| `gemini-cli` | yes, `0.37.1` | auth rejected | **unavailable** | Skipped |
+| `ollama` | yes, `0.40.13`, server up | local HTTP works | **go** | Build `LLM-06`. The only installed model is not offline |
 
 ## How the binaries were resolved
 
@@ -82,7 +89,7 @@ Binary: `/opt/homebrew/bin/codex` · version `codex-cli 0.167.0`.
 
 ### Flags to use
 
-Verified by `--help`. The successful probe below did **not** include the two ignore flags. Those are required anyway, because of what that probe did.
+The first successful probe did not include the two ignore flags, and it loaded user MCP config. The follow-up below used the full flag set.
 
 ```text
 codex exec \
@@ -100,13 +107,22 @@ codex exec \
 
 `-` reads the prompt from stdin. `--model` overrides the model. Do not pass `--dangerously-bypass-approvals-and-sandbox` or `--dangerously-bypass-hook-trust`. `--ignore-user-config` still uses `CODEX_HOME` for auth, which is the CLI's own login, not something Minutae reads.
 
-### Sample success
+### Sample success, without the ignore flags
 
-Exit 0. Stdout JSONL included `thread.started`, `turn.started`, `item.completed` with `item.type` `agent_message` and `text` `pong`, then `turn.completed` with token usage. A thread id was still issued under `--ephemeral`.
+Exit 0. Stdout JSONL included `thread.started`, `turn.started`, `item.completed` with `item.type` `agent_message` and `text` `pong`, then `turn.completed` with token usage. A thread id was still issued under `--ephemeral`. Stderr logged failed connections to MCP servers from the user's Codex config, including a localhost server and a remote server that asked for OAuth. The hosts and scopes are intentionally not copied here.
 
-### Surprise
+### Follow-up with `--ignore-user-config` and `--ignore-rules`
 
-Without `--ignore-user-config`, stderr logged failed connections to MCP servers from the user's Codex config, including a localhost server and a remote server that asked for OAuth. The response was still `pong`. The hosts and scopes are intentionally not copied here. The production command must pass `--ignore-user-config` and `--ignore-rules`. That exact command was not re-run.
+Same prompt, empty temp directory, plus `-o <last-message-file>`. Exit 1. Stderr had no MCP client errors. The only stderr lines were `codex_models_manager` failing to refresh the model list because the request timed out. Stdout was:
+
+```text
+{"type":"thread.started","thread_id":"…"}
+{"type":"turn.started"}
+{"type":"error","message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}
+{"type":"turn.failed","error":{"message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}}
+```
+
+The last-message file was empty. User MCP config was not loaded. Dropping the user config also dropped the user's model choice, and the CLI default (`gpt-6.1-sol`) is rejected for a ChatGPT login. `LLM-04` must pass `--model` with a model the ChatGPT account can use. Which model that is was not looked up in Codex config.
 
 ### Sample error
 
@@ -184,7 +200,13 @@ cursor-agent -p --mode ask --output-format json --sandbox enabled \
 Error: Authentication required. Please run 'agent login' first, or set CURSOR_API_KEY environment variable.
 ```
 
-Status and print mode disagree. A retry without `--sandbox` was not run. Until a headless call returns text, this transport is unavailable. The same X Subscription terms as Grok apply if it later works. The help text telling the user to run `agent login` is misleading on this machine, because `agent` is Grok.
+Status and print mode disagree. A retry without `--sandbox`, with `--trust` and `--output-format text`, exited 1 with the same message:
+
+```text
+Error: Authentication required. Please run 'agent login' first, or set CURSOR_API_KEY environment variable.
+```
+
+That is the final verdict for v1: unavailable. Cursor is dropped. The help text telling the user to run `agent login` is misleading on this machine, because `agent` is Grok.
 
 ### Sample error
 
@@ -211,7 +233,7 @@ reasonCode: UNSUPPORTED_CLIENT
 
 Before that, the process printed a long list of skill-file paths under `~/.agents/skills` and `~/.gemini/skills`. A Minutae transport must not run Gemini until auth works, and it must not log that preamble.
 
-Gemini stays optional in the architecture. It is unavailable here, so `LLM-05` should skip it.
+Gemini is skipped for v1. Do not build a Gemini transport.
 
 ### Sample error
 
@@ -239,7 +261,7 @@ The completion API, for the later task, is `POST /api/chat` with `"stream": fals
 - Logged-out stderr for Claude, Codex, and Grok. The accounts were left signed in.
 - A rate-limit body for every CLI.
 - That `--no-session-persistence` (Claude), `--ephemeral` (Codex), or a fresh Grok call actually avoid writing a session file.
-- Codex with `--ignore-user-config --ignore-rules`. The flags are in `--help`. The only live success was without them, and that run touched user MCP servers.
-- A second Cursor print without `--sandbox`.
+- A Codex completion that both ignores user config and returns text. The ignore-config run proved MCP was not loaded, then failed because the default model is `gpt-6.1-sol`.
+- Which `--model` value a ChatGPT login accepts. Config was not read to find the user's current model.
 - An Ollama completion, local or cloud.
 - That `ps` hides the prompt. Claude, Codex, Grok, and Gemini were given the prompt on stdin or in a file. Cursor's help has no stdin prompt, so that probe used argv.
