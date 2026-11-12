@@ -18,7 +18,7 @@ Verified on this machine on 2026-11-12. Commands below were run against the real
 | Transport | Installed | Headless result | Terms | Ship? |
 |---|---|---|---|---|
 | `claude-cli` | yes, `2.1.322` | works | **no-go** | Do not build `LLM-03`. Advanced `api` only |
-| `codex-cli` | yes, `0.167.0` | ignore-config run did not load MCP; the turn failed on the default model | **go**, only with the flags in the Codex section | Build `LLM-04` after `LLM-02`. Must pass `--model` |
+| `codex-cli` | yes, `0.167.0` | ignore-config run did not load MCP; the turn failed on the default model | **go, pending a pinned model** | Build `LLM-04` after `LLM-02`. Pass `codexModel` via `--model` |
 | `grok-cli` | yes, `1.0.77` | works | **go** | Build the Grok half of `LLM-05` |
 | `cursor-cli` | binary exists, `2026.11.05-86047df` | print mode says not authenticated, including the retry | **unavailable** | Dropped from v1 |
 | `gemini-cli` | yes, `0.37.1` | auth rejected | **unavailable** | Skipped |
@@ -79,7 +79,7 @@ error: unknown option '--not-a-real-flag'
 
 Exit 1. A logged-out run and a rate-limit run were not captured. The account was signed in, and it was not logged out.
 
-## Codex CLI — go
+## Codex CLI — go, pending a pinned model
 
 Binary: `/opt/homebrew/bin/codex` · version `codex-cli 0.167.0`.
 
@@ -122,7 +122,9 @@ Same prompt, empty temp directory, plus `-o <last-message-file>`. Exit 1. Stderr
 {"type":"turn.failed","error":{"message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}}
 ```
 
-The last-message file was empty. User MCP config was not loaded. Dropping the user config also dropped the user's model choice, and the CLI default (`gpt-6.1-sol`) is rejected for a ChatGPT login. `LLM-04` must pass `--model` with a model the ChatGPT account can use. Which model that is was not looked up in Codex config.
+The last-message file was empty. User MCP config was not loaded. Dropping the user config also dropped the user's model choice, and the CLI default (`gpt-6.1-sol`) is rejected for a ChatGPT login.
+
+The model name is not hardcoded. `LLM-04` adds a `codexModel` setting and passes that value with `--model`. The default name is not chosen here. The transport's Test action runs this probe and shows the classified error, including the rejection above when the setting is empty or names a model the ChatGPT login does not accept.
 
 ### Sample error
 
@@ -261,7 +263,6 @@ The completion API, for the later task, is `POST /api/chat` with `"stream": fals
 - Logged-out stderr for Claude, Codex, and Grok. The accounts were left signed in.
 - A rate-limit body for every CLI.
 - That `--no-session-persistence` (Claude), `--ephemeral` (Codex), or a fresh Grok call actually avoid writing a session file.
-- A Codex completion that both ignores user config and returns text. The ignore-config run proved MCP was not loaded, then failed because the default model is `gpt-6.1-sol`.
-- Which `--model` value a ChatGPT login accepts. Config was not read to find the user's current model.
+- A Codex completion that both ignores user config and returns text. The ignore-config run was executed. It proved MCP was not loaded, then failed because the default model is `gpt-6.1-sol`. The model name is a `codexModel` setting, supplied separately.
 - An Ollama completion, local or cloud.
 - That `ps` hides the prompt. Claude, Codex, Grok, and Gemini were given the prompt on stdin or in a file. Cursor's help has no stdin prompt, so that probe used argv.
