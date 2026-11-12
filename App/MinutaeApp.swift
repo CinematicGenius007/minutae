@@ -1,9 +1,12 @@
+import MinutaeFeatures
 import SwiftUI
 
 @main
 struct MinutaeApp: App {
+    static let windowTitle = MinutaeFeaturesModule.windowTitle
+
     var body: some Scene {
-        WindowGroup("Minutae") {
+        WindowGroup(Self.windowTitle) {
             Color.clear
         }
     }

@@ -66,7 +66,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+        run: |
+          if [ -d /Applications/Xcode_16.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app
+          fi
+          xcodebuild -version
       - name: Build and test app
         run: xcodebuild build test -project Minutae.xcodeproj -scheme Minutae CODE_SIGNING_ALLOWED=NO
       - name: Test packages
