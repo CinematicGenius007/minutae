@@ -3,26 +3,9 @@ import type { Meeting } from "@/lib/db/schema"
 import type { SummaryResult } from "@/lib/providers/summary"
 import { formatDurationLong, slugify } from "@/lib/utils"
 
-export function buildSummaryMarkdown(
-	meeting: Meeting,
-	result: SummaryResult,
-	recordingFilename: string,
-): string {
-	const duration = meeting.durationSeconds ? formatDurationLong(meeting.durationSeconds) : "unknown"
-
-	const lines: string[] = [
-		"---",
-		`title: "${result.title.replace(/"/g, '\\"')}"`,
-		`date: ${meeting.startedAt}`,
-		`duration: ${duration}`,
-		`participants: [${result.participants.join(", ")}]`,
-		`tags: []`,
-		`recording: ../recordings/${recordingFilename}`,
-		"---",
-		"",
-		"## Summary",
-		...result.summary.map((b) => `- ${b}`),
-	]
+/** The readable body (no frontmatter). This is what the Summary tab renders. */
+export function buildSummaryBody(result: SummaryResult): string {
+	const lines: string[] = ["## Summary", ...result.summary.map((b) => `- ${b}`)]
 
 	if (result.keyDecisions.length > 0) {
 		lines.push("", "## Key Decisions", ...result.keyDecisions.map((d) => `- ${d}`))
@@ -33,6 +16,29 @@ export function buildSummaryMarkdown(
 	}
 
 	return `${lines.join("\n")}\n`
+}
+
+export function buildSummaryMarkdown(
+	meeting: Meeting,
+	result: SummaryResult,
+	recordingFilename: string,
+): string {
+	const duration = meeting.durationSeconds ? formatDurationLong(meeting.durationSeconds) : "unknown"
+
+	const lines: string[] = [
+		"---",
+		`id: ${meeting.id}`,
+		`title: "${result.title.replace(/"/g, '\\"')}"`,
+		`date: ${meeting.startedAt}`,
+		`duration: ${duration}`,
+		`participants: [${result.participants.join(", ")}]`,
+		`tags: []`,
+		`recording: ../recordings/${recordingFilename}`,
+		"---",
+		"",
+	]
+
+	return `${lines.join("\n")}\n${buildSummaryBody(result)}`
 }
 
 export async function writeSummaryFile(
