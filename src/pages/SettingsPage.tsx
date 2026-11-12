@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { toast } from "sonner"
 import { getAllSettings, setSetting } from "@/lib/db/settings-repo"
 import type { AppSettings } from "@/lib/settings"
+import { getThemePref, setThemePref, type ThemePref } from "@/lib/theme"
 
 interface LocalTranscriptionStatus {
 	whisper_binary_path: string
@@ -30,6 +31,7 @@ export function SettingsPage() {
 	const [localStatus, setLocalStatus] = useState<LocalTranscriptionStatus | null>(null)
 	const [downloadingModel, setDownloadingModel] = useState(false)
 	const [downloadProgress, setDownloadProgress] = useState<WhisperDownloadProgress | null>(null)
+	const [theme, setTheme] = useState<ThemePref>(getThemePref)
 
 	useEffect(() => {
 		getAllSettings().then(setSettings)
@@ -128,13 +130,32 @@ export function SettingsPage() {
 	}
 
 	return (
-		<div className="flex flex-col h-full">
-			{/* Header */}
-			<div className="px-6 pt-5 pb-4 border-b border-[var(--color-border)]">
-				<h1 className="text-base font-semibold text-[var(--color-text)]">Settings</h1>
-			</div>
+		<div className="mx-auto max-w-2xl px-8 pt-14 pb-24">
+			<h1 className="text-[28px] font-semibold tracking-tight text-text">Settings</h1>
 
-			<div className="flex-1 overflow-y-auto px-6 py-5 space-y-8 max-w-xl">
+			<div className="mt-10 space-y-12">
+				<Section title="Appearance">
+					<div className="flex gap-1 rounded-sm bg-surface p-1">
+						{(["system", "light", "dark"] as const).map((option) => (
+							<button
+								key={option}
+								type="button"
+								onClick={() => {
+									setTheme(option)
+									setThemePref(option)
+								}}
+								className={`flex-1 rounded-[6px] px-3 py-1.5 text-[13px] font-medium capitalize transition-colors ${
+									theme === option
+										? "bg-bg text-text shadow-[0_0_0_1px_var(--color-border)]"
+										: "text-text-muted hover:text-text"
+								}`}
+							>
+								{option}
+							</button>
+						))}
+					</div>
+				</Section>
+
 				{/* ── General ── */}
 				<Section title="General">
 					<Toggle
@@ -240,7 +261,7 @@ export function SettingsPage() {
 											type="button"
 											onClick={downloadSelectedModel}
 											disabled={downloadingModel}
-											className="rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+											className="rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-on-accent hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
 										>
 											{downloadingModel ? "Downloading…" : "Download selected model"}
 										</button>
@@ -413,11 +434,11 @@ export function SettingsPage() {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
 	return (
-		<section className="space-y-4">
-			<h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+		<section>
+			<h2 className="mb-4 border-b border-border pb-2 text-[11px] font-semibold tracking-[0.08em] text-text-muted uppercase">
 				{title}
 			</h2>
-			<div className="space-y-4">{children}</div>
+			<div className="space-y-5">{children}</div>
 		</section>
 	)
 }
@@ -568,7 +589,7 @@ function ApiKeyField({
 					type="button"
 					disabled={isSaving || draft === value}
 					onClick={() => onChange(draft)}
-					className="px-3 py-2 text-xs font-medium bg-[var(--color-accent)] text-white rounded-[var(--radius-sm)] hover:bg-[var(--color-accent-hover)] disabled:opacity-40 transition-colors"
+					className="px-3 py-2 text-xs font-medium bg-[var(--color-accent)] text-on-accent rounded-[var(--radius-sm)] hover:bg-[var(--color-accent-hover)] disabled:opacity-40 transition-colors"
 				>
 					{isSaving ? "Saving…" : "Save"}
 				</button>
@@ -634,7 +655,7 @@ function TextField({
 					type="button"
 					disabled={isSaving || draft === value}
 					onClick={() => onChange(draft.trim())}
-					className="px-3 py-2 text-xs font-medium bg-[var(--color-accent)] text-white rounded-[var(--radius-sm)] hover:bg-[var(--color-accent-hover)] disabled:opacity-40 transition-colors"
+					className="px-3 py-2 text-xs font-medium bg-[var(--color-accent)] text-on-accent rounded-[var(--radius-sm)] hover:bg-[var(--color-accent-hover)] disabled:opacity-40 transition-colors"
 				>
 					{isSaving ? "Saving…" : "Save"}
 				</button>

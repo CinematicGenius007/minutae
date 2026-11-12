@@ -20,7 +20,8 @@ pub fn save_recording(
     bytes: Vec<u8>,
     filename: String,
 ) -> Result<String, String> {
-    let path = app_data_dir(&app)?.join("recordings").join(&filename);
+    let filename = safe_filename(&filename)?;
+    let path = app_data_dir(&app)?.join("recordings").join(filename);
     fs::write(&path, &bytes).map_err(|e| format!("Failed to write recording: {e}"))?;
     path.to_str()
         .map(|s| s.to_string())
@@ -34,12 +35,24 @@ pub fn write_summary_file(
     filename: String,
     content: String,
 ) -> Result<String, String> {
-    let path = app_data_dir(&app)?.join("summaries").join(&filename);
+    let filename = safe_filename(&filename)?;
+    let path = app_data_dir(&app)?.join("summaries").join(filename);
     fs::write(&path, content.as_bytes())
         .map_err(|e| format!("Failed to write summary: {e}"))?;
     path.to_str()
         .map(|s| s.to_string())
         .ok_or_else(|| "Invalid path".to_string())
+}
+
+/// Deletes a single file from the recordings folder (used for temporary dictation clips).
+#[tauri::command]
+pub fn delete_recording_file(app: tauri::AppHandle, filename: String) -> Result<(), String> {
+    let filename = safe_filename(&filename)?;
+    let path = app_data_dir(&app)?.join("recordings").join(filename);
+    if path.exists() {
+        fs::remove_file(&path).map_err(|e| format!("Failed to delete {}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// Deletes local recording and summary files associated with a meeting.
@@ -82,7 +95,13 @@ where
             continue;
         }
 
-        let contents = fs::read_to_string(&path).unwrap_or_default();
+        // Only markdown files need their contents inspected; never slurp a WAV into memory.
+        let is_markdown = path.extension().and_then(|ext| ext.to_str()) == Some("md");
+        let contents = if is_markdown {
+            fs::read_to_string(&path).unwrap_or_default()
+        } else {
+            String::new()
+        };
         if should_delete(&path, &contents) {
             fs::remove_file(&path)
                 .map_err(|e| format!("Failed to delete {}: {e}", path.display()))?;
@@ -94,4 +113,39 @@ where
 
 fn app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path().app_data_dir().map_err(|e| e.to_string())
+}
+
+/// Accepts a bare file name only. Rejects separators, parent refs and hidden files so a
+/// caller can never write or delete outside the app's own folders.
+fn safe_filename(name: &str) -> Result<&str, String> {
+    let bad = name.is_empty()
+        || name.starts_with('.')
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.contains('\0');
+    if bad {
+        return Err(format!("Invalid file name: {name}"));
+    }
+    Ok(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_filename;
+
+    #[test]
+    fn accepts_a_bare_file_name() {
+        assert_eq!(
+            safe_filename("2026-11-12-notes.md").unwrap(),
+            "2026-11-12-notes.md"
+        );
+    }
+
+    #[test]
+    fn rejects_paths_and_hidden_names() {
+        for name in ["", ".hidden", "../x", "a/b", "a\\b", "..", "a..b"] {
+            assert!(safe_filename(name).is_err(), "{name}");
+        }
+    }
 }

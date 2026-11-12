@@ -1,5 +1,6 @@
 import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router"
 import { RootLayout } from "@/components/layout/RootLayout"
+import { DictatePage } from "@/pages/DictatePage"
 import { MeetingDetailPage } from "@/pages/MeetingDetailPage"
 import { MeetingsPage } from "@/pages/MeetingsPage"
 import { SettingsPage } from "@/pages/SettingsPage"
@@ -19,6 +20,12 @@ const meetingDetailRoute = createRoute({
 	component: MeetingDetailPage,
 })
 
+const dictateRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/dictate",
+	component: DictatePage,
+})
+
 const usageRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/usage",
@@ -34,6 +41,7 @@ const settingsRoute = createRoute({
 const routeTree = rootRoute.addChildren([
 	meetingsRoute,
 	meetingDetailRoute,
+	dictateRoute,
 	usageRoute,
 	settingsRoute,
 ])

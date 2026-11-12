@@ -6,7 +6,7 @@ import { getMeeting, updateMeeting } from "@/lib/db/meetings"
 import { getRecording } from "@/lib/db/recordings"
 import { getAllSettings } from "@/lib/db/settings-repo"
 import { createSummary } from "@/lib/db/summaries"
-import { writeSummaryFile } from "@/lib/markdown"
+import { buildSummaryBody, writeSummaryFile } from "@/lib/markdown"
 import { getSummaryProvider } from "@/lib/providers/summary"
 import { nanoid } from "@/lib/utils"
 import { useEmbeddingsStore } from "@/store/embeddings"
@@ -70,7 +70,7 @@ export const useSummaryStore = create<SummaryStore>((set, get) => ({
 			await createSummary({
 				id: nanoid(),
 				meetingId: next.meetingId,
-				markdownContent: next.transcript, // raw transcript stored separately
+				markdownContent: buildSummaryBody(result),
 				model: provider.name,
 				provider: provider.name,
 				createdAt: new Date().toISOString(),

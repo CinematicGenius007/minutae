@@ -38,6 +38,7 @@ pub fn run() {
             commands::fs::save_recording,
             commands::fs::write_summary_file,
             commands::fs::delete_meeting_assets,
+            commands::fs::delete_recording_file,
             commands::mic::start_mic_monitor,
             commands::mic::stop_mic_monitor,
             models::whisper::transcribe_local,

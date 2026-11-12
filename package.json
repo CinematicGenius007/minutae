@@ -36,6 +36,9 @@
     "zod": "^4.3.6",
     "zustand": "^5.0.12"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild", "protobufjs", "sharp"]
+  },
   "lint-staged": {
     "src/**/*.{ts,tsx}": [
       "biome check --write --no-errors-on-unmatched"
