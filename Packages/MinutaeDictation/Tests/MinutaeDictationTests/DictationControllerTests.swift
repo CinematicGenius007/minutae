@@ -165,6 +165,7 @@ struct DictationControllerTests {
         harness.release()
         #expect(await harness.waitStatus("done"))
         #expect(try harness.onlyRow().insert_method == "clipboardOnly")
-        #expect(harness.lastHUD()?.banner == "Copied to the clipboard.")
+        // The HUD event is emitted after the row is persisted, so wait for it.
+        #expect(await harness.waitUntil("clipboard banner") { harness.lastHUD()?.banner == "Copied to the clipboard." })
     }
 }
