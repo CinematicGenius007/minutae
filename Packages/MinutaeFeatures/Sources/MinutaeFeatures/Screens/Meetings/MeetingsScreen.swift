@@ -10,53 +10,59 @@ public struct MeetingsScreen: View {
 
     public init(model: MeetingsViewModel) { _model = State(initialValue: model) }
 
+    private var groups: [(day: Date, meetings: [Meeting])] {
+        let calendar = Calendar.current
+        let dated = model.filtered.compactMap { m in Formatting.date(m.started_at).map { ($0, m) } }
+        let grouped = Dictionary(grouping: dated) { calendar.startOfDay(for: $0.0) }
+        return grouped.keys.sorted(by: >).map { day in
+            (day, (grouped[day] ?? []).sorted { $0.0 > $1.0 }.map(\.1))
+        }
+    }
+
     public var body: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: Spacing.s20) {
-                Text("Meetings").font(.minutae.display(size: 36))
-                TextField("Search meetings", text: $model.search).textFieldStyle(.roundedBorder)
-                if let error = model.error { Text(error).foregroundStyle(Color.minutae.red) }
-                if model.filtered.isEmpty {
-                    ContentUnavailableView(
-                        "No meetings", systemImage: "calendar",
-                        description: Text("Recorded meetings will appear here."))
-                } else {
-                    List {
-                        ForEach(
-                            Array(
-                                Dictionary(
-                                    grouping: model.filtered,
-                                    by: { String($0.started_at.prefix(10)) }
-                                ).keys.sorted(by: >)), id: \.self
-                        ) { day in
-                            Section(day) {
-                                ForEach(
-                                    model.filtered.filter { $0.started_at.hasPrefix(day) }, id: \.id
-                                ) { meeting in
-                                    Button {
-                                        selected = MeetingSelection(meeting: meeting)
-                                    } label: {
-                                        MeetingRow(
-                                            meeting: meeting, status: model.status(for: meeting))
-                                    }.buttonStyle(.plain)
+        @Bindable var model = model
+        return PageScaffold("Meetings") {
+            SearchField(text: $model.search, placeholder: "Search meetings", shortcut: "⌘K")
+            if let error = model.error { Text(error).foregroundStyle(Color.minutae.red) }
+            if model.filtered.isEmpty {
+                VStack(spacing: Spacing.s8) {
+                    Text(model.search.isEmpty ? "No meetings yet" : "Nothing matches")
+                        .font(.minutae.display(size: 24))
+                    Text(model.search.isEmpty
+                        ? "Press Record in the sidebar, or join a call and Minutae will offer to record."
+                        : "Try a different word.")
+                        .font(.minutae.ui(size: 14)).foregroundStyle(Color.minutae.muted)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity).padding(.top, Spacing.s44)
+            } else {
+                ForEach(groups, id: \.day) { group in
+                    VStack(alignment: .leading, spacing: Spacing.s8) {
+                        Text(Formatting.dayHeader(group.day).uppercased())
+                            .font(.minutae.mono(size: 12, weight: .medium))
+                            .foregroundStyle(Color.minutae.muted)
+                            .padding(.top, Spacing.s8)
+                        VStack(spacing: Spacing.s4) {
+                            ForEach(group.meetings, id: \.id) { meeting in
+                                MeetingRow(meeting: meeting, status: model.status(for: meeting)) {
+                                    selected = MeetingSelection(meeting: meeting)
                                 }
                             }
                         }
                     }
                 }
             }
-            .padding(Spacing.s28).background(Color.minutae.bg).foregroundStyle(Color.minutae.ink)
-            .sheet(item: $selected) { selection in
-                MeetingDetailScreen(
-                    model: MeetingDetailViewModel(
-                        meeting: selection.meeting, database: model.database, runner: model.runner,
-                        summariesDirectory: model.summariesDirectory))
-            }
-            .task {
-                while !Task.isCancelled {
-                    model.refresh()
-                    try? await Task.sleep(for: .seconds(2))
-                }
+        }
+        .sheet(item: $selected) { selection in
+            MeetingDetailScreen(
+                model: MeetingDetailViewModel(
+                    meeting: selection.meeting, database: model.database, runner: model.runner,
+                    summariesDirectory: model.summariesDirectory))
+        }
+        .task {
+            while !Task.isCancelled {
+                model.refresh()
+                try? await Task.sleep(for: .seconds(2))
             }
         }
     }
@@ -65,24 +71,51 @@ public struct MeetingsScreen: View {
 private struct MeetingRow: View {
     let meeting: Meeting
     let status: String
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading) {
-                Text(meeting.title).font(.minutae.ui(size: 16, weight: .medium))
-                Text("\(meeting.started_at) · \(duration(meeting.duration_seconds))")
-                    .font(.minutae.mono(size: 12)).foregroundStyle(Color.minutae.muted)
-            }
-            Spacer()
-            Text(status).font(.minutae.ui(size: 12, weight: .regular))
-                .padding(Spacing.s8).background(Color.minutae.mint, in: Capsule())
+    let action: () -> Void
+    @State private var hovering = false
+
+    private var tone: StatusPillTone {
+        switch status {
+        case "Failed": .red
+        case "Processing", "Recording": .butter
+        default: .mint
         }
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Spacing.s16) {
+                VStack(alignment: .leading, spacing: Spacing.s4) {
+                    Text(meeting.title.isEmpty ? "Untitled meeting" : meeting.title)
+                        .font(.minutae.ui(size: 15, weight: .medium))
+                        .foregroundStyle(Color.minutae.ink)
+                        .lineLimit(1)
+                    Text(
+                        [Formatting.date(meeting.started_at).map(Formatting.time),
+                         Formatting.duration(meeting.duration_seconds)]
+                            .compactMap { $0 }.filter { $0 != "—" }.joined(separator: " · ")
+                    )
+                    .font(.minutae.ui(size: 13)).foregroundStyle(Color.minutae.muted)
+                }
+                Spacer(minLength: Spacing.s16)
+                if status != "Done" { StatusPill(status, tone: tone) }
+                Image(systemName: "chevron.right")
+                    .font(.minutae.ui(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.minutae.muted).accessibilityHidden(true)
+            }
+            .padding(.horizontal, Spacing.s16).padding(.vertical, Spacing.s12)
+            .background(
+                hovering ? Color.minutae.surface : Color.minutae.bg,
+                in: RoundedRectangle(cornerRadius: Radius.md))
+            .overlay(RoundedRectangle(cornerRadius: Radius.md).strokeBorder(Color.minutae.line, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
 
-private func duration(_ seconds: Int?) -> String {
-    guard let seconds else { return "—" }
-    return String(format: "%d:%02d", seconds / 60, seconds % 60)
-}
+private func duration(_ seconds: Int?) -> String { Formatting.duration(seconds) }
 
 private struct MeetingSelection: Identifiable {
     let meeting: Meeting
@@ -105,23 +138,32 @@ public struct MeetingDetailScreen: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: Spacing.s20) {
-            TextField("Meeting title", text: $title).font(.minutae.display(size: 32)).onSubmit {
-                model.rename(title)
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: Spacing.s4) {
+                    TextField("Meeting title", text: $title)
+                        .textFieldStyle(.plain)
+                        .font(.minutae.display(size: 32))
+                        .onSubmit { model.rename(title) }
+                    Text(
+                        "\(Formatting.fullDate(model.meeting.started_at)) · \(Formatting.duration(model.meeting.duration_seconds))"
+                    )
+                    .font(.minutae.ui(size: 14)).foregroundStyle(Color.minutae.muted)
+                }
+                Spacer()
+                TextAction("Close") { dismiss() }.keyboardShortcut(.cancelAction)
             }
-            Text("\(model.meeting.started_at) · \(duration(model.meeting.duration_seconds))")
-                .foregroundStyle(Color.minutae.muted)
-            HStack {
-                Button("Copy summary") { copy(model.summary?.markdown_content ?? "") }
-                Button("Reveal .md") {
+            HStack(spacing: Spacing.s8) {
+                SecondaryButton("Copy summary") { copy(model.summary?.markdown_content ?? "") }
+                SecondaryButton("Reveal .md") {
                     if let file = model.summaryFile {
                         NSWorkspace.shared.activateFileViewerSelecting([file])
                     }
                 }.disabled(model.summaryFile == nil)
-                Button("Re-run summary") { Task { await model.rerun() } }
-                Button("Delete", role: .destructive) { confirmingDelete = true }
+                SecondaryButton("Re-run summary") { Task { await model.rerun() } }
+                Spacer()
+                TextAction("Delete") { confirmingDelete = true }
             }
-            Picker("Meeting content", selection: $tab) { ForEach(tabs, id: \.self) { Text($0) } }
-                .pickerStyle(.segmented)
+            SegmentedPills(options: tabs, selection: $tab)
             if let error = model.error { Text(error).foregroundStyle(Color.minutae.red) }
             ScrollView {
                 VStack(alignment: .leading, spacing: Spacing.s16) {
@@ -138,25 +180,34 @@ public struct MeetingDetailScreen: View {
                             if !model.items.isEmpty {
                                 Text("Action Items").font(.minutae.display(size: 24))
                                 ForEach(model.items, id: \.id) { item in
-                                    Toggle(
-                                        item.text,
-                                        isOn: Binding(
-                                            get: { item.done }, set: { _ in model.toggle(item) })
-                                    ).toggleStyle(.checkbox)
+                                    Button { model.toggle(item) } label: {
+                                        HStack(alignment: .top, spacing: Spacing.s12) {
+                                            Image(systemName: item.done ? "checkmark.circle.fill" : "circle")
+                                                .foregroundStyle(item.done ? Color.minutae.pine : Color.minutae.muted)
+                                                .accessibilityHidden(true)
+                                            Text(item.text)
+                                                .font(.minutae.ui(size: 14))
+                                                .strikethrough(item.done)
+                                                .foregroundStyle(item.done ? Color.minutae.muted : Color.minutae.ink)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                    }.buttonStyle(.plain)
+                                    .accessibilityAddTraits(.isToggle)
                                 }
                             }
                         } else {
                             Text("No summary yet.")
                         }
                     case "Transcript":
-                        Button("Copy transcript") { copy(model.transcript?.raw_text ?? "") }
+                        SecondaryButton("Copy transcript") { copy(model.transcript?.raw_text ?? "") }
                         ForEach(model.segments, id: \.id) { segment in
                             Button {
                                 seek(segment.start_ms)
                             } label: {
                                 HStack(alignment: .top, spacing: Spacing.s16) {
-                                    Text(duration(segment.start_ms / 1000)).font(
-                                        .minutae.mono(size: 12))
+                                    Text(Formatting.clock(segment.start_ms / 1000))
+                                        .font(.minutae.mono(size: 12))
+                                        .foregroundStyle(Color.minutae.muted)
                                     Text(segment.text).frame(
                                         maxWidth: .infinity, alignment: .leading)
                                 }
@@ -165,8 +216,8 @@ public struct MeetingDetailScreen: View {
                     default:
                         if model.recording != nil {
                             HStack {
-                                Button("Play") { play() }
-                                Button("Pause") { player?.pause() }
+                                SecondaryButton("Play") { play() }
+                                SecondaryButton("Pause") { player?.pause() }
                             }
                         } else {
                             Text("No recording available.")
@@ -176,6 +227,8 @@ public struct MeetingDetailScreen: View {
             }
         }
         .padding(Spacing.s28).background(Color.minutae.bg).foregroundStyle(Color.minutae.ink)
+        .frame(minWidth: 640, idealWidth: 720, minHeight: 520, idealHeight: 640)
+        .preferredColorScheme(.light)
         .confirmationDialog("Delete this meeting and its files?", isPresented: $confirmingDelete) {
             Button("Delete meeting", role: .destructive) {
                 model.delete()
