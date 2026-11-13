@@ -7,6 +7,7 @@ public struct AppShellView: View {
     private let screens: ScreenRegistry
     private let isRecording: Bool
     private let detection: MeetingDetectionModel?
+    private let search: SearchModel?
     private let canRecord: Bool
     private let actionMessage: String?
     private let bootError: String?
@@ -21,6 +22,7 @@ public struct AppShellView: View {
         screens: ScreenRegistry = .placeholders,
         isRecording: Bool,
         detection: MeetingDetectionModel? = nil,
+        search: SearchModel? = nil,
         canRecord: Bool,
         actionMessage: String? = nil,
         bootError: String? = nil,
@@ -33,6 +35,7 @@ public struct AppShellView: View {
         self.screens = screens
         self.isRecording = isRecording
         self.detection = detection
+        self.search = search
         self.canRecord = canRecord
         self.actionMessage = actionMessage
         self.bootError = bootError
@@ -62,7 +65,13 @@ public struct AppShellView: View {
         }
         .preferredColorScheme(.light)
         .sheet(isPresented: $isSearchPresented) {
-            SearchSheet()
+            SearchSheet(
+                model: search,
+                onOpen: { hit in
+                    isSearchPresented = false
+                    navigation.open(hit.kind == .meeting ? .meeting(hit.id) : .dictation(hit.id))
+                },
+                onClose: { isSearchPresented = false })
         }
     }
 

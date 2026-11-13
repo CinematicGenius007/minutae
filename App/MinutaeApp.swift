@@ -1,6 +1,7 @@
 import MinutaeCore
 import MinutaeDesign
 import MinutaeFeatures
+import MinutaeLibrary
 import SwiftUI
 
 @main
@@ -16,6 +17,8 @@ struct MinutaeApp: App {
     @State private var dictateDependencies: DictateDependencies?
     @State private var hudPresenter: DictationHUDPresenter?
     @State private var detection: MeetingDetectionModel?
+    @State private var searchModel: SearchModel?
+    @State private var libraryModel: LibraryViewModel?
 
     init() {
         MinutaeDesign.registerFonts()
@@ -28,13 +31,20 @@ struct MinutaeApp: App {
         _dictateDependencies = State(initialValue: nil)
         _hudPresenter = State(initialValue: nil)
         _detection = State(initialValue: nil)
+        _searchModel = State(initialValue: nil)
+        _libraryModel = State(initialValue: nil)
     }
 
     private var screens: ScreenRegistry {
         var registry = ScreenRegistry.placeholders
         if let meetingsModel {
             registry = registry.replacing(.meetings) {
-                AnyView(MeetingsScreen(model: meetingsModel))
+                AnyView(MeetingsScreen(model: meetingsModel, navigation: navigation))
+            }
+        }
+        if let libraryModel {
+            registry = registry.replacing(.library) {
+                AnyView(LibraryScreen(makeModel: { libraryModel }, navigation: navigation))
             }
         }
         if let settingsModel {
@@ -49,7 +59,7 @@ struct MinutaeApp: App {
         }
         if let dictateDependencies {
             registry = registry.replacing(.dictate) {
-                AnyView(DictateRootView(dependencies: dictateDependencies))
+                AnyView(DictateRootView(dependencies: dictateDependencies, navigation: navigation))
             }
         }
         return registry
@@ -57,7 +67,7 @@ struct MinutaeApp: App {
 
     private var screenEpoch: Int {
         (meetingsModel == nil ? 0 : 1) + (settingsModel == nil ? 0 : 2)
-            + (usageModel == nil ? 0 : 4) + (dictateDependencies == nil ? 0 : 8)
+            + (usageModel == nil ? 0 : 4) + (dictateDependencies == nil ? 0 : 8) + (libraryModel == nil ? 0 : 16)
     }
 
     var body: some Scene {
@@ -67,6 +77,7 @@ struct MinutaeApp: App {
                 screens: screens,
                 isRecording: model.recordingMeetingID != nil,
                 detection: detection,
+                search: searchModel,
                 canRecord: model.environment != nil && !model.recordingBusy,
                 actionMessage: model.actionMessage,
                 bootError: model.bootError,
@@ -144,6 +155,19 @@ struct MinutaeApp: App {
             detection = MeetingDetectionModel(
                 isEnabled: { settings?.settings.autoDetectMeetings ?? initial },
                 isRecording: { harness.recordingMeetingID != nil })
+        }
+        if searchModel == nil {
+            let database = environment.database
+            let provider: any EmbeddingProvider =
+                ContextualEmbeddingProvider() ?? HashEmbeddingProvider()
+            searchModel = SearchModel(
+                service: SearchService(database: database, embeddings: provider),
+                meetingIDs: {
+                    ((try? Repository<Meeting>(database).all()) ?? []).map(\.id)
+                })
+        }
+        if libraryModel == nil {
+            libraryModel = LibraryViewModel(database: environment.database)
         }
         if usageModel == nil {
             usageModel = UsageViewModel(database: environment.database)
