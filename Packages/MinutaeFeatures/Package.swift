@@ -6,22 +6,28 @@ let package = Package(
     platforms: [.macOS("14.4")],
     products: [.library(name: "MinutaeFeatures", targets: ["MinutaeFeatures"])],
     dependencies: [
-        .package(path: "../MinutaeCore"),
         .package(path: "../MinutaeDesign"),
         .package(path: "../MinutaeDictation"),
         .package(path: "../MinutaeLibrary"),
+        .package(path: "../MinutaeMeetings"),
+        .package(path: "../MinutaeCore"),
+        .package(path: "../MinutaeAudio"),
         .package(path: "../MinutaeLLM"),
     ],
     targets: [
         .target(
             name: "MinutaeFeatures",
             dependencies: [
-                "MinutaeCore", "MinutaeDesign", "MinutaeDictation", "MinutaeLibrary", "MinutaeLLM",
+                "MinutaeCore", "MinutaeDesign", "MinutaeDictation", "MinutaeLibrary",
+                "MinutaeLLM", "MinutaeMeetings",
             ]
         ),
         .testTarget(
             name: "MinutaeFeaturesTests",
-            dependencies: ["MinutaeFeatures", "MinutaeCore", "MinutaeDictation", "MinutaeLibrary"]
+            dependencies: [
+                "MinutaeFeatures", "MinutaeCore", "MinutaeDictation", "MinutaeLibrary",
+                "MinutaeMeetings", "MinutaeAudio",
+            ]
         ),
     ],
     swiftLanguageModes: [.v6]
