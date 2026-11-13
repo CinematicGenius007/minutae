@@ -408,9 +408,11 @@ final class AppEnvironment {
             let store = try InMemorySettingsStore(settings: seeded)
             return LoadedSettings(store: store, settings: seeded, notes: [])
         }
-        guard let defaults = UserDefaults(suiteName: UserDefaultsSettingsStore.suiteName) else {
-            throw AppEnvironmentError(message: "Settings storage could not be opened.")
-        }
+        // The suite name equals the app's bundle id, which Foundation rejects (nil); the standard
+        // domain for this app is that same domain.
+        let defaults: UserDefaults = Bundle.main.bundleIdentifier == UserDefaultsSettingsStore.suiteName
+            ? .standard
+            : (UserDefaults(suiteName: UserDefaultsSettingsStore.suiteName) ?? .standard)
         let store = UserDefaultsSettingsStore(userDefaults: defaults)
         do {
             let settings = try await store.load()
