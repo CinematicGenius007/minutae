@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.macOS("14.4")],
     products: [.library(name: "MinutaeDesign", targets: ["MinutaeDesign"])],
     targets: [
-        .target(name: "MinutaeDesign"),
+        .target(name: "MinutaeDesign", resources: [.copy("Resources")]),
         .testTarget(name: "MinutaeDesignTests", dependencies: ["MinutaeDesign"]),
     ],
     swiftLanguageModes: [.v6]
