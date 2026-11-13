@@ -331,6 +331,10 @@ ALTER TABLE api_usage_log ADD COLUMN error_class TEXT;
 
 Notes: the v1 `transcripts.provider` CHECK only allows `whisper-local` and `whisper-api`; leave it, and a later migration will rebuild that table when a new engine needs a new value. The latest edit per segment wins; originals in `segments` are never overwritten. Orphan `item_tags`, `jobs` and `dictations` links to deleted meetings are cleaned by the repository layer, not by foreign keys.
 
+#### 7.1.2 Schema v3
+
+Migration `v3` rebuilds `api_usage_log` so `input_tokens`, `output_tokens` and `cost_usd` are nullable (unknown tokens and free CLI calls are stored as NULL, not 0). Existing values are preserved, an orphan `meeting_id` becomes NULL, and `idx_api_usage_created_at` is recreated. `v1.sql` is unchanged. Cost is recorded only for the `api` transport.
+
 ### 7.2 Capabilities
 
 Unified Library of meetings and dictations with filters and bulk actions; transcript editor with speaker rename; export to Markdown, TXT, SRT and JSON; retention and storage page (audio-only purge, default never); re-run transcription or summary with a different model, keeping versions; full-text search (FTS5) plus semantic search; "ask across meetings".
