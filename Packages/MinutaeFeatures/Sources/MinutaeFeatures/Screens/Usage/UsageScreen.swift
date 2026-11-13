@@ -57,37 +57,43 @@ public struct UsageScreen: View {
     public init(model: UsageViewModel) { _model = State(initialValue: model) }
     public var body: some View {
         @Bindable var model = model
-        ScrollView {
-            VStack(alignment: .leading, spacing: Spacing.s20) {
-                Text("Usage").font(.minutae.display(size: 36))
-                SegmentedPills(
-                    options: ["Today", "Last 7 days", "Last 30 days"], selection: $model.period
-                )
+        let peak = max(model.lines.map(\.calls).max() ?? 1, 1)
+        PageScaffold("Usage") {
+            SegmentedPills(options: ["Today", "Last 7 days", "Last 30 days"], selection: $model.period)
                 .onChange(of: model.period) { _, _ in model.refresh() }
-                Text("AI CALLS BY PROVIDER").font(.minutae.mono(size: 12)).foregroundStyle(
-                    Color.minutae.muted)
-                ForEach(model.lines) { line in
-                    VStack(alignment: .leading, spacing: Spacing.s8) {
-                        HStack {
-                            Text(line.id).font(.minutae.ui(size: 15, weight: .medium))
-                            Spacer()
-                            Text(
-                                "\(line.calls) calls · \(line.input.map(String.init) ?? "—") in · \(line.output.map(String.init) ?? "—") out · \(line.cost.map { String(format: "$%.4f", $0) } ?? "—")"
-                            )
-                            .font(.minutae.mono(size: 12))
-                        }
-                        ProgressTrack(
-                            value: Double(line.calls)
-                                / Double(max(model.lines.map(\.calls).max() ?? 1, 1)))
-                        HairlineDivider()
+            Text("AI CALLS BY PROVIDER")
+                .font(.minutae.mono(size: 12, weight: .medium)).foregroundStyle(Color.minutae.muted)
+                .padding(.top, Spacing.s8)
+            if model.lines.isEmpty {
+                Text("No AI calls in this period.")
+                    .font(.minutae.ui(size: 14)).foregroundStyle(Color.minutae.muted)
+            }
+            ForEach(model.lines) { line in
+                VStack(alignment: .leading, spacing: Spacing.s8) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(Formatting.provider(line.id)).font(.minutae.ui(size: 15, weight: .medium))
+                        Spacer(minLength: Spacing.s16)
+                        Text(Formatting.count(line.calls, "call"))
+                            .font(.minutae.ui(size: 13)).foregroundStyle(Color.minutae.muted)
                     }
+                    ProgressTrack(value: Double(line.calls) / Double(peak))
+                    HStack(spacing: Spacing.s16) {
+                        if let input = line.input { stat("\(Formatting.tokens(input)) in") }
+                        if let output = line.output { stat("\(Formatting.tokens(output)) out") }
+                        if let cost = line.cost { stat(String(format: "$%.4f", cost)) }
+                        if line.cost == nil && line.id != "api" { stat("Included in your subscription") }
+                    }
+                    .padding(.bottom, Spacing.s4)
+                    HairlineDivider()
                 }
-                if model.lines.isEmpty {
-                    Text("No calls in this period.").foregroundStyle(Color.minutae.muted)
-                }
-                if !model.error.isEmpty { Text(model.error).foregroundStyle(Color.minutae.red) }
-            }.frame(maxWidth: 680, alignment: .leading).padding(Spacing.s28)
-        }.foregroundStyle(Color.minutae.ink).background(Color.minutae.bg).task { model.refresh() }
+            }
+            if !model.error.isEmpty { Text(model.error).foregroundStyle(Color.minutae.red) }
+        }
+        .task { model.refresh() }
+    }
+
+    private func stat(_ text: String) -> some View {
+        Text(text).font(.minutae.mono(size: 12)).foregroundStyle(Color.minutae.muted)
     }
 }
 
