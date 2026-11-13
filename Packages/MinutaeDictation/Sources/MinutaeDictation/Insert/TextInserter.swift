@@ -104,7 +104,7 @@ public typealias PasteboardSnapshot = [[String: Data]]
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute as CFString, &focused) == .success,
               let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return false }
-        let element = focused as! AXUIElement
+        let element = unsafeBitCast(focused, to: AXUIElement.self)
         func read(_ attribute: String) -> CFTypeRef? {
             var value: CFTypeRef?
             return AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success ? value : nil
@@ -113,7 +113,7 @@ public typealias PasteboardSnapshot = [[String: Data]]
               let original = read(kAXValueAttribute) as? String,
               let rangeValue = read(kAXSelectedTextRangeAttribute), CFGetTypeID(rangeValue) == AXValueGetTypeID() else { return false }
         var range = CFRange()
-        guard AXValueGetValue(rangeValue as! AXValue, .cfRange, &range), range.location >= 0, range.length >= 0,
+        guard AXValueGetValue(unsafeBitCast(rangeValue, to: AXValue.self), .cfRange, &range), range.location >= 0, range.length >= 0,
               range.location <= (original as NSString).length,
               range.length <= (original as NSString).length - range.location else { return false }
         let expected = (original as NSString).replacingCharacters(in: NSRange(location: range.location, length: range.length), with: text)

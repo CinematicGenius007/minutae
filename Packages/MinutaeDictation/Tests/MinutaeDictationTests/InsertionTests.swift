@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import Testing
 @testable import MinutaeDictation
 
@@ -9,11 +10,10 @@ import Testing
     func typeUnicode(_ text: String) -> Bool { calls.append(.unicode); return succeeds == .unicode }
 }
 @MainActor @Test func insertionFallbackAndMemory() async {
-    let board = NSPasteboard(name: .init(UUID().uuidString))
-    defer { board.releaseGlobally() }
+    let board = FakeBoard([])
     let events = Events()
     let ax = FakeAccessibilityInserter(succeeds: true)
-    let inserter = SystemTextInserter(pasteboard: SystemPasteboard(board), events: events, accessibility: ax, wait: { _ in }, trusted: { true }, secure: { false }, frontmost: { "example.app" })
+    let inserter = SystemTextInserter(pasteboard: board, events: events, accessibility: ax, wait: { _ in }, trusted: { true }, secure: { false }, frontmost: { "example.app" })
     #expect(await inserter.insert("hello") == .inserted(method: .accessibility, confirmed: true))
     #expect(events.calls == [.paste])
     #expect(ax.inputs == ["hello"])
@@ -24,11 +24,17 @@ import Testing
 }
 @MainActor @Test func secureRefusal() async {
     let events = Events()
-    let inserter = SystemTextInserter(events: events, trusted: { true }, secure: { true })
+    let inserter = SystemTextInserter(pasteboard: FakeBoard([]), events: events, trusted: { true }, secure: { true }, frontmost: { nil })
     #expect(await inserter.insert("secret") == .refusedSecureField)
     #expect(events.calls.isEmpty)
 }
-@MainActor @Test func namedPasteboardRestoresData() async {
+private let interactivePasteboardAvailable: Bool = {
+    guard ProcessInfo.processInfo.environment["CI"] == nil,
+          let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+    return session["kCGSessionOnConsoleKey"] as? Bool == true
+}()
+
+@MainActor @Test(.enabled(if: interactivePasteboardAvailable, "Requires an interactive macOS desktop session; pasteboard services are unavailable on headless CI")) func namedPasteboardRestoresData() async {
     let board = NSPasteboard(name: .init(UUID().uuidString))
     defer { board.releaseGlobally() }
     let item = NSPasteboardItem()
@@ -53,14 +59,14 @@ import Testing
     let original: PasteboardSnapshot = [["a": Data([0, 255]), "b": Data([1, 2, 3])], ["c": Data([128, 0]), "d": Data()]]
     let board = FakeBoard(original)
     let events = Events(); events.succeeds = .paste
-    let inserter = SystemTextInserter(pasteboard: board, events: events, wait: { _ in }, trusted: { true }, secure: { false })
+    let inserter = SystemTextInserter(pasteboard: board, events: events, wait: { _ in }, trusted: { true }, secure: { false }, frontmost: { nil })
     #expect(await inserter.insert("text") == .inserted(method: .paste, confirmed: false))
     #expect(board.items == original)
 }
 @MainActor @Test func externalClipboardWriteIsPreserved() async {
     let board = FakeBoard([["old": Data([1])]])
     let events = Events(); events.succeeds = .paste
-    let inserter = SystemTextInserter(pasteboard: board, events: events, wait: { _ in _ = board.writeText("external") }, trusted: { true }, secure: { false })
+    let inserter = SystemTextInserter(pasteboard: board, events: events, wait: { _ in _ = board.writeText("external") }, trusted: { true }, secure: { false }, frontmost: { nil })
     #expect(await inserter.insert("text") == .inserted(method: .paste, confirmed: false))
     #expect(board.items == [["text": Data("external".utf8)]])
 }
