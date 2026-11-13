@@ -99,20 +99,30 @@ enum LocalCleanup {
         return next == "e" || next == "E"
     }
 
-    /// Uppercases the first letter. A following capital ("iPhone") stays.
+    /// Capitalises the first letter only when the first word is entirely lowercase.
+    /// A word that already contains a capital (macOS, iPhone, eBay, GitHub) stays as written.
     private static func sentenceCaseFirstLetter(_ text: String) -> String {
+        guard let word = firstWord(in: text), !word.contains(where: \.isUppercase) else {
+            return text
+        }
         guard let first = text.firstIndex(where: \.isLetter) else { return text }
         let character = text[first]
         let upper = String(character).uppercased()
         guard upper != String(character) else { return text }
-        let next = text.index(after: first)
-        if next < text.endIndex, text[next].isLetter {
-            let nextCharacter = text[next]
-            if String(nextCharacter) == String(nextCharacter).uppercased() { return text }
-        }
         var updated = text
         updated.replaceSubrange(first...first, with: upper)
         return updated
+    }
+
+    private static func firstWord(in text: String) -> String? {
+        var index = text.startIndex
+        while index < text.endIndex {
+            if let range = TranscriptText.wordRange(in: text, from: index) {
+                return String(text[range])
+            }
+            index = text.index(after: index)
+        }
+        return nil
     }
 
     private static func addEndPunctuation(_ text: String) -> String {

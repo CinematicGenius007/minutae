@@ -161,9 +161,32 @@
       "expected": "eBay arrived."
     },
     {
-      "name": "sentence-case-macos",
-      "input": "macOS ships",
-      "expected": "MacOS ships."
+      "name": "sentence-case-lowercase-macos",
+      "input": "macos is ready",
+      "expected": "Macos is ready."
+    },
+    {
+      "name": "keep-macos",
+      "input": "macOS is ready",
+      "expected": "macOS is ready."
+    },
+    {
+      "name": "keep-iphone-works",
+      "input": "iPhone works",
+      "expected": "iPhone works."
+    },
+    {
+      "name": "keep-github",
+      "input": "GitHub is ready",
+      "expected": "GitHub is ready."
+    },
+    {
+      "name": "dictionary-keeps-macos",
+      "input": "mac os is ready",
+      "expected": "macOS is ready.",
+      "entries": [
+        {"id": "macos", "term": "mac os", "replacement": "macOS", "kind": "word"}
+      ]
     },
     {
       "name": "number-then-word",
