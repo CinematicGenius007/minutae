@@ -247,3 +247,7 @@ See [PLAN.md](./PLAN.md) for the full implementation checklist.
 ## License
 
 MIT
+
+## Native app (in progress)
+
+Open `Minutae.xcodeproj` in Xcode and build the Minutae scheme. See [signing](docs/signing.md) for local setup. Run `xcodebuild build test -scheme Minutae` and `for package in Packages/*; do swift test --package-path "$package"; done` to build and test.
