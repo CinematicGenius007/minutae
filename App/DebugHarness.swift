@@ -1,5 +1,6 @@
 import AppKit
 import MinutaeCore
+import MinutaeDesign
 import MinutaeDictation
 import SwiftUI
 
@@ -311,6 +312,7 @@ final class DictationHUDPanel {
 
 struct DebugHarnessView: View {
     @Bindable var model: DebugHarnessModel
+    @State private var showsDesignGallery = false
 
     var body: some View {
         ScrollView {
@@ -339,6 +341,9 @@ struct DebugHarnessView: View {
         .background(Color.white)
         .preferredColorScheme(.light)
         .task { await model.bootIfNeeded() }
+        .sheet(isPresented: $showsDesignGallery) {
+            DesignGalleryView()
+        }
     }
 
     private var header: some View {
@@ -347,6 +352,7 @@ struct DebugHarnessView: View {
             Text(model.environment?.usesFakes == true ? "Debug harness · fakes" : "Debug harness")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+            Button("Design gallery") { showsDesignGallery = true }
             if let root = model.environment?.root {
                 Text(root.path).font(.caption).textSelection(.enabled).foregroundStyle(.secondary)
             }
