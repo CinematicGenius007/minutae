@@ -71,7 +71,7 @@ public final class MicrophoneCapture: AudioCapture, @unchecked Sendable {
         }
         engine.prepare(); try engine.start()
     }
-    public func start() throws { try buffer.begin(wavURL: wavURL) }
+    public func start(retainFullCapture: Bool) throws { try buffer.begin(wavURL: wavURL, retainFullCapture: retainFullCapture) }
     public func stop() throws -> CaptureResult { try buffer.end() }
     deinit {
         if let observer { NotificationCenter.default.removeObserver(observer) }
