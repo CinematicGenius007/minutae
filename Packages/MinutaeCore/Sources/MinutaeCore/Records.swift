@@ -180,7 +180,13 @@ public struct Dictation: Codable, FetchableRecord, PersistableRecord, TableRecor
     public var audio_path: String?
     public var error: String?
     public var created_at: String
-    public init(id: String, started_at: String, duration_ms: Int?, target_app_bundle_id: String?, target_app_name: String?, raw_text: String, final_text: String, language: String?, insert_method: String?, status: String, audio_path: String?, error: String?, created_at: String) {
+    /// User edit of the saved text. NULL means never edited. `raw_text` and `final_text` keep the
+    /// original transcript and the text that was inserted.
+    public var edited_text: String?
+    public var edited_at: String?
+    /// Speech model name that produced `raw_text`, such as `base`. NULL when unknown.
+    public var speech_model: String?
+    public init(id: String, started_at: String, duration_ms: Int?, target_app_bundle_id: String?, target_app_name: String?, raw_text: String, final_text: String, language: String?, insert_method: String?, status: String, audio_path: String?, error: String?, created_at: String, edited_text: String? = nil, edited_at: String? = nil, speech_model: String? = nil) {
         self.id = id
         self.started_at = started_at
         self.duration_ms = duration_ms
@@ -194,6 +200,16 @@ public struct Dictation: Codable, FetchableRecord, PersistableRecord, TableRecor
         self.audio_path = audio_path
         self.error = error
         self.created_at = created_at
+        self.edited_text = edited_text
+        self.edited_at = edited_at
+        self.speech_model = speech_model
+    }
+
+    /// Text shown and copied: the edit when there is one, else the inserted text, else the raw
+    /// transcript.
+    public var displayText: String {
+        if let text = edited_text { return text }
+        return final_text.isEmpty ? raw_text : final_text
     }
 }
 

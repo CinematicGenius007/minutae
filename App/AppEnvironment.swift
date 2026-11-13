@@ -161,6 +161,7 @@ final class AppEnvironment {
             useFakes
             ? FixedFrontmostApp()
             : WorkspaceFrontmostAppSource()
+        let speechModelName = loaded.settings.whisperModelName
         let dictation = DictationController(
             clients: DictationControllerClients(
                 hotkey: hotkey,
@@ -175,7 +176,9 @@ final class AppEnvironment {
                 store: DatabaseDictationStore(database: database),
                 frontmost: frontmost,
                 cancels: DictationCancelSignal(),
-                options: DictationControllerOptions(dictationsDirectory: dictations)
+                options: DictationControllerOptions(
+                    dictationsDirectory: dictations,
+                    speechModelName: { speechModelName })
             )
         )
         let registration = hotkeyRegistration(from: loaded.settings.dictationHotkey)

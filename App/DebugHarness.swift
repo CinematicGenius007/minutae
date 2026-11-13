@@ -30,7 +30,6 @@ final class DebugHarnessModel {
     var modelBusy = false
     private var didBoot = false
     private var tick = 0
-    private let hud = DictationHUDPanel()
 
     var elapsedText: String {
         guard let recordingStarted else { return "0:00" }
@@ -187,13 +186,11 @@ final class DebugHarnessModel {
 
     private func startWatchers(_ environment: AppEnvironment) {
         let dictation = environment.dictation
-        let panel = hud
         Task {
             let events = await dictation.events()
             for await event in events {
                 switch event {
                 case .state(let state):
-                    panel.apply(state)
                     hudText = DictationHUDCopy.line(state)
                 case .ignoredWhileBusy:
                     actionMessage = "That press was ignored because a dictation is already running."
@@ -279,51 +276,6 @@ enum DictationHUDCopy {
             return "\(phase) · \(name)"
         }
         return phase
-    }
-}
-
-@MainActor
-final class DictationHUDPanel {
-    private let panel: NSPanel
-    private let label: NSTextField
-
-    init() {
-        panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 64),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-        panel.level = .statusBar
-        panel.isFloatingPanel = true
-        panel.hidesOnDeactivate = false
-        panel.isOpaque = false
-        panel.hasShadow = true
-        panel.ignoresMouseEvents = true
-        panel.becomesKeyOnlyIfNeeded = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        panel.backgroundColor = .windowBackgroundColor
-        label = NSTextField(labelWithString: "Idle")
-        label.frame = NSRect(x: 16, y: 18, width: 288, height: 28)
-        label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.textColor = .labelColor
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 64))
-        content.addSubview(label)
-        panel.contentView = content
-    }
-
-    func apply(_ state: DictationHUDState) {
-        label.stringValue = DictationHUDCopy.line(state)
-        if state.phase == .idle, state.banner == nil {
-            panel.orderOut(nil)
-            return
-        }
-        if let screen = NSScreen.main ?? NSScreen.screens.first {
-            let visible = screen.visibleFrame
-            let origin = NSPoint(x: visible.midX - 160, y: visible.minY + 48)
-            panel.setFrameOrigin(origin)
-        }
-        panel.orderFrontRegardless()
     }
 }
 

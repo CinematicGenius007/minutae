@@ -13,6 +13,8 @@ struct MinutaeApp: App {
     @State private var meetingsModel: MeetingsViewModel?
     @State private var settingsModel: SettingsViewModel?
     @State private var usageModel: UsageViewModel?
+    @State private var dictateDependencies: DictateDependencies?
+    @State private var hudPresenter: DictationHUDPresenter?
 
     init() {
         MinutaeDesign.registerFonts()
@@ -22,6 +24,8 @@ struct MinutaeApp: App {
         _meetingsModel = State(initialValue: nil)
         _settingsModel = State(initialValue: nil)
         _usageModel = State(initialValue: nil)
+        _dictateDependencies = State(initialValue: nil)
+        _hudPresenter = State(initialValue: nil)
     }
 
     private var screens: ScreenRegistry {
@@ -41,12 +45,17 @@ struct MinutaeApp: App {
                 AnyView(UsageScreen(model: usageModel))
             }
         }
+        if let dictateDependencies {
+            registry = registry.replacing(.dictate) {
+                AnyView(DictateRootView(dependencies: dictateDependencies))
+            }
+        }
         return registry
     }
 
     private var screenEpoch: Int {
         (meetingsModel == nil ? 0 : 1) + (settingsModel == nil ? 0 : 2)
-            + (usageModel == nil ? 0 : 4)
+            + (usageModel == nil ? 0 : 4) + (dictateDependencies == nil ? 0 : 8)
     }
 
     var body: some Scene {
@@ -123,6 +132,16 @@ struct MinutaeApp: App {
         }
         if usageModel == nil {
             usageModel = UsageViewModel(database: environment.database)
+        }
+        if dictateDependencies == nil {
+            dictateDependencies = .live(
+                database: environment.database,
+                dictationsDirectory: environment.dictationsDirectory,
+                dictation: environment.dictation
+            )
+        }
+        if hudPresenter == nil {
+            hudPresenter = DictationHUDPresenter.attach(to: environment.dictation)
         }
     }
 }

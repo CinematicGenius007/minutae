@@ -33,7 +33,7 @@ public struct ScreenRegistry {
     public static let placeholders = ScreenRegistry(
         meetings: { AnyView(MeetingsScreen(model: MeetingsScreenStandIn.model)) },
         library: { AnyView(LibraryScreen()) },
-        dictate: { AnyView(DictateScreen()) },
+        dictate: { AnyView(PlaceholderScreen(title: "Dictate")) },
         usage: { AnyView(UsageScreen(model: UsageViewModel(loadRows: { [] }))) },
         settings: {
             AnyView(SettingsScreen(model: SettingsViewModel(store: InMemorySettingsStore())))
