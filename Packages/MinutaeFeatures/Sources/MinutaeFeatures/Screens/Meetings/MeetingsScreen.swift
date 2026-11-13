@@ -7,8 +7,21 @@ import SwiftUI
 public struct MeetingsScreen: View {
     @State private var model: MeetingsViewModel
     @State private var selected: MeetingSelection?
+    private let navigation: NavigationStore?
 
-    public init(model: MeetingsViewModel) { _model = State(initialValue: model) }
+    public init(model: MeetingsViewModel, navigation: NavigationStore? = nil) {
+        _model = State(initialValue: model)
+        self.navigation = navigation
+    }
+
+    private func takePending() {
+        guard case .meeting(let id)? = navigation?.pending else { return }
+        model.refresh()
+        if let meeting = model.meetings.first(where: { $0.id == id }) {
+            selected = MeetingSelection(meeting: meeting)
+        }
+        navigation?.pending = nil
+    }
 
     private var groups: [(day: Date, meetings: [Meeting])] {
         let calendar = Calendar.current
@@ -59,6 +72,8 @@ public struct MeetingsScreen: View {
                     meeting: selection.meeting, database: model.database, runner: model.runner,
                     summariesDirectory: model.summariesDirectory))
         }
+        .onAppear(perform: takePending)
+        .onChange(of: navigation?.pending) { _, _ in takePending() }
         .task {
             while !Task.isCancelled {
                 model.refresh()

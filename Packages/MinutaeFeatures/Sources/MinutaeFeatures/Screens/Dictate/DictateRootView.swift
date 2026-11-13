@@ -8,9 +8,13 @@ public struct DictateRootView: View {
     private let dependencies: DictateDependencies
     @State private var listModel: DictateViewModel
     @State private var openID: String?
+    private let navigation: NavigationStore?
 
-    public init(dependencies: DictateDependencies, openID: String? = nil) {
+    public init(
+        dependencies: DictateDependencies, openID: String? = nil, navigation: NavigationStore? = nil
+    ) {
         self.dependencies = dependencies
+        self.navigation = navigation
         _listModel = State(initialValue: DictateViewModel(dependencies: dependencies))
         _openID = State(initialValue: openID)
     }
@@ -29,6 +33,14 @@ public struct DictateRootView: View {
             }
         }
         .background(Color.minutae.bg)
+        .onAppear(perform: takePending)
+        .onChange(of: navigation?.pending) { _, _ in takePending() }
+    }
+
+    private func takePending() {
+        guard case .dictation(let id)? = navigation?.pending else { return }
+        openID = id
+        navigation?.pending = nil
     }
 }
 

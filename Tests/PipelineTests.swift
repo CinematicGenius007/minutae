@@ -57,7 +57,7 @@ final class PipelineTests: XCTestCase {
     }
 
     func testMissingModelAndDeniedPermissionStayReadable() async {
-        let engine = ReportingSpeechEngine(engine: FakeSpeechEngine(), modelName: "base")
+        let engine = ReportingSpeechEngine(engine: FakeSpeechEngine(), modelName: ModelNameBox("base"))
         do {
             _ = try await engine.transcribe(samples: [0.1], options: .init())
             XCTFail("An unloaded model should fail with a message.")

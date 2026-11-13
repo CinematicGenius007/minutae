@@ -72,6 +72,7 @@ final class AppEnvironment {
     private(set) var armedHotkeyModifiers: UInt?
     private let capture: ExplainingCapture
     private let routerBox: RouterBox
+    private let modelNameBox: ModelNameBox
     private let usage: DatabaseUsageObserver
     private let fakeHotkey: FakeHotkeyService?
     private let hotkey: any HotkeyService
@@ -110,10 +111,12 @@ final class AppEnvironment {
                     uniqueKeysWithValues: Permission.allCases.map { ($0, .granted) }))
             : SystemPermissionService()
         let capture = ExplainingCapture(useFakes ? FixtureSpeech.capture() : MicrophoneCapture())
+        let nameBox = ModelNameBox(loaded.settings.whisperModelName)
         let speech = await makeSpeech(
             useFakes: useFakes,
             settings: loaded.settings,
             models: models,
+            nameBox: nameBox,
             notes: &notes
         )
         let usage = DatabaseUsageObserver(database: database)
@@ -161,7 +164,6 @@ final class AppEnvironment {
             useFakes
             ? FixedFrontmostApp()
             : WorkspaceFrontmostAppSource()
-        let speechModelName = loaded.settings.whisperModelName
         let dictation = DictationController(
             clients: DictationControllerClients(
                 hotkey: hotkey,
@@ -178,7 +180,7 @@ final class AppEnvironment {
                 cancels: DictationCancelSignal(),
                 options: DictationControllerOptions(
                     dictationsDirectory: dictations,
-                    speechModelName: { speechModelName })
+                    speechModelName: { nameBox.value })
             )
         )
         let registration = hotkeyRegistration(from: loaded.settings.dictationHotkey)
@@ -234,6 +236,7 @@ final class AppEnvironment {
             armedHotkeyModifiers: armed.modifiers,
             capture: capture,
             routerBox: box,
+            modelNameBox: nameBox,
             usage: usage,
             fakeHotkey: fakeHotkey,
             hotkey: hotkey,
@@ -303,6 +306,42 @@ final class AppEnvironment {
         )
         router = replacement
         routerBox.replace(replacement)
+    }
+
+    /// Settings saved from the Settings screen. Rebuilds the router and reloads the speech model so
+    /// the change takes effect without a relaunch. Returns the transports now in use.
+    func apply(_ updated: AppSettings) async -> [any LLMTransport] {
+        let previous = settings
+        settings = updated
+        guard !usesFakes else { return transports }
+        if previous.whisperModelName != updated.whisperModelName {
+            modelNameBox.value = updated.whisperModelName
+            await loadSpeechModelIfInstalled()
+        }
+        var ignored: [String] = []
+        transports = Self.makeTransports(useFakes: false, settings: updated, notes: &ignored)
+        let replacement = LLMRouter(
+            chain: Self.chain(from: updated), transports: transports, observer: usage)
+        router = replacement
+        routerBox.replace(replacement)
+        return transports
+    }
+
+    func isModelInstalled(_ name: String) -> Bool {
+        (try? modelManager.isInstalled(name: name)) ?? false
+    }
+
+    /// Loads the selected model into the engine, or unloads it when the file is missing.
+    func loadSpeechModelIfInstalled() async {
+        guard !usesFakes else { return }
+        let name = settings.whisperModelName
+        guard let url = try? modelManager.modelURL(name: name),
+            (try? modelManager.isInstalled(name: name)) == true
+        else {
+            await speech.unload()
+            return
+        }
+        try? await speech.load(model: url)
     }
 
     func modelStatusLine() async -> String {
@@ -467,15 +506,16 @@ final class AppEnvironment {
         useFakes: Bool,
         settings: AppSettings,
         models: URL,
+        nameBox: ModelNameBox,
         notes: inout [String]
     ) async -> ReportingSpeechEngine {
         let name = settings.whisperModelName
         if useFakes {
             let fake = FakeSpeechEngine(result: FixtureSpeech.transcript)
             await fake.load(model: models)
-            return ReportingSpeechEngine(engine: fake, modelName: name)
+            return ReportingSpeechEngine(engine: fake, modelName: nameBox)
         }
-        let engine = ReportingSpeechEngine(engine: WhisperCppEngine(), modelName: name)
+        let engine = ReportingSpeechEngine(engine: WhisperCppEngine(), modelName: nameBox)
         let manager = ModelManager(directory: models)
         do {
             guard try manager.isInstalled(name: name) else {
@@ -575,6 +615,7 @@ final class AppEnvironment {
         armedHotkeyModifiers: UInt?,
         capture: ExplainingCapture,
         routerBox: RouterBox,
+        modelNameBox: ModelNameBox,
         usage: DatabaseUsageObserver,
         fakeHotkey: FakeHotkeyService?,
         hotkey: any HotkeyService,
@@ -604,10 +645,32 @@ final class AppEnvironment {
         self.armedHotkeyModifiers = armedHotkeyModifiers
         self.capture = capture
         self.routerBox = routerBox
+        self.modelNameBox = modelNameBox
         self.usage = usage
         self.fakeHotkey = fakeHotkey
         self.hotkey = hotkey
         self.dictationRegistration = dictationRegistration
+    }
+}
+
+/// The Whisper model name in use, readable from any isolation and replaceable by Settings.
+final class ModelNameBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var name: String
+
+    init(_ name: String) { self.name = name }
+
+    var value: String {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return name
+        }
+        set {
+            lock.lock()
+            name = newValue
+            lock.unlock()
+        }
     }
 }
 
@@ -642,11 +705,12 @@ struct CurrentRouterGenerator: SummaryGenerating {
 
 struct ReportingSpeechEngine: SpeechEngine {
     private let engine: any SpeechEngine
-    private let modelName: String
+    private let modelNameBox: ModelNameBox
+    private var modelName: String { modelNameBox.value }
 
-    init(engine: any SpeechEngine, modelName: String) {
+    init(engine: any SpeechEngine, modelName: ModelNameBox) {
         self.engine = engine
-        self.modelName = modelName
+        self.modelNameBox = modelName
     }
 
     var isLoaded: Bool {
