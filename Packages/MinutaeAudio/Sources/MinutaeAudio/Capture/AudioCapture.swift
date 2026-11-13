@@ -2,7 +2,18 @@ import AVFoundation
 import Foundation
 
 /// Samples are mono, normalized Float32 PCM at 16 kHz.
+public enum CaptureEvent: Sendable {
+    case samples([Float])
+    case failure(CaptureFailure)
+}
+
+public struct CaptureFailure: Error, Sendable {
+    public let message: String
+    public init(message: String) { self.message = message }
+}
+
 public protocol AudioCapture: AnyObject {
+    func events() -> AsyncStream<CaptureEvent>
     func subscribe() -> AsyncStream<[Float]>
     func start() throws
     func stop() throws -> CaptureResult
@@ -40,6 +51,7 @@ public enum AudioMath {
 /// Serializes fan-out and keeps pre-roll even while no dictation is active.
 public final class CaptureBuffer: @unchecked Sendable {
     private let lock = NSLock()
+    private var eventSubscribers: [UUID: AsyncStream<CaptureEvent>.Continuation] = [:]
     private var subscribers: [UUID: AsyncStream<[Float]>.Continuation] = [:]
     private var ring: [Float] = []
     private var captured: [Float]?
@@ -51,6 +63,19 @@ public final class CaptureBuffer: @unchecked Sendable {
             lock.lock(); subscribers[id] = continuation; lock.unlock()
             continuation.onTermination = { [weak self] _ in self?.remove(id) }
         }
+    }
+    public func events() -> AsyncStream<CaptureEvent> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            lock.lock(); eventSubscribers[id] = continuation; lock.unlock()
+            continuation.onTermination = { [weak self] _ in self?.removeEvent(id) }
+        }
+    }
+    private func removeEvent(_ id: UUID) { lock.lock(); eventSubscribers.removeValue(forKey: id); lock.unlock() }
+    public func fail(_ error: Error) {
+        lock.lock(); defer { lock.unlock() }
+        let failure = CaptureFailure(message: String(describing: error))
+        for continuation in eventSubscribers.values { continuation.yield(.failure(failure)) }
     }
     private func remove(_ id: UUID) { lock.lock(); subscribers.removeValue(forKey: id); lock.unlock() }
     public func begin(wavURL: URL? = nil) throws {
@@ -67,6 +92,7 @@ public final class CaptureBuffer: @unchecked Sendable {
         if ring.count > 4_800 { ring.removeFirst(ring.count - 4_800) }
         if captured != nil { try writer?.append(samples); captured?.append(contentsOf: samples) }
         for continuation in subscribers.values { continuation.yield(samples) }
+        for continuation in eventSubscribers.values { continuation.yield(.samples(samples)) }
     }
     public func end(thresholdDB: Float = -45) throws -> CaptureResult {
         lock.lock(); defer { lock.unlock() }
@@ -82,6 +108,7 @@ public final class FakeAudioCapture: AudioCapture {
     private let samples: [Float]
     public init(samples: [Float]) { self.samples = samples }
     public func subscribe() -> AsyncStream<[Float]> { buffer.subscribe() }
+    public func events() -> AsyncStream<CaptureEvent> { buffer.events() }
     public func start() throws { try buffer.begin(); try buffer.push(samples) }
     public func stop() throws -> CaptureResult { try buffer.end() }
 }
