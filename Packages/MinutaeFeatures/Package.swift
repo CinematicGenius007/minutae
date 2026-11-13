@@ -10,11 +10,12 @@ let package = Package(
         .package(path: "../MinutaeMeetings"),
         .package(path: "../MinutaeCore"),
         .package(path: "../MinutaeAudio"),
+        .package(path: "../MinutaeLLM"),
     ],
     targets: [
         .target(
             name: "MinutaeFeatures",
-            dependencies: ["MinutaeDesign", "MinutaeMeetings", "MinutaeCore"]),
+            dependencies: ["MinutaeDesign", "MinutaeMeetings", "MinutaeCore", "MinutaeLLM"]),
         .testTarget(
             name: "MinutaeFeaturesTests",
             dependencies: ["MinutaeFeatures", "MinutaeCore", "MinutaeMeetings", "MinutaeAudio"]),
