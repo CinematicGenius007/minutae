@@ -130,14 +130,14 @@ public struct APIUsageLog: Codable, FetchableRecord, PersistableRecord, TableRec
     public var provider: String
     public var model: String
     public var endpoint: String
-    public var input_tokens: Int
-    public var output_tokens: Int
-    public var cost_usd: Double
+    public var input_tokens: Int?
+    public var output_tokens: Int?
+    public var cost_usd: Double?
     public var created_at: String
     public var transport: String?
     public var duration_ms: Int?
     public var error_class: String?
-    public init(id: String, meeting_id: String?, provider: String, model: String, endpoint: String, input_tokens: Int, output_tokens: Int, cost_usd: Double, created_at: String, transport: String?, duration_ms: Int?, error_class: String?) {
+    public init(id: String, meeting_id: String?, provider: String, model: String, endpoint: String, input_tokens: Int?, output_tokens: Int?, cost_usd: Double?, created_at: String, transport: String?, duration_ms: Int?, error_class: String?) {
         self.id = id
         self.meeting_id = meeting_id
         self.provider = provider

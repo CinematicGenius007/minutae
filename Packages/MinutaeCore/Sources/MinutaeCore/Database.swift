@@ -28,8 +28,56 @@ public struct MinutaeDatabase: Sendable {
                 try db.execute(sql: "ALTER TABLE api_usage_log ADD COLUMN \(name) \(type)")
             }
         }
+        // v1 declared token counts and cost_usd NOT NULL. Unknown tokens and non-api cost are NULL.
+        migrator.registerMigration("v3") { db in
+            try makeUsageCostsNullable(db)
+        }
         try migrator.migrate(pool)
     }
+}
+
+private func makeUsageCostsNullable(_ db: Database) throws {
+    try db.execute(sql: """
+        CREATE TABLE api_usage_log_v3 (
+          id            TEXT PRIMARY KEY NOT NULL,
+          meeting_id    TEXT REFERENCES meetings(id) ON DELETE SET NULL,
+          provider      TEXT NOT NULL,
+          model         TEXT NOT NULL,
+          endpoint      TEXT NOT NULL,
+          input_tokens  INTEGER,
+          output_tokens INTEGER,
+          cost_usd      REAL,
+          created_at    TEXT NOT NULL,
+          transport     TEXT,
+          duration_ms   INTEGER,
+          error_class   TEXT
+        )
+        """)
+    try db.execute(sql: """
+        INSERT INTO api_usage_log_v3 (
+          id, meeting_id, provider, model, endpoint,
+          input_tokens, output_tokens, cost_usd, created_at,
+          transport, duration_ms, error_class
+        )
+        SELECT
+          id,
+          CASE
+            WHEN meeting_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM meetings WHERE meetings.id = api_usage_log.meeting_id
+            ) THEN meeting_id
+            ELSE NULL
+          END,
+          provider, model, endpoint,
+          input_tokens, output_tokens, cost_usd, created_at,
+          transport, duration_ms, error_class
+        FROM api_usage_log
+        """)
+    try db.execute(sql: "DROP TABLE api_usage_log")
+    try db.execute(sql: "ALTER TABLE api_usage_log_v3 RENAME TO api_usage_log")
+    try db.execute(sql: """
+        CREATE INDEX IF NOT EXISTS idx_api_usage_created_at
+        ON api_usage_log(created_at DESC)
+        """)
 }
 
 public struct Repository<Record: FetchableRecord & PersistableRecord & TableRecord & Sendable>: Sendable {

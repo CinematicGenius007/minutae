@@ -20,6 +20,18 @@ public struct RouterAggregateError: Error, Sendable {
 
 public protocol UsageObserver: Sendable {
     func record(transport: TransportID, purpose: Purpose, duration: Duration, errorClass: String?) async
+    func record(_ event: UsageEvent) async throws
+}
+
+extension UsageObserver {
+    public func record(_ event: UsageEvent) async throws {
+        await record(
+            transport: event.transport,
+            purpose: event.purpose,
+            duration: event.duration,
+            errorClass: event.errorClass
+        )
+    }
 }
 
 private struct RepairFailed: Error {}
@@ -55,11 +67,24 @@ public struct LLMRouter: Sendable {
             try Task.checkCancellation()
             let response = try await transport.run(request)
             try Task.checkCancellation()
-            await observer?.record(transport: transport.id, purpose: request.purpose, duration: start.duration(to: clock.now), errorClass: nil)
+            let elapsed = start.duration(to: clock.now)
+            _ = try? await observer?.record(UsageEvent(
+                transport: transport.id,
+                purpose: request.purpose,
+                model: response.model,
+                usage: response.usage,
+                duration: elapsed
+            ))
             return response
         } catch {
             let classified: LLMError = (error is CancellationError || Task.isCancelled) ? .cancelled : (error as? LLMError ?? .unavailable("Transport failed"))
-            await observer?.record(transport: transport.id, purpose: request.purpose, duration: start.duration(to: clock.now), errorClass: errorName(classified))
+            let elapsed = start.duration(to: clock.now)
+            _ = try? await observer?.record(UsageEvent(
+                transport: transport.id,
+                purpose: request.purpose,
+                duration: elapsed,
+                errorClass: errorName(classified)
+            ))
             throw classified
         }
     }
