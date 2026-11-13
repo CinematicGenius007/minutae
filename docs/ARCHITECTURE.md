@@ -147,6 +147,27 @@ public protocol LLMTransport: Sendable {
 }
 ```
 
+```swift
+public enum Purpose: String, Codable, Sendable {
+    case summary, title, cleanup, ask, test      // test = Settings "Test" action
+}
+
+public struct Usage: Codable, Sendable, Equatable {
+    var inputTokens: Int?       // nil when the CLI does not report it
+    var outputTokens: Int?
+    var costUSD: Double?        // only ever set by the api transport
+}
+
+public struct TransportStatus: Sendable, Equatable {
+    var installed: Bool
+    var binaryPath: String?     // resolved real path, nil if not installed
+    var signedIn: Bool?         // nil = unknown / not checkable cheaply
+    var model: String?          // pinned/selected model, nil if none
+    var version: String?
+    var detail: String?         // human-readable note for the Settings row
+}
+```
+
 `LLMRouter` holds the user's ordered fallback chain, tries each available transport, falls back on `notInstalled`, `notLoggedIn`, `rateLimited`, `timeout` and `modelRejected`, never on `cancelled`. JSON mode validates with `Codable` and makes one repair retry. Long transcripts use map-reduce chunking.
 
 ### 5.3 Subprocess rules (all CLI transports)
@@ -225,6 +246,90 @@ GRDB over the same SQLite file in WAL mode. Existing tables stay: `meetings`, `r
 | `transcript_edits` | segment_id, original, edited, edited_at (edits never overwrite the original) |
 
 `api_usage_log` adds `transport`, `duration_ms`, `error_class`. Migrations use GRDB `DatabaseMigrator`; the first migration recognises a database created by the Tauri app and brings it to v2 without data loss.
+
+#### 7.1.1 Schema v2 (normative)
+
+Conventions, matching the existing tables: ids are lowercase UUID strings (`TEXT PRIMARY KEY NOT NULL`); timestamps are ISO-8601 UTC strings; booleans are `INTEGER` 0 or 1; foreign keys are enforced; JSON is stored as `TEXT`. Migration v2 only adds. It never alters or drops v1 tables except `ALTER TABLE api_usage_log ADD COLUMN`.
+
+```sql
+CREATE TABLE dictations (
+  id TEXT PRIMARY KEY NOT NULL,
+  started_at TEXT NOT NULL,
+  duration_ms INTEGER,
+  target_app_bundle_id TEXT,
+  target_app_name TEXT,
+  raw_text TEXT NOT NULL DEFAULT '',
+  final_text TEXT NOT NULL DEFAULT '',
+  language TEXT,
+  insert_method TEXT CHECK (insert_method IN ('pasteboard','accessibility','typing','clipboardOnly','none')),
+  status TEXT NOT NULL DEFAULT 'listening'
+    CHECK (status IN ('listening','processing','inserting','done','failed','cancelled')),
+  audio_path TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_dictations_started_at ON dictations(started_at DESC);
+
+CREATE TABLE jobs (
+  id TEXT PRIMARY KEY NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('transcribe','summarise','embed','export','retention')),
+  subject_type TEXT NOT NULL CHECK (subject_type IN ('meeting','dictation')),
+  subject_id TEXT NOT NULL,            -- polymorphic, so no foreign key
+  payload TEXT,                        -- JSON
+  state TEXT NOT NULL DEFAULT 'queued'
+    CHECK (state IN ('queued','running','succeeded','failed','cancelled')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 3,
+  last_error TEXT,
+  run_after TEXT,                      -- backoff: not eligible before this time
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_jobs_state_run_after ON jobs(state, run_after);
+CREATE INDEX idx_jobs_subject ON jobs(subject_type, subject_id);
+
+CREATE TABLE tags (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  color TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE item_tags (
+  tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  subject_type TEXT NOT NULL CHECK (subject_type IN ('meeting','dictation')),
+  subject_id TEXT NOT NULL,
+  PRIMARY KEY (tag_id, subject_type, subject_id)
+);
+CREATE INDEX idx_item_tags_subject ON item_tags(subject_type, subject_id);
+
+CREATE TABLE dictionary (
+  id TEXT PRIMARY KEY NOT NULL,
+  term TEXT NOT NULL,
+  replacement TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'word' CHECK (kind IN ('word','snippet')),
+  scope_bundle_id TEXT,                -- NULL = all apps
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_dictionary_unique
+  ON dictionary(term, kind, COALESCE(scope_bundle_id, ''));
+
+CREATE TABLE transcript_edits (
+  id TEXT PRIMARY KEY NOT NULL,
+  segment_id TEXT NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'text' CHECK (kind IN ('text','speaker')),
+  original_text TEXT NOT NULL,
+  edited_text TEXT NOT NULL,
+  edited_at TEXT NOT NULL
+);
+CREATE INDEX idx_transcript_edits_segment ON transcript_edits(segment_id);
+
+ALTER TABLE api_usage_log ADD COLUMN transport TEXT;
+ALTER TABLE api_usage_log ADD COLUMN duration_ms INTEGER;
+ALTER TABLE api_usage_log ADD COLUMN error_class TEXT;
+```
+
+Notes: the v1 `transcripts.provider` CHECK only allows `whisper-local` and `whisper-api`; leave it, and a later migration will rebuild that table when a new engine needs a new value. The latest edit per segment wins; originals in `segments` are never overwritten. Orphan `item_tags`, `jobs` and `dictations` links to deleted meetings are cleaned by the repository layer, not by foreign keys.
 
 ### 7.2 Capabilities
 
