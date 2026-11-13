@@ -1,4 +1,5 @@
 import Foundation
+import MinutaeCore
 
 public enum Purpose: String, Codable, Sendable { case summary, title, cleanup, ask, test }
 

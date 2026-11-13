@@ -1,8 +1,5 @@
 import Foundation
-
-public enum TransportID: String, Codable, Sendable {
-    case codexCLI, grokCLI, ollama, api
-}
+import MinutaeCore
 
 public enum LLMError: Error, Sendable {
     case notInstalled
