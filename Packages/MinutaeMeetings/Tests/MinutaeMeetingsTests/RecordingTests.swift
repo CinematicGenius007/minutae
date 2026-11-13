@@ -42,3 +42,34 @@ import MinutaeCore
     #expect(try Repository<Recording>(db).all().count == 1)
     #expect(try Repository<Job>(db).all().count == 1)
 }
+
+@Test func pauseResumeAndStopPaused() async throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let db = try MinutaeDatabase(path: dir.appendingPathComponent("test.db").path)
+    let fake = FakeAudioCapture(samples: [0.1])
+    let recorder = MeetingRecorder(database: db, recordingsDirectory: dir, capture: fake)
+    let id = try await recorder.start()
+    try await Task.sleep(for: .milliseconds(50))
+    try await recorder.pause()
+    try await recorder.pause()
+    try fake.buffer.push([0.2, 0.2])
+    try await Task.sleep(for: .milliseconds(50))
+    try await recorder.resume()
+    try await recorder.resume()
+    try fake.buffer.push([0.3, 0.3, 0.3])
+    try await Task.sleep(for: .milliseconds(50))
+    try await recorder.pause()
+    try fake.buffer.push([0.4, 0.4])
+    try await Task.sleep(for: .milliseconds(50))
+    _ = try await recorder.stop()
+    let data = try Data(contentsOf: dir.appendingPathComponent("\(id).wav"))
+    #expect(data.count == 44 + 4 * 4)
+    let samples = stride(from: 44, to: data.count, by: 4).map { offset in
+        Float(bitPattern: data[offset..<(offset + 4)].enumerated().reduce(UInt32(0)) {
+            $0 | (UInt32($1.element) << (8 * $1.offset))
+        })
+    }
+    #expect(samples == [0.1, 0.3, 0.3, 0.3])
+}

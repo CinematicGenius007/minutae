@@ -14,13 +14,17 @@ public enum MeetingRecorderError: Error, Sendable {
     case finishFailed(meetingId: String, reason: String)
 }
 
+/// Pause boundaries are best effort within one capture buffer.
 public actor MeetingRecorder {
+    private enum Message: Sendable { case samples([Float]), pause, resume }
     private let database: MinutaeDatabase
     private let directory: URL
     private let capture: CaptureBox
     private var id: String?
     private var writer: WAVWriter?
     private var consumer: Task<Void, Never>?
+    private var forwarder: Task<Void, Never>?
+    private var messages: AsyncStream<Message>.Continuation?
     private var paused = false
     private var writeError: String?
     private var lastStopped: String?
@@ -41,10 +45,15 @@ public actor MeetingRecorder {
         do {
             try database.pool.write { db in try meeting.insert(db) }
             let stream = capture.capture.subscribe()
-            try capture.capture.start()
+            try capture.capture.start(retainFullCapture: false)
             id = meetingId; writer = newWriter; paused = false; writeError = nil; lastStopped = nil
+            let (messageStream, continuation) = AsyncStream<Message>.makeStream()
+            messages = continuation
+            forwarder = Task {
+                for await samples in stream { continuation.yield(.samples(samples)) }
+            }
             consumer = Task { [weak self] in
-                for await samples in stream { await self?.append(samples) }
+                for await message in messageStream { await self?.consume(message) }
             }
             return meetingId
         } catch {
@@ -55,15 +64,20 @@ public actor MeetingRecorder {
 
     public func pause() throws {
         guard id != nil else { throw MeetingRecorderError.notRecording }
-        paused = true
+        messages?.yield(.pause)
     }
     public func resume() throws {
         guard id != nil else { throw MeetingRecorderError.notRecording }
-        paused = false
+        messages?.yield(.resume)
     }
-    private func append(_ samples: [Float]) {
-        guard !paused, writeError == nil else { return }
-        do { try writer?.append(samples) } catch { writeError = String(describing: error) }
+    private func consume(_ message: Message) {
+        switch message {
+        case .pause: paused = true
+        case .resume: paused = false
+        case .samples(let samples):
+            guard !paused, writeError == nil else { return }
+            do { try writer?.append(samples) } catch { writeError = String(describing: error) }
+        }
     }
 
     @discardableResult public func stop() async throws -> String {
@@ -73,9 +87,11 @@ public actor MeetingRecorder {
         }
         do {
             _ = try capture.capture.stop()
+            await forwarder?.value
+            messages?.finish()
             await consumer?.value
             try writer?.close()
-            writer = nil; consumer = nil; id = nil
+            writer = nil; consumer = nil; forwarder = nil; messages = nil; id = nil
             if let writeError { throw MeetingRecorderError.finishFailed(meetingId: meetingId, reason: writeError) }
             try finishStop(meetingId: meetingId)
             lastStopped = meetingId

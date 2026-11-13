@@ -92,3 +92,12 @@ import Testing
     _ = await eventIterator.next()
     #expect(await eventIterator.next() == nil)
 }
+
+@Test func captureWithoutRetention() throws {
+    let buffer = CaptureBuffer()
+    try buffer.begin(retainFullCapture: false)
+    try buffer.push([0.5, 0.25])
+    let result = try buffer.end()
+    #expect(result.full.isEmpty)
+    #expect(result.trimmed.isEmpty)
+}

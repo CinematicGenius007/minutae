@@ -15,8 +15,12 @@ public struct CaptureFailure: Error, Sendable {
 public protocol AudioCapture: AnyObject {
     func events() -> AsyncStream<CaptureEvent>
     func subscribe() -> AsyncStream<[Float]>
-    func start() throws
+    func start(retainFullCapture: Bool) throws
     func stop() throws -> CaptureResult
+}
+
+public extension AudioCapture {
+    func start() throws { try start(retainFullCapture: true) }
 }
 
 public struct CaptureResult: Sendable {
@@ -55,6 +59,7 @@ public final class CaptureBuffer: @unchecked Sendable {
     private var subscribers: [UUID: AsyncStream<[Float]>.Continuation] = [:]
     private var ring: [Float] = []
     private var captured: [Float]?
+    private var recording = false
     private var writer: WAVWriter?
     public init() {}
     public func subscribe() -> AsyncStream<[Float]> {
@@ -78,27 +83,29 @@ public final class CaptureBuffer: @unchecked Sendable {
         for continuation in eventSubscribers.values { continuation.yield(.failure(failure)) }
     }
     private func remove(_ id: UUID) { lock.lock(); subscribers.removeValue(forKey: id); lock.unlock() }
-    public func begin(wavURL: URL? = nil) throws {
+    public func begin(wavURL: URL? = nil, retainFullCapture: Bool = true) throws {
         lock.lock(); defer { lock.unlock() }
-        guard captured == nil else { throw CaptureError.alreadyRecording }
+        guard !recording else { throw CaptureError.alreadyRecording }
         let newWriter = try wavURL.map { try WAVWriter(url: $0) }
         try newWriter?.append(ring)
         writer = newWriter
-        captured = ring
+        captured = retainFullCapture ? ring : nil
+        recording = true
     }
     public func push(_ samples: [Float]) throws {
         lock.lock(); defer { lock.unlock() }
         ring.append(contentsOf: samples)
         if ring.count > 4_800 { ring.removeFirst(ring.count - 4_800) }
-        if captured != nil { try writer?.append(samples); captured?.append(contentsOf: samples) }
+        if recording { try writer?.append(samples); captured?.append(contentsOf: samples) }
         for continuation in subscribers.values { continuation.yield(samples) }
         for continuation in eventSubscribers.values { continuation.yield(.samples(samples)) }
     }
     public func end(thresholdDB: Float = -45) throws -> CaptureResult {
         lock.lock()
-        guard let full = captured else { lock.unlock(); throw CaptureError.notRecording }
+        guard recording else { lock.unlock(); throw CaptureError.notRecording }
+        let full = captured ?? []
         do { try writer?.close() } catch { lock.unlock(); throw error }
-        writer = nil; captured = nil
+        writer = nil; captured = nil; recording = false
         let sampleContinuations = Array(subscribers.values)
         let eventContinuations = Array(eventSubscribers.values)
         subscribers.removeAll(); eventSubscribers.removeAll()
@@ -117,6 +124,6 @@ public final class FakeAudioCapture: AudioCapture {
     public init(samples: [Float]) { self.samples = samples }
     public func subscribe() -> AsyncStream<[Float]> { buffer.subscribe() }
     public func events() -> AsyncStream<CaptureEvent> { buffer.events() }
-    public func start() throws { try buffer.begin(); try buffer.push(samples) }
+    public func start(retainFullCapture: Bool) throws { try buffer.begin(retainFullCapture: retainFullCapture); try buffer.push(samples) }
     public func stop() throws -> CaptureResult { try buffer.end() }
 }
