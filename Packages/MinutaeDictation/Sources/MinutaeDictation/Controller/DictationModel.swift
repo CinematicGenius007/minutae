@@ -15,6 +15,19 @@ public enum DictationPhase: String, Sendable, Equatable {
     case error
 }
 
+/// How the last dictation ended. Set on the `error` and `idle` events that close a run and
+/// cleared when the next run starts listening.
+public enum DictationOutcome: String, Sendable, Equatable {
+    /// Text went into the target app by paste, Accessibility, or typing.
+    case inserted
+    /// Text is on the clipboard because insertion was not possible.
+    case copiedToClipboard
+    /// The transcript was empty, so nothing was inserted.
+    case nothingHeard
+    case cancelled
+    case failed
+}
+
 /// Snapshot the HUD can render without reading the database.
 public struct DictationHUDState: Sendable, Equatable {
     public var phase: DictationPhase
@@ -23,6 +36,7 @@ public struct DictationHUDState: Sendable, Equatable {
     public var targetAppName: String?
     public var level: Float
     public var banner: String?
+    public var outcome: DictationOutcome?
 
     public init(
         phase: DictationPhase,
@@ -30,7 +44,8 @@ public struct DictationHUDState: Sendable, Equatable {
         targetBundleID: String?,
         targetAppName: String?,
         level: Float,
-        banner: String?
+        banner: String?,
+        outcome: DictationOutcome? = nil
     ) {
         self.phase = phase
         self.dictationID = dictationID
@@ -38,6 +53,7 @@ public struct DictationHUDState: Sendable, Equatable {
         self.targetAppName = targetAppName
         self.level = level
         self.banner = banner
+        self.outcome = outcome
     }
 }
 
@@ -163,15 +179,19 @@ public struct DictationControllerOptions: Sendable {
     public var dictationsDirectory: URL
     public var now: @Sendable () -> Date
     public var makeID: @Sendable () -> String
+    /// Speech model name stored on each new row, such as `base`. Nil leaves it unknown.
+    public var speechModelName: @Sendable () -> String?
 
     public init(
         dictationsDirectory: URL,
         now: @escaping @Sendable () -> Date = { Date() },
-        makeID: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
+        makeID: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() },
+        speechModelName: @escaping @Sendable () -> String? = { nil }
     ) {
         self.dictationsDirectory = dictationsDirectory
         self.now = now
         self.makeID = makeID
+        self.speechModelName = speechModelName
     }
 }
 

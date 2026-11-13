@@ -72,7 +72,7 @@ Caption: one process; services are actors; the only outward paths are vendor CLI
 | Main window | SwiftUI `Window` with custom sidebar (`NavigationSplitView` styled to the design) | closes to background, app keeps running |
 | Menu-bar item | `NSStatusItem` with template icon (idle and recording variants) | `MenuBarExtra` rejected: its menu cannot match the design (SPIKE-01 §7) |
 | Tray popover | custom `NSPanel` anchored under the status item, SwiftUI content | soft-shadow style from DS-01 |
-| Dictation HUD | non-activating `NSPanel`, `.canJoinAllSpaces`, `.fullScreenAuxiliary`, ignores mouse | proven not to steal focus (SPIKE-01 §2) |
+| Dictation HUD | non-activating `NSPanel`, `.canJoinAllSpaces`, `.fullScreenAuxiliary`, ignores mouse | proven not to steal focus (SPIKE-01 §2). Top centre of the screen under the pointer. `MinutaeFeatures.DictationHUDPresenter`, driven by `DictationHUDState.outcome` |
 | Meeting prompt | non-activating `NSPanel` near top right | |
 | Recording pill | `NSPanel` | |
 | Search and ask | SwiftUI sheet in main window (⌘K) | |
@@ -334,6 +334,18 @@ Notes: the v1 `transcripts.provider` CHECK only allows `whisper-local` and `whis
 #### 7.1.2 Schema v3
 
 Migration `v3` rebuilds `api_usage_log` so `input_tokens`, `output_tokens` and `cost_usd` are nullable (unknown tokens and free CLI calls are stored as NULL, not 0). Existing values are preserved, an orphan `meeting_id` becomes NULL, and `idx_api_usage_created_at` is recreated. `v1.sql` is unchanged. Cost is recorded only for the `api` transport.
+
+#### 7.1.3 Schema v4
+
+Migration `v4` adds three nullable columns to `dictations`. It only adds; existing rows keep every value.
+
+```sql
+ALTER TABLE dictations ADD COLUMN edited_text TEXT;   -- user edit; NULL = never edited
+ALTER TABLE dictations ADD COLUMN edited_at TEXT;     -- ISO-8601 UTC of the last edit
+ALTER TABLE dictations ADD COLUMN speech_model TEXT;  -- speech model name, such as 'base'; NULL = unknown
+```
+
+Rules: an edit from Dictation detail writes `edited_text` and `edited_at` only. `raw_text` (the original transcript), `final_text` (the text that was inserted) and the WAV at `audio_path` are never changed by an edit. Text equal to the original clears the edit (both columns NULL). The text shown, copied, exported and searched is `edited_text`, else `final_text`, else `raw_text` (`Dictation.displayText`). Rows in `listening`, `processing` or `inserting` belong to `DictationController` and cannot be edited or deleted. `speech_model` is written when the row is created, from `DictationControllerOptions.speechModelName`. Deleting a dictation (one row or Clear all) removes the row, its `item_tags` and `jobs`, and its WAV, but only a `.wav` inside the dictations folder (`MinutaeLibrary.DatabaseDictationArchive`).
 
 ### 7.2 Capabilities
 

@@ -71,3 +71,35 @@ import Testing
     #expect(try Repository<Job>(database).all().isEmpty)
     #expect(try Repository<ItemTag>(database).all().isEmpty)
 }
+
+@Test func v4AddsDictationEditColumnsAndKeepsRows() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let path = directory.appendingPathComponent("db.sqlite").path
+    let database = try MinutaeDatabase(path: path)
+    try database.pool.write { connection in
+        try connection.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v4'")
+        try connection.execute(sql: "ALTER TABLE dictations DROP COLUMN edited_text")
+        try connection.execute(sql: "ALTER TABLE dictations DROP COLUMN edited_at")
+        try connection.execute(sql: "ALTER TABLE dictations DROP COLUMN speech_model")
+        try connection.execute(
+            sql: """
+                INSERT INTO dictations (id, started_at, raw_text, final_text, status, created_at)
+                VALUES ('d', '2026-11-13T14:41:00Z', 'raw', 'Final.', 'done', '2026-11-13T14:41:00Z')
+                """)
+    }
+    let migrated = try MinutaeDatabase(path: path)
+    let columns = try migrated.pool.read { connection in
+        try Set(connection.columns(in: "dictations").map(\.name))
+    }
+    #expect(columns.isSuperset(of: ["edited_text", "edited_at", "speech_model"]))
+    var row = try #require(try Repository<Dictation>(migrated).find("d"))
+    #expect(row.edited_text == nil)
+    #expect(row.displayText == "Final.")
+    row.edited_text = "Edited."
+    try Repository<Dictation>(migrated).save(row)
+    let saved = try #require(try Repository<Dictation>(migrated).find("d"))
+    #expect(saved.displayText == "Edited.")
+    #expect(saved.final_text == "Final.")
+    #expect(saved.raw_text == "raw")
+}

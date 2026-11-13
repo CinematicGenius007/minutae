@@ -8,11 +8,21 @@ let package = Package(
     dependencies: [
         .package(path: "../MinutaeCore"),
         .package(path: "../MinutaeDesign"),
+        .package(path: "../MinutaeDictation"),
+        .package(path: "../MinutaeLibrary"),
         .package(path: "../MinutaeLLM"),
     ],
     targets: [
-        .target(name: "MinutaeFeatures", dependencies: ["MinutaeCore", "MinutaeDesign", "MinutaeLLM"]),
-        .testTarget(name: "MinutaeFeaturesTests", dependencies: ["MinutaeFeatures"]),
+        .target(
+            name: "MinutaeFeatures",
+            dependencies: [
+                "MinutaeCore", "MinutaeDesign", "MinutaeDictation", "MinutaeLibrary", "MinutaeLLM",
+            ]
+        ),
+        .testTarget(
+            name: "MinutaeFeaturesTests",
+            dependencies: ["MinutaeFeatures", "MinutaeCore", "MinutaeDictation", "MinutaeLibrary"]
+        ),
     ],
     swiftLanguageModes: [.v6]
 )

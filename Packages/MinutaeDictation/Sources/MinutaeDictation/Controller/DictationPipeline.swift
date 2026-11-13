@@ -59,7 +59,7 @@ extension DictationController {
     func insertCleaned(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            await finishDone(method: "none", banner: nil)
+            await finishDone(method: "none", banner: nil, outcome: .nothingHeard)
             return
         }
         let result = await inserting.insert(text)
@@ -73,10 +73,10 @@ extension DictationController {
     func applyInsertion(_ result: InsertionResult) async {
         switch result {
         case .inserted(let method, _):
-            await finishDone(method: dictationInsertMethod(method), banner: nil)
+            await finishDone(method: dictationInsertMethod(method), banner: nil, outcome: .inserted)
         case .copiedToClipboard(let reason):
             let banner = dictationClipboardBanner(reason)
-            await finishDone(method: "clipboardOnly", banner: banner)
+            await finishDone(method: "clipboardOnly", banner: banner, outcome: .copiedToClipboard)
         case .refusedSecureField:
             await fail(message: "insert: secure field", method: "none")
         case .failed:
@@ -84,7 +84,7 @@ extension DictationController {
         }
     }
 
-    func finishDone(method: String, banner: String?) async {
+    func finishDone(method: String, banner: String?, outcome: DictationOutcome) async {
         do {
             try writeRow { current in
                 current.status = DictationRowStatus.done
@@ -95,6 +95,7 @@ extension DictationController {
             await fail(message: "store: \(dictationStageDetail(error))")
             return
         }
+        self.outcome = outcome
         enterIdle(banner: banner)
     }
 
@@ -107,6 +108,7 @@ extension DictationController {
         } catch {
             emit(.error, banner: "store: \(dictationStageDetail(error))")
         }
+        outcome = .cancelled
         enterIdle(banner: "cancelled")
     }
 
@@ -122,6 +124,7 @@ extension DictationController {
         } catch {
             // The row may stay on the previous status. The HUD still reports this failure.
         }
+        outcome = .failed
         emit(.error, banner: message)
         enterIdle(banner: message)
     }

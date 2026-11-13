@@ -25,6 +25,7 @@ public actor DictationController {
     private let directory: URL
     private let now: @Sendable () -> Date
     private let makeID: @Sendable () -> String
+    private let speechModelName: @Sendable () -> String?
     private let hub = DictationEventHub()
 
     var activity: Activity = .idle
@@ -32,6 +33,7 @@ public actor DictationController {
     private var startedAt: Date?
     var level: Float = 0
     var banner: String?
+    var outcome: DictationOutcome?
     var arming = false
     var stopClaimed = false
     var cancelRequested = false
@@ -58,6 +60,7 @@ public actor DictationController {
         directory = environment.options.dictationsDirectory
         now = environment.options.now
         makeID = environment.options.makeID
+        speechModelName = environment.options.speechModelName
         hud = DictationHUDState(
             phase: .idle,
             dictationID: nil,
@@ -109,6 +112,22 @@ public actor DictationController {
         if activity == .processing || activity == .inserting || arming {
             cancelRequested = true
         }
+    }
+
+    /// Starts a dictation from inside the app, or stops the one that is listening.
+    ///
+    /// This is the in-app equivalent of a toggle-mode hotkey press. It is ignored while a
+    /// dictation is transcribing or inserting.
+    public func toggleFromApp() async {
+        if activity == .listening, !stopClaimed {
+            await stopListening(trigger: .release)
+            return
+        }
+        if activity == .idle, !arming {
+            await begin()
+            return
+        }
+        hub.emit(.ignoredWhileBusy)
     }
 }
 
@@ -186,6 +205,7 @@ extension DictationController {
         arming = false
         activeRegistration = hotkey.registration
         level = 0
+        outcome = nil
         emit(.listening, banner: nil)
         watchCapture()
         do {
@@ -215,7 +235,8 @@ extension DictationController {
             status: DictationRowStatus.listening,
             audio_path: nil,
             error: nil,
-            created_at: stamp
+            created_at: stamp,
+            speech_model: speechModelName()
         )
         try store.insert(created)
         row = created
@@ -347,7 +368,8 @@ extension DictationController {
             targetBundleID: row?.target_app_bundle_id,
             targetAppName: row?.target_app_name,
             level: level,
-            banner: banner
+            banner: banner,
+            outcome: outcome
         )
         hub.emit(.state(hud))
     }
