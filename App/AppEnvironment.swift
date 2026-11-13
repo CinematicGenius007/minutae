@@ -5,8 +5,8 @@ import MinutaeCore
 import MinutaeDesign
 import MinutaeDictation
 import MinutaeFeatures
-import MinutaeLibrary
 import MinutaeLLM
+import MinutaeLibrary
 import MinutaeMeetings
 import MinutaeSpeech
 
@@ -74,6 +74,8 @@ final class AppEnvironment {
     private let routerBox: RouterBox
     private let usage: DatabaseUsageObserver
     private let fakeHotkey: FakeHotkeyService?
+    private let hotkey: any HotkeyService
+    private let dictationRegistration: HotkeyRegistration
 
     static func makeFromProcess() async throws -> AppEnvironment {
         if AppLaunch.wantsFakes {
@@ -86,7 +88,9 @@ final class AppEnvironment {
     static func make(useFakes: Bool, root: URL) async throws -> AppEnvironment {
         var notes: [String] = []
         if useFakes {
-            notes.append("Running with fakes. Audio, speech, and AI calls stay on this Mac and use stand-ins.")
+            notes.append(
+                "Running with fakes. Audio, speech, and AI calls stay on this Mac and use stand-ins."
+            )
         }
         let loaded = try await loadSettings(useFakes: useFakes, root: root)
         notes.append(contentsOf: loaded.notes)
@@ -95,11 +99,15 @@ final class AppEnvironment {
         let dictations = URL(fileURLWithPath: loaded.settings.dictationsPath, isDirectory: true)
         let models = root.appending(path: "models", directoryHint: .isDirectory)
         for directory in [root, recordings, summaries, dictations, models] {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true)
         }
         let database = try MinutaeDatabase(path: root.appending(path: "minutae.db").path)
-        let permissions: any PermissionService = useFakes
-            ? FakePermissionService(statuses: Dictionary(uniqueKeysWithValues: Permission.allCases.map { ($0, .granted) }))
+        let permissions: any PermissionService =
+            useFakes
+            ? FakePermissionService(
+                statuses: Dictionary(
+                    uniqueKeysWithValues: Permission.allCases.map { ($0, .granted) }))
             : SystemPermissionService()
         let capture = ExplainingCapture(useFakes ? FixtureSpeech.capture() : MicrophoneCapture())
         let speech = await makeSpeech(
@@ -109,7 +117,8 @@ final class AppEnvironment {
             notes: &notes
         )
         let usage = DatabaseUsageObserver(database: database)
-        let transports = makeTransports(useFakes: useFakes, settings: loaded.settings, notes: &notes)
+        let transports = makeTransports(
+            useFakes: useFakes, settings: loaded.settings, notes: &notes)
         let router = LLMRouter(
             chain: chain(from: loaded.settings),
             transports: transports,
@@ -148,9 +157,11 @@ final class AppEnvironment {
         } else {
             inserter = TextInserterClient(SystemTextInserter(trusted: { AXIsProcessTrusted() }))
         }
-        let frontmost: any FrontmostAppSource = useFakes
+        let frontmost: any FrontmostAppSource =
+            useFakes
             ? FixedFrontmostApp()
             : WorkspaceFrontmostAppSource()
+        let speechModelName = loaded.settings.whisperModelName
         let dictation = DictationController(
             clients: DictationControllerClients(
                 hotkey: hotkey,
@@ -165,15 +176,19 @@ final class AppEnvironment {
                 store: DatabaseDictationStore(database: database),
                 frontmost: frontmost,
                 cancels: DictationCancelSignal(),
-                options: DictationControllerOptions(dictationsDirectory: dictations)
+                options: DictationControllerOptions(
+                    dictationsDirectory: dictations,
+                    speechModelName: { speechModelName })
             )
         )
-        let armed = arm(hotkey, settings: loaded.settings, notes: &notes)
+        let registration = hotkeyRegistration(from: loaded.settings.dictationHotkey)
+        let armed = arm(hotkey, registration: registration, notes: &notes)
         await dictation.start()
         do {
             try await meetings.recover()
         } catch {
-            notes.append("A previous recording could not be recovered. \(AppMessages.describe(error))")
+            notes.append(
+                "A previous recording could not be recovered. \(AppMessages.describe(error))")
         }
         do {
             try await runner.start()
@@ -185,7 +200,9 @@ final class AppEnvironment {
                 notes.append(message)
             }
         } else if !useFakes {
-            notes.append(AppMessages.permissionBlocked(.microphone, status: permissions.status(of: .microphone)))
+            notes.append(
+                AppMessages.permissionBlocked(
+                    .microphone, status: permissions.status(of: .microphone)))
         }
 
         return AppEnvironment(
@@ -218,13 +235,26 @@ final class AppEnvironment {
             capture: capture,
             routerBox: box,
             usage: usage,
-            fakeHotkey: fakeHotkey
+            fakeHotkey: fakeHotkey,
+            hotkey: hotkey,
+            dictationRegistration: registration
         )
     }
 
     @discardableResult
     func prepareMicrophone() -> String? {
         capture.prepareIfPossible()
+    }
+
+    /// The dictation controller has no enable flag. The armed hotkey is the switch.
+    func setDictationEnabled(_ enabled: Bool) throws {
+        if enabled {
+            try hotkey.register(dictationRegistration)
+            hotkeyArmed = true
+            return
+        }
+        hotkey.unregister()
+        hotkeyArmed = false
     }
 
     func transportLines() async -> [TransportLine] {
@@ -284,7 +314,8 @@ final class AppEnvironment {
         do {
             if try modelManager.isInstalled(name: name) {
                 if loaded { return "\(name) is installed and loaded." }
-                return "\(name) is installed but not loaded. Load it before dictation or transcription."
+                return
+                    "\(name) is installed but not loaded. Load it before dictation or transcription."
             }
             return AppMessages.missingModel(name)
         } catch {
@@ -358,7 +389,8 @@ final class AppEnvironment {
         while Date() < deadline {
             if let meeting = try Repository<Meeting>(database).find(meetingID) {
                 if meeting.status == "failed" {
-                    throw AppEnvironmentError(message: "The meeting failed. \(jobDetail(meetingID))")
+                    throw AppEnvironmentError(
+                        message: "The meeting failed. \(jobDetail(meetingID))")
                 }
                 if meeting.status == "done", let file = summaryFile(meetingID: meetingID) {
                     return file
@@ -366,7 +398,8 @@ final class AppEnvironment {
             }
             try await Task.sleep(for: .milliseconds(50))
         }
-        throw AppEnvironmentError(message: "Timed out waiting for the summary. \(jobDetail(meetingID))")
+        throw AppEnvironmentError(
+            message: "Timed out waiting for the summary. \(jobDetail(meetingID))")
     }
 
     private func waitForDictation(status: String) async throws -> Dictation {
@@ -383,7 +416,8 @@ final class AppEnvironment {
         }
         let rows = try Repository<Dictation>(database).all()
         let detail = rows.map { "\($0.status) \($0.error ?? "")" }.joined(separator: "; ")
-        throw AppEnvironmentError(message: "Timed out waiting for dictation status \(status). \(detail)")
+        throw AppEnvironmentError(
+            message: "Timed out waiting for dictation status \(status). \(detail)")
     }
 
     private func jobDetail(_ meetingID: String) -> String {
@@ -410,7 +444,8 @@ final class AppEnvironment {
         }
         // The suite name equals the app's bundle id, which Foundation rejects (nil); the standard
         // domain for this app is that same domain.
-        let defaults: UserDefaults = Bundle.main.bundleIdentifier == UserDefaultsSettingsStore.suiteName
+        let defaults: UserDefaults =
+            Bundle.main.bundleIdentifier == UserDefaultsSettingsStore.suiteName
             ? .standard
             : (UserDefaults(suiteName: UserDefaultsSettingsStore.suiteName) ?? .standard)
         let store = UserDefaultsSettingsStore(userDefaults: defaults)
@@ -421,7 +456,9 @@ final class AppEnvironment {
             return LoadedSettings(
                 store: store,
                 settings: .defaults,
-                notes: ["Settings could not be read. Defaults are in use. \(AppMessages.describe(error))"]
+                notes: [
+                    "Settings could not be read. Defaults are in use. \(AppMessages.describe(error))"
+                ]
             )
         }
     }
@@ -458,7 +495,8 @@ final class AppEnvironment {
         notes: inout [String]
     ) -> [any LLMTransport] {
         if settings.apiTransportEnabled || settings.transportFallbackOrder.contains(.api) {
-            notes.append("The API transport is not in this build. Codex, Grok, and Ollama are used.")
+            notes.append(
+                "The API transport is not in this build. Codex, Grok, and Ollama are used.")
         }
         if useFakes {
             return TransportID.defaultFallbackOrder.map { id in
@@ -487,10 +525,9 @@ final class AppEnvironment {
 
     private static func arm(
         _ hotkey: any HotkeyService,
-        settings: AppSettings,
+        registration: HotkeyRegistration,
         notes: inout [String]
     ) -> ArmedHotkey {
-        let registration = hotkeyRegistration(from: settings.dictationHotkey)
         do {
             try hotkey.register(registration)
             return ArmedHotkey(
@@ -508,7 +545,8 @@ final class AppEnvironment {
     private static func hotkeyRegistration(from hotkey: DictationHotkey) -> HotkeyRegistration {
         let mode: HotkeyMode = hotkey.mode == .hold ? .hold : .toggle
         let modifiers = MinutaeDictation.HotkeyModifier(rawValue: hotkey.chord.modifiers.rawValue)
-        let chord = MinutaeDictation.HotkeyChord(keyCode: hotkey.chord.keyCode, modifiers: modifiers)
+        let chord = MinutaeDictation.HotkeyChord(
+            keyCode: hotkey.chord.keyCode, modifiers: modifiers)
         return HotkeyRegistration(mode: mode, chord: chord)
     }
 
@@ -538,7 +576,9 @@ final class AppEnvironment {
         capture: ExplainingCapture,
         routerBox: RouterBox,
         usage: DatabaseUsageObserver,
-        fakeHotkey: FakeHotkeyService?
+        fakeHotkey: FakeHotkeyService?,
+        hotkey: any HotkeyService,
+        dictationRegistration: HotkeyRegistration
     ) {
         self.usesFakes = usesFakes
         self.root = root
@@ -566,6 +606,8 @@ final class AppEnvironment {
         self.routerBox = routerBox
         self.usage = usage
         self.fakeHotkey = fakeHotkey
+        self.hotkey = hotkey
+        self.dictationRegistration = dictationRegistration
     }
 }
 
@@ -616,12 +658,15 @@ struct ReportingSpeechEngine: SpeechEngine {
             try await engine.load(model: model)
         } catch {
             throw SpeechLoadFailure(
-                message: "The Whisper model “\(modelName)” could not be loaded. \(AppMessages.describe(error))"
+                message:
+                    "The Whisper model “\(modelName)” could not be loaded. \(AppMessages.describe(error))"
             )
         }
     }
 
-    func transcribe(samples: [Float], options: TranscriptionOptions) async throws -> MinutaeSpeech.Transcript {
+    func transcribe(samples: [Float], options: TranscriptionOptions) async throws
+        -> MinutaeSpeech.Transcript
+    {
         guard await engine.isLoaded else {
             throw SpeechLoadFailure(message: AppMessages.missingModel(modelName))
         }
@@ -630,7 +675,8 @@ struct ReportingSpeechEngine: SpeechEngine {
         } catch SpeechError.notLoaded {
             throw SpeechLoadFailure(message: AppMessages.missingModel(modelName))
         } catch SpeechError.modelLoadFailed {
-            throw SpeechLoadFailure(message: "The Whisper model “\(modelName)” could not be loaded.")
+            throw SpeechLoadFailure(
+                message: "The Whisper model “\(modelName)” could not be loaded.")
         }
     }
 
