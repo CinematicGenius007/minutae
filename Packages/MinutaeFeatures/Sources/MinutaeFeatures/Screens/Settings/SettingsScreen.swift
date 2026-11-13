@@ -16,7 +16,9 @@ public final class SettingsViewModel {
     public var keyDraft = ""
     private let keychain: (any KeychainStore)?
     private let store: any SettingsStore
-    private let transports: [any LLMTransport]
+    private var transports: [any LLMTransport]
+    private let applySettings: (@MainActor (AppSettings) async -> [any LLMTransport])?
+    private let isModelInstalled: (@MainActor (String) -> Bool)?
     private let download:
         (@Sendable (String, @escaping @Sendable (Double) -> Void) async throws -> Void)?
 
@@ -24,10 +26,14 @@ public final class SettingsViewModel {
         store: any SettingsStore,
         transports: [any LLMTransport] = [],
         keychain: (any KeychainStore)? = nil,
+        applySettings: (@MainActor (AppSettings) async -> [any LLMTransport])? = nil,
+        isModelInstalled: (@MainActor (String) -> Bool)? = nil,
         download: (@Sendable (String, @escaping @Sendable (Double) -> Void) async throws -> Void)? =
             nil
     ) {
         self.keychain = keychain
+        self.applySettings = applySettings
+        self.isModelInstalled = isModelInstalled
         self.store = store
         self.transports = transports
         self.download = download
@@ -39,7 +45,8 @@ public final class SettingsViewModel {
             settings.codexModel = "gpt-6-luna"
             await save()
         }
-        for transport in transports { statuses[transport.id] = await transport.status() }
+        refreshModelReady()
+        await refreshStatuses()
         if let keychain {
             for account in APIKeyAccount.allCases {
                 do {
@@ -50,7 +57,22 @@ public final class SettingsViewModel {
     }
 
     public func save() async {
-        do { try await store.save(settings) } catch { message = error.localizedDescription }
+        do { try await store.save(settings) } catch {
+            message = error.localizedDescription
+            return
+        }
+        if let applySettings {
+            transports = await applySettings(settings)
+            await refreshStatuses()
+        }
+    }
+
+    public func refreshModelReady() {
+        modelReady = isModelInstalled?(settings.whisperModelName) ?? modelReady
+    }
+
+    private func refreshStatuses() async {
+        for transport in transports { statuses[transport.id] = await transport.status() }
     }
 
     public func saveKey() async {
@@ -121,7 +143,10 @@ public struct SettingsScreen: View {
                         set: {
                             model.settings.whisperModelName = $0
                             model.modelReady = false
-                            Task { await model.save() }
+                            Task {
+                                await model.save()
+                                model.refreshModelReady()
+                            }
                         }),
                     options: Self.whisperOptions, width: 160)
             }

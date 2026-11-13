@@ -129,8 +129,11 @@ struct MinutaeApp: App {
                 store: environment.settingsStore,
                 transports: environment.transports,
                 keychain: keychain,
+                applySettings: { await environment.apply($0) },
+                isModelInstalled: { environment.isModelInstalled($0) },
                 download: { name, progress in
                     _ = try await manager.download(name: name, progress: progress)
+                    await environment.loadSpeechModelIfInstalled()
                 }
             )
         }
