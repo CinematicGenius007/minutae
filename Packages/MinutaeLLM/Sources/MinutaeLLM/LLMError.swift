@@ -30,6 +30,11 @@ public struct ErrorClassifier: Sendable {
         self.patterns = patterns
     }
 
+    /// Appends patterns after the ones already registered. Earlier patterns still win.
+    public func registering(_ additional: [Pattern]) -> ErrorClassifier {
+        ErrorClassifier(patterns: patterns + additional)
+    }
+
     /// Returns nil for successful exits. Patterns are matched in order, case-insensitively.
     public func classify(exitStatus: Int32, stdout: String, stderr: String) -> LLMError? {
         guard exitStatus != 0 else { return nil }
