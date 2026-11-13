@@ -134,8 +134,8 @@ public struct DictateScreen: View {
 }
 
 enum DictateMetrics {
-    static let columnWidth: CGFloat = 640
-    static let topInset: CGFloat = 56
+    static let columnWidth: CGFloat = 720
+    static let topInset: CGFloat = 44
 }
 
 /// Pine mic in two butter rings. The rings pulse while listening unless Reduce Motion is on.
@@ -220,7 +220,7 @@ struct DictationRow: View {
                 VStack(alignment: .leading, spacing: Spacing.s4 + Spacing.s2) {
                     Text(row.text)
                         .font(.minutae.ui(size: 16))
-                        .lineSpacing(Spacing.s4 + Spacing.s2)
+                        .lineSpacing(Spacing.s4)
                         .foregroundStyle(
                             row.isPlaceholder ? Color.minutae.muted : Color.minutae.ink
                         )

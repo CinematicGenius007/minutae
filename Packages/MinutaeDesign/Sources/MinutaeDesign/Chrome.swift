@@ -26,6 +26,7 @@ public struct SidebarItem: View {
                 if let systemImage {
                     Image(systemName: systemImage)
                         .font(.minutae.ui(size: 14, weight: .medium))
+                        .frame(width: 20)
                         .accessibilityHidden(true)
                 }
                 Text(title)

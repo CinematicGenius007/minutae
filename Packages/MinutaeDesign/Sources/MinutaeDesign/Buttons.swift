@@ -148,11 +148,14 @@ private struct RecordButtonLabel: View {
             Text(title)
                 .font(.minutae.ui(size: 14, weight: .medium))
                 .foregroundStyle(Color.minutae.white)
+            Spacer(minLength: Spacing.s8)
             KeyCap(shortcut, accessibilityText: shortcutLabel)
         }
         .padding(.horizontal, Spacing.s16)
         .padding(.vertical, Spacing.s8)
+        .frame(maxWidth: .infinity)
         .background(Color.minutae.pine, in: Capsule())
+        .contentShape(Capsule())
         .opacity(isEnabled ? 1 : 0.4)
     }
 }
