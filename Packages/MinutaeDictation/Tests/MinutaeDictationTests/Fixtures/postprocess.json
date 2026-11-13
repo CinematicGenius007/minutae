@@ -1,0 +1,434 @@
+{
+  "cases": [
+    {
+      "name": "collapse-whitespace",
+      "input": "  hello   \n\t world  ",
+      "expected": "Hello world."
+    },
+    {
+      "name": "sentence-case-first-letter-only",
+      "input": "hello WORLD",
+      "expected": "Hello WORLD."
+    },
+    {
+      "name": "keep-period",
+      "input": "hello.",
+      "expected": "Hello."
+    },
+    {
+      "name": "keep-exclamation",
+      "input": "wow!",
+      "expected": "Wow!"
+    },
+    {
+      "name": "keep-question",
+      "input": "really?",
+      "expected": "Really?"
+    },
+    {
+      "name": "keep-ellipsis",
+      "input": "wait...",
+      "expected": "Wait..."
+    },
+    {
+      "name": "keep-trailing-comma",
+      "input": "hello,",
+      "expected": "Hello,"
+    },
+    {
+      "name": "already-clean",
+      "input": "Hello there.",
+      "expected": "Hello there."
+    },
+    {
+      "name": "fillers",
+      "input": "um hello uh world",
+      "expected": "Hello world."
+    },
+    {
+      "name": "fillers-with-commas",
+      "input": "Um, the uh, cat",
+      "expected": "The cat."
+    },
+    {
+      "name": "filler-before-period",
+      "input": "hello um.",
+      "expected": "Hello."
+    },
+    {
+      "name": "only-fillers",
+      "input": "um uh",
+      "expected": ""
+    },
+    {
+      "name": "filler-period-only",
+      "input": "um.",
+      "expected": ""
+    },
+    {
+      "name": "punctuation-only",
+      "input": "...",
+      "expected": ""
+    },
+    {
+      "name": "blank",
+      "input": "  \n\t ",
+      "expected": ""
+    },
+    {
+      "name": "not-filler-umbrella",
+      "input": "umbrella",
+      "expected": "Umbrella."
+    },
+    {
+      "name": "not-filler-umami",
+      "input": "umami is good",
+      "expected": "Umami is good."
+    },
+    {
+      "name": "filler-elongation",
+      "input": "ummm hello uhh there",
+      "expected": "Hello there."
+    },
+    {
+      "name": "uhm-filler",
+      "input": "uhm I mean hello",
+      "expected": "I mean hello."
+    },
+    {
+      "name": "keep-uh-huh",
+      "input": "uh-huh I see",
+      "expected": "Uh-huh I see."
+    },
+    {
+      "name": "standalone-i",
+      "input": "i think so",
+      "expected": "I think so."
+    },
+    {
+      "name": "mid-sentence-i",
+      "input": "and i agree",
+      "expected": "And I agree."
+    },
+    {
+      "name": "contraction-im",
+      "input": "i'm ready",
+      "expected": "I'm ready."
+    },
+    {
+      "name": "curly-contraction",
+      "input": "i’m ready",
+      "expected": "I'm ready."
+    },
+    {
+      "name": "contraction-ill",
+      "input": "i'll go now",
+      "expected": "I'll go now."
+    },
+    {
+      "name": "contractions-ive-id",
+      "input": "i've tried and i'd go",
+      "expected": "I've tried and I'd go."
+    },
+    {
+      "name": "i-at-end",
+      "input": "it is i",
+      "expected": "It is I."
+    },
+    {
+      "name": "abbreviation-ie",
+      "input": "see i.e. the note",
+      "expected": "See i.e. the note."
+    },
+    {
+      "name": "abbreviation-ie-start",
+      "input": "i.e. the note",
+      "expected": "I.e. the note."
+    },
+    {
+      "name": "leading-i-and-filler",
+      "input": "  i   think  um  ",
+      "expected": "I think."
+    },
+    {
+      "name": "keep-iphone",
+      "input": "iPhone is ready",
+      "expected": "iPhone is ready."
+    },
+    {
+      "name": "keep-ebay",
+      "input": "eBay arrived",
+      "expected": "eBay arrived."
+    },
+    {
+      "name": "sentence-case-lowercase-macos",
+      "input": "macos is ready",
+      "expected": "Macos is ready."
+    },
+    {
+      "name": "keep-macos",
+      "input": "macOS is ready",
+      "expected": "macOS is ready."
+    },
+    {
+      "name": "keep-iphone-works",
+      "input": "iPhone works",
+      "expected": "iPhone works."
+    },
+    {
+      "name": "keep-github",
+      "input": "GitHub is ready",
+      "expected": "GitHub is ready."
+    },
+    {
+      "name": "dictionary-keeps-macos",
+      "input": "mac os is ready",
+      "expected": "macOS is ready.",
+      "entries": [
+        {"id": "macos", "term": "mac os", "replacement": "macOS", "kind": "word"}
+      ]
+    },
+    {
+      "name": "number-then-word",
+      "input": "123 hello",
+      "expected": "123 Hello."
+    },
+    {
+      "name": "quoted",
+      "input": "\"hello\"",
+      "expected": "\"Hello.\""
+    },
+    {
+      "name": "hyphenated-word",
+      "input": "well-known path",
+      "expected": "Well-known path."
+    },
+    {
+      "name": "dictionary-word",
+      "input": "this is minutae",
+      "expected": "This is Minutae.",
+      "entries": [
+        {"id": "minutae", "term": "minutae", "replacement": "Minutae", "kind": "word"}
+      ]
+    },
+    {
+      "name": "dictionary-case-insensitive",
+      "input": "MINUTAE ships",
+      "expected": "Minutae ships.",
+      "entries": [
+        {"id": "minutae", "term": "minutae", "replacement": "Minutae", "kind": "word"}
+      ]
+    },
+    {
+      "name": "dictionary-stored-case-then-sentence",
+      "input": "cat sat",
+      "expected": "Dog sat.",
+      "entries": [
+        {"id": "cat", "term": "cat", "replacement": "dog", "kind": "word"}
+      ]
+    },
+    {
+      "name": "dictionary-whole-word-miss",
+      "input": "the catalog",
+      "expected": "The catalog.",
+      "entries": [
+        {"id": "cat", "term": "cat", "replacement": "dog", "kind": "word"}
+      ]
+    },
+    {
+      "name": "dictionary-whole-word-hit",
+      "input": "the cat sat",
+      "expected": "The dog sat.",
+      "entries": [
+        {"id": "cat", "term": "cat", "replacement": "dog", "kind": "word"}
+      ]
+    },
+    {
+      "name": "dictionary-two-occurrences",
+      "input": "cat and cat",
+      "expected": "Dog and dog.",
+      "entries": [
+        {"id": "cat", "term": "cat", "replacement": "dog", "kind": "word"}
+      ]
+    },
+    {
+      "name": "dictionary-skips-possessive",
+      "input": "the cat's toy",
+      "expected": "The cat's toy.",
+      "entries": [
+        {"id": "cat", "term": "cat", "replacement": "dog", "kind": "word"}
+      ]
+    },
+    {
+      "name": "dictionary-contraction-phrase",
+      "input": "don't stop",
+      "expected": "Do not stop.",
+      "entries": [
+        {"id": "dont", "term": "don't", "replacement": "do not", "kind": "word"}
+      ]
+    },
+    {
+      "name": "longest-phrase",
+      "input": "visit new york and york",
+      "expected": "Visit NYC and Yorkshire.",
+      "entries": [
+        {"id": "city", "term": "new york", "replacement": "NYC", "kind": "word"},
+        {"id": "shire", "term": "york", "replacement": "Yorkshire", "kind": "word"}
+      ]
+    },
+    {
+      "name": "phrase-does-not-eat-longer-word",
+      "input": "new yorkshire",
+      "expected": "New yorkshire.",
+      "entries": [
+        {"id": "city", "term": "new york", "replacement": "NYC", "kind": "word"},
+        {"id": "shire", "term": "york", "replacement": "Yorkshire", "kind": "word"}
+      ]
+    },
+    {
+      "name": "term-whitespace-is-normalized",
+      "input": "visit new york",
+      "expected": "Visit NYC.",
+      "entries": [
+        {"id": "city", "term": "new  york", "replacement": "NYC", "kind": "word"}
+      ]
+    },
+    {
+      "name": "brand-replacement-keeps-camel-case",
+      "input": "ebay arrived",
+      "expected": "eBay arrived.",
+      "entries": [
+        {"id": "ebay", "term": "ebay", "replacement": "eBay", "kind": "word"}
+      ]
+    },
+    {
+      "name": "snippet",
+      "input": "sig",
+      "expected": "Thanks,\nAlex.",
+      "entries": [
+        {"id": "sig", "term": "sig", "replacement": "Thanks,\nAlex", "kind": "snippet"}
+      ]
+    },
+    {
+      "name": "snippet-not-inside-word",
+      "input": "signal",
+      "expected": "Signal.",
+      "entries": [
+        {"id": "sig", "term": "sig", "replacement": "Thanks,\nAlex", "kind": "snippet"}
+      ]
+    },
+    {
+      "name": "longer-snippet-beats-shorter-word",
+      "input": "send my email",
+      "expected": "Send ada@example.com.",
+      "entries": [
+        {"id": "email", "term": "email", "replacement": "inbox", "kind": "word"},
+        {"id": "mine", "term": "my email", "replacement": "ada@example.com", "kind": "snippet"}
+      ]
+    },
+    {
+      "name": "disabled-entry-is-ignored",
+      "input": "the cat",
+      "expected": "The cat.",
+      "entries": [
+        {"id": "cat", "term": "cat", "replacement": "dog", "kind": "word", "enabled": false}
+      ]
+    },
+    {
+      "name": "unknown-kind-is-ignored",
+      "input": "hello repo",
+      "expected": "Hello repo.",
+      "entries": [
+        {"id": "repo", "term": "repo", "replacement": "repository", "kind": "phrase"}
+      ]
+    },
+    {
+      "name": "empty-term-is-ignored",
+      "input": "hello",
+      "expected": "Hello.",
+      "entries": [
+        {"id": "blank", "term": "   ", "replacement": "nope", "kind": "word"}
+      ]
+    },
+    {
+      "name": "per-app-override",
+      "input": "open the repo",
+      "bundleID": "com.apple.dt.Xcode",
+      "expected": "Open the Xcode project.",
+      "entries": [
+        {"id": "global", "term": "repo", "replacement": "repository", "kind": "word"},
+        {
+          "id": "xcode",
+          "term": "repo",
+          "replacement": "Xcode project",
+          "kind": "word",
+          "scope": "com.apple.dt.Xcode"
+        }
+      ]
+    },
+    {
+      "name": "per-app-fallback",
+      "input": "open the repo",
+      "bundleID": "com.apple.TextEdit",
+      "expected": "Open the repository.",
+      "entries": [
+        {"id": "global", "term": "repo", "replacement": "repository", "kind": "word"},
+        {
+          "id": "xcode",
+          "term": "repo",
+          "replacement": "Xcode project",
+          "kind": "word",
+          "scope": "com.apple.dt.Xcode"
+        }
+      ]
+    },
+    {
+      "name": "global-when-bundle-is-missing",
+      "input": "open the repo",
+      "expected": "Open the repository.",
+      "entries": [
+        {"id": "global", "term": "repo", "replacement": "repository", "kind": "word"},
+        {
+          "id": "xcode",
+          "term": "repo",
+          "replacement": "Xcode project",
+          "kind": "word",
+          "scope": "com.apple.dt.Xcode"
+        }
+      ]
+    },
+    {
+      "name": "disabled-app-row-falls-back-to-global",
+      "input": "open the repo",
+      "bundleID": "com.apple.dt.Xcode",
+      "expected": "Open the repository.",
+      "entries": [
+        {"id": "global", "term": "repo", "replacement": "repository", "kind": "word"},
+        {
+          "id": "xcode",
+          "term": "repo",
+          "replacement": "Xcode project",
+          "kind": "word",
+          "scope": "com.apple.dt.Xcode",
+          "enabled": false
+        }
+      ]
+    },
+    {
+      "name": "app-snippet",
+      "input": "brb",
+      "bundleID": "com.tinyspeck.slackmacgap",
+      "expected": "Back shortly.",
+      "entries": [
+        {"id": "global", "term": "brb", "replacement": "be right back", "kind": "word"},
+        {
+          "id": "slack",
+          "term": "brb",
+          "replacement": "back shortly",
+          "kind": "snippet",
+          "scope": "com.tinyspeck.slackmacgap"
+        }
+      ]
+    }
+  ]
+}
