@@ -1,4 +1,5 @@
 import Testing
+
 @testable import MinutaeCore
 
 @Test func moduleName() {
