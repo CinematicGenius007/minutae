@@ -20,7 +20,7 @@ public struct TranscribeJobHandler: Sendable {
         guard job.kind == "transcribe", job.subject_type == "meeting" else {
             throw NonRetryableJobError("Invalid transcription job")
         }
-        let recording = try database.pool.read { db in
+        let recording = try await database.pool.read { db in
             try Recording.fetchOne(db, sql: "SELECT * FROM recordings WHERE meeting_id = ? ORDER BY created_at DESC LIMIT 1", arguments: [job.subject_id])
         }
         guard let recording else { throw NonRetryableJobError("Recording not found") }
@@ -41,7 +41,7 @@ public struct TranscribeJobHandler: Sendable {
         let size = try file.seekToEnd()
         let bytes = min(UInt64(number(40, 4)), size > 44 ? size - 44 : 0) / 4 * 4
         let now = ISO8601DateFormatter().string(from: Date())
-        let existing = try database.pool.write { db -> (Int, Bool) in
+        let existing = try await database.pool.write { db -> (Int, Bool) in
             if let row = try MinutaeCore.Transcript.fetchOne(db, key: job.id) {
                 let segments = try Segment.fetchAll(db, sql: "SELECT * FROM segments WHERE transcript_id = ? ORDER BY end_ms DESC LIMIT 1", arguments: [job.id])
                 return (segments.first?.end_ms ?? 0, row.duration_ms != nil)
@@ -66,7 +66,7 @@ public struct TranscribeJobHandler: Sendable {
             }
             let result = try await engine.transcribe(samples: samples, options: .init())
             let offset = Int(position / 64)
-            try database.pool.write { db in
+            try await database.pool.write { db in
                 for segment in result.segments {
                     try Segment(id: UUID().uuidString.lowercased(), transcript_id: job.id, start_ms: offset + Int(segment.startMilliseconds), end_ms: offset + Int(segment.endMilliseconds), text: segment.text, speaker_label: nil).insert(db)
                 }
@@ -78,7 +78,7 @@ public struct TranscribeJobHandler: Sendable {
             progress(Double(position) / Double(bytes))
         }
         try Task.checkCancellation()
-        try database.pool.write { db in
+        try await database.pool.write { db in
             let segments = try Segment.fetchAll(db, sql: "SELECT * FROM segments WHERE transcript_id = ? ORDER BY start_ms, rowid", arguments: [job.id])
             try db.execute(sql: "UPDATE transcripts SET raw_text = ?, duration_ms = ? WHERE id = ?", arguments: [segments.map(\.text).joined(separator: " "), Int(bytes / 64), job.id])
             let next = Job(id: UUID().uuidString.lowercased(), kind: "summarise", subject_type: "meeting", subject_id: job.subject_id, payload: nil, state: "queued", attempts: 0, max_attempts: 3, last_error: nil, run_after: nil, created_at: now, updated_at: now)
