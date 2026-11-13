@@ -6,6 +6,7 @@ public struct AppShellView: View {
     @Bindable private var navigation: NavigationStore
     private let screens: ScreenRegistry
     private let isRecording: Bool
+    private let detection: MeetingDetectionModel?
     private let canRecord: Bool
     private let actionMessage: String?
     private let bootError: String?
@@ -19,6 +20,7 @@ public struct AppShellView: View {
         navigation: NavigationStore,
         screens: ScreenRegistry = .placeholders,
         isRecording: Bool,
+        detection: MeetingDetectionModel? = nil,
         canRecord: Bool,
         actionMessage: String? = nil,
         bootError: String? = nil,
@@ -30,6 +32,7 @@ public struct AppShellView: View {
         self.navigation = navigation
         self.screens = screens
         self.isRecording = isRecording
+        self.detection = detection
         self.canRecord = canRecord
         self.actionMessage = actionMessage
         self.bootError = bootError
@@ -97,7 +100,15 @@ public struct AppShellView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: Spacing.s16)
-            StatusPill(Self.listeningTitle, tone: .mint)
+            if detection?.phase == .prompting {
+                DetectionPrompt(
+                    record: {
+                        onToggleRecording()
+                        detection?.dismissPrompt()
+                    },
+                    dismiss: { detection?.dismissPrompt() })
+            }
+            statusPill
         }
         .padding(Spacing.s16)
         .frame(width: Layout.sidebarWidth)
@@ -121,8 +132,41 @@ public struct AppShellView: View {
         .background(Color.minutae.bg)
     }
 
-    /// No live meeting-detection value exists on the composition root yet.
-    static let listeningTitle = "Listening for meetings"
+    @ViewBuilder private var statusPill: some View {
+        if isRecording {
+            StatusPill("Recording", tone: .red)
+        } else {
+            switch detection?.phase ?? .off {
+            case .listening, .prompting: StatusPill("Listening for meetings", tone: .mint)
+            case .recording: StatusPill("Recording", tone: .red)
+            case .off: StatusPill("Auto-detect off", tone: .butter)
+            }
+        }
+    }
+}
+
+private struct DetectionPrompt: View {
+    var record: () -> Void
+    var dismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.s8) {
+            Text("Mic is in use")
+                .font(.minutae.ui(size: 14, weight: .medium))
+            Text("Looks like a call. Record it?")
+                .font(.minutae.ui(size: 13))
+                .foregroundStyle(Color.minutae.muted)
+            HStack(spacing: Spacing.s8) {
+                PrimaryButton("Record", action: record)
+                TextAction("Not now", action: dismiss)
+            }
+        }
+        .foregroundStyle(Color.minutae.ink)
+        .padding(Spacing.s12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.minutae.butter.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.md))
+        .accessibilityElement(children: .contain)
+    }
 }
 
 private struct SearchPill: View {

@@ -15,6 +15,7 @@ struct MinutaeApp: App {
     @State private var usageModel: UsageViewModel?
     @State private var dictateDependencies: DictateDependencies?
     @State private var hudPresenter: DictationHUDPresenter?
+    @State private var detection: MeetingDetectionModel?
 
     init() {
         MinutaeDesign.registerFonts()
@@ -26,6 +27,7 @@ struct MinutaeApp: App {
         _usageModel = State(initialValue: nil)
         _dictateDependencies = State(initialValue: nil)
         _hudPresenter = State(initialValue: nil)
+        _detection = State(initialValue: nil)
     }
 
     private var screens: ScreenRegistry {
@@ -64,6 +66,7 @@ struct MinutaeApp: App {
                 navigation: navigation,
                 screens: screens,
                 isRecording: model.recordingMeetingID != nil,
+                detection: detection,
                 canRecord: model.environment != nil && !model.recordingBusy,
                 actionMessage: model.actionMessage,
                 bootError: model.bootError,
@@ -74,6 +77,7 @@ struct MinutaeApp: App {
             )
             .background(WindowChrome())
             .task { await installLiveScreens() }
+            .task(id: detection != nil) { await detection?.run() }
         }
         .defaultSize(width: Layout.windowWidth, height: Layout.windowHeight)
         .windowStyle(.hiddenTitleBar)
@@ -129,6 +133,14 @@ struct MinutaeApp: App {
                     _ = try await manager.download(name: name, progress: progress)
                 }
             )
+        }
+        if detection == nil, !environment.usesFakes {
+            let settings = settingsModel
+            let initial = environment.settings.autoDetectMeetings
+            let harness = model
+            detection = MeetingDetectionModel(
+                isEnabled: { settings?.settings.autoDetectMeetings ?? initial },
+                isRecording: { harness.recordingMeetingID != nil })
         }
         if usageModel == nil {
             usageModel = UsageViewModel(database: environment.database)
