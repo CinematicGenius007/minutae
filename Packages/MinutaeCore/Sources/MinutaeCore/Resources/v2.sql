@@ -70,4 +70,3 @@ CREATE TABLE IF NOT EXISTS transcript_edits (
   edited_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_transcript_edits_segment ON transcript_edits(segment_id);
-

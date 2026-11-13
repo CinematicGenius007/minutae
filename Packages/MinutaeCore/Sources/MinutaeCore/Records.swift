@@ -290,4 +290,3 @@ public struct TranscriptEdit: Codable, FetchableRecord, PersistableRecord, Table
         self.edited_at = edited_at
     }
 }
-
