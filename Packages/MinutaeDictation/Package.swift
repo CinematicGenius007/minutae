@@ -8,13 +8,17 @@ let package = Package(
         .library(name: "MinutaeDictation", targets: ["MinutaeDictation"])
     ],
     dependencies: [
-        .package(path: "../MinutaeCore")
+        .package(path: "../MinutaeCore"),
+        .package(path: "../MinutaeAudio"),
+        .package(path: "../MinutaeSpeech"),
     ],
     targets: [
         .target(
             name: "MinutaeDictation",
             dependencies: [
-                .product(name: "MinutaeCore", package: "MinutaeCore")
+                .product(name: "MinutaeCore", package: "MinutaeCore"),
+                .product(name: "MinutaeAudio", package: "MinutaeAudio"),
+                .product(name: "MinutaeSpeech", package: "MinutaeSpeech"),
             ]
         ),
         .testTarget(
@@ -22,6 +26,8 @@ let package = Package(
             dependencies: [
                 "MinutaeDictation",
                 .product(name: "MinutaeCore", package: "MinutaeCore"),
+                .product(name: "MinutaeAudio", package: "MinutaeAudio"),
+                .product(name: "MinutaeSpeech", package: "MinutaeSpeech"),
             ],
             exclude: ["Fixtures"]
         ),
