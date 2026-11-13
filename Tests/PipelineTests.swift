@@ -17,7 +17,8 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(environment.armedHotkeyMode, "hold")
         XCTAssertEqual(environment.armedHotkeyCode, 49)
         XCTAssertEqual(environment.armedHotkeyModifiers, 1 << 1)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appending(path: "minutae.db").path))
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: root.appending(path: "minutae.db").path))
         let model = await environment.modelStatusLine()
         XCTAssertTrue(model.contains("Fake speech engine"))
     }
@@ -39,6 +40,20 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(report.insertMethod, "pasteboard")
         XCTAssertFalse(report.audioPath.isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: report.audioPath))
+    }
+
+    @MainActor
+    func testDictationToggleArmsTheHotkey() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "minutae-dictation-toggle-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let environment = try await AppEnvironment.make(useFakes: true, root: root)
+        XCTAssertTrue(environment.hotkeyArmed)
+        try environment.setDictationEnabled(false)
+        XCTAssertFalse(environment.hotkeyArmed)
+        try environment.setDictationEnabled(true)
+        XCTAssertTrue(environment.hotkeyArmed)
     }
 
     func testMissingModelAndDeniedPermissionStayReadable() async {

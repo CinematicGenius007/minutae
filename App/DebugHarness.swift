@@ -26,6 +26,7 @@ final class DebugHarnessModel {
     var recordingMeetingID: String?
     var recordingStarted: Date?
     var recordingBusy = false
+    var dictationEnabled = false
     var modelBusy = false
     private var didBoot = false
     private var tick = 0
@@ -46,6 +47,7 @@ final class DebugHarnessModel {
             self.environment = environment
             notes = environment.startupNotes
             codexModelDraft = environment.settings.codexModel ?? ""
+            dictationEnabled = environment.hotkeyArmed
             startWatchers(environment)
         } catch {
             bootError = AppMessages.describe(error)
@@ -55,7 +57,9 @@ final class DebugHarnessModel {
     func request(_ permission: Permission) async {
         guard let environment else { return }
         let status = await environment.permissions.request(permission)
-        if permission == .microphone, status == .granted, let message = environment.prepareMicrophone() {
+        if permission == .microphone, status == .granted,
+            let message = environment.prepareMicrophone()
+        {
             actionMessage = message
         }
         if status != .granted {
@@ -79,7 +83,8 @@ final class DebugHarnessModel {
         guard let environment else { return }
         do {
             try await environment.setCodexModel(codexModelDraft)
-            actionMessage = codexModelDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            actionMessage =
+                codexModelDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? "Cleared the Codex model. A test will ask you to set one."
                 : "Saved the Codex model."
             await refreshTransports()
@@ -139,7 +144,8 @@ final class DebugHarnessModel {
         }
         let modelLine = await environment.modelStatusLine()
         self.modelLine = modelLine
-        let modelWarning = (modelLine.contains("not installed") || modelLine.contains("not loaded"))
+        let modelWarning =
+            (modelLine.contains("not installed") || modelLine.contains("not loaded"))
             ? modelLine : nil
         do {
             let id = try await environment.meetings.start(title: "Meeting")
@@ -167,6 +173,16 @@ final class DebugHarnessModel {
 
     func cancelDictation() async {
         await environment?.dictation.cancel()
+    }
+
+    func toggleDictation() {
+        guard let environment else { return }
+        do {
+            try environment.setDictationEnabled(!dictationEnabled)
+        } catch {
+            actionMessage = AppMessages.describe(error)
+        }
+        dictationEnabled = environment.hotkeyArmed
     }
 
     private func startWatchers(_ environment: AppEnvironment) {
@@ -206,7 +222,8 @@ final class DebugHarnessModel {
         guard let environment else { return }
         do {
             meetings = try Repository<Meeting>(environment.database).newestFirst()
-            dictations = try Repository<Dictation>(environment.database).all().sorted { left, right in
+            dictations = try Repository<Dictation>(environment.database).all().sorted {
+                left, right in
                 left.started_at > right.started_at
             }
             jobs = try Repository<Job>(environment.database).all().sorted { left, right in
@@ -374,7 +391,9 @@ struct DebugHarnessView: View {
         section("Permissions") {
             ForEach(model.permissions) { row in
                 HStack {
-                    Text("\(AppMessages.permissionName(row.permission)): \(AppMessages.statusName(row.status))")
+                    Text(
+                        "\(AppMessages.permissionName(row.permission)): \(AppMessages.statusName(row.status))"
+                    )
                     Spacer()
                     Button("Request") { Task { await model.request(row.permission) } }
                     Button("Settings") { _ = PermissionSettingsLink.open(row.permission) }
@@ -451,7 +470,9 @@ struct DebugHarnessView: View {
             }
             ForEach(model.dictations, id: \.id) { row in
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(row.started_at) · \(row.status) · \(row.insert_method ?? "no insert method")")
+                    Text(
+                        "\(row.started_at) · \(row.status) · \(row.insert_method ?? "no insert method")"
+                    )
                     Text(row.final_text.isEmpty ? row.raw_text : row.final_text)
                         .textSelection(.enabled)
                     if let audio = row.audio_path {
@@ -486,7 +507,9 @@ struct DebugHarnessView: View {
         }
     }
 
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content)
+        -> some View
+    {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.headline)
             content()
