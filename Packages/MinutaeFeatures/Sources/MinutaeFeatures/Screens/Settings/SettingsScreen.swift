@@ -111,7 +111,7 @@ public struct SettingsScreen: View {
 
     public var body: some View {
         @Bindable var model = model
-        PageScaffold("Settings") {
+        PageScaffold("Settings", spacing: 0) {
             section("TRANSCRIPTION")
             SettingsRow("Whisper model", description: "Runs on this Mac. Bigger is slower and more accurate.") {
                 Dropdown(
@@ -157,6 +157,7 @@ public struct SettingsScreen: View {
                 SecondaryButton("Save") { Task { await model.saveKey() } }
                     .disabled(model.keyDraft.isEmpty)
             }
+            .padding(.top, Spacing.s12)
             section("DETECTION & DICTATION")
             SettingsRow("Ask when a meeting starts", description: "Prompt when microphone activity is detected.") {
                 Toggle("Ask when a meeting starts", isOn: $model.settings.autoDetectMeetings)
@@ -184,7 +185,8 @@ public struct SettingsScreen: View {
         Text(title)
             .font(.minutae.mono(size: 12, weight: .medium))
             .foregroundStyle(Color.minutae.muted)
-            .padding(.top, Spacing.s12)
+            .padding(.top, Spacing.s28)
+            .padding(.bottom, Spacing.s4)
     }
 
     private func isReady(_ id: TransportID) -> Bool {

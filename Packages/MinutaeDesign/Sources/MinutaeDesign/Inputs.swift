@@ -240,21 +240,27 @@ public struct TextAction: View {
 public struct PageScaffold<Content: View>: View {
     private let title: String
     private let maxWidth: CGFloat
+    private let spacing: CGFloat
     private let content: Content
 
-    public init(_ title: String, maxWidth: CGFloat = 720, @ViewBuilder content: () -> Content) {
+    public init(
+        _ title: String, maxWidth: CGFloat = 720, spacing: CGFloat = Spacing.s20,
+        @ViewBuilder content: () -> Content
+    ) {
         self.title = title
         self.maxWidth = maxWidth
+        self.spacing = spacing
         self.content = content()
     }
 
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Spacing.s20) {
+            VStack(alignment: .leading, spacing: spacing) {
                 Text(title)
                     .font(.minutae.display(size: 36))
                     .foregroundStyle(Color.minutae.ink)
                     .accessibilityAddTraits(.isHeader)
+                    .padding(.bottom, Spacing.s20)
                 content
             }
             .frame(maxWidth: maxWidth, alignment: .leading)
