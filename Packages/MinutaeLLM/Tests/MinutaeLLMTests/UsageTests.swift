@@ -309,12 +309,19 @@ private func transport(_ report: UsageReport, _ name: String) throws -> Transpor
 }
 
 private func render(_ row: APIUsageLog) -> String {
-    [
-        row.id, row.meeting_id ?? "", row.provider, row.model, row.endpoint,
-        row.input_tokens.map(String.init) ?? "", row.output_tokens.map(String.init) ?? "",
-        row.cost_usd.map { String($0) } ?? "", row.created_at, row.transport ?? "",
-        row.duration_ms.map(String.init) ?? "", row.error_class ?? ""
-    ].joined(separator: "\t")
+    let inputTokens: String = row.input_tokens.map { String($0) } ?? ""
+    let outputTokens: String = row.output_tokens.map { String($0) } ?? ""
+    let cost: String = row.cost_usd.map { String($0) } ?? ""
+    let duration: String = row.duration_ms.map { String($0) } ?? ""
+    var fields: [String] = [row.id, row.meeting_id ?? "", row.provider, row.model, row.endpoint]
+    fields.append(inputTokens)
+    fields.append(outputTokens)
+    fields.append(cost)
+    fields.append(row.created_at)
+    fields.append(row.transport ?? "")
+    fields.append(duration)
+    fields.append(row.error_class ?? "")
+    return fields.joined(separator: "\t")
 }
 
 private func withDatabase(_ body: (MinutaeDatabase, URL) async throws -> Void) async throws {
