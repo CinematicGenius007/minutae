@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Minutae needs the microphone to record what you say in meetings and dictation.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Minutae needs calendar access to name a meeting after the event on your calendar.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Minutae needs calendar access to name a meeting after the event on your calendar.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Minutae needs permission to capture audio from other apps in a meeting. It does not record your screen.</string>
+</dict>
+</plist>
