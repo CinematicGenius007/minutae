@@ -11,6 +11,11 @@ public struct MeetingRecordingPill: View {
         self.stop = stop
     }
 
+    @MainActor
+    public init(startedAt: Date, model: MeetingCaptureViewModel) {
+        self.init(startedAt: startedAt, stop: { Task { await model.stop() } })
+    }
+
     public var body: some View {
         HStack(spacing: Spacing.s12) {
             Circle()
@@ -40,6 +45,14 @@ public struct MeetingDetectedCard: View {
     public init(start: @escaping () -> Void, dismiss: @escaping () -> Void) {
         self.start = start
         self.dismiss = dismiss
+    }
+
+    @MainActor
+    public init(model: MeetingCaptureViewModel) {
+        self.init(
+            start: { Task { await model.start() } },
+            dismiss: { model.isPromptPresented = false }
+        )
     }
 
     public var body: some View {
