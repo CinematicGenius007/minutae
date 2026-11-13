@@ -147,6 +147,27 @@ public protocol LLMTransport: Sendable {
 }
 ```
 
+```swift
+public enum Purpose: String, Codable, Sendable {
+    case summary, title, cleanup, ask, test      // test = Settings "Test" action
+}
+
+public struct Usage: Codable, Sendable, Equatable {
+    var inputTokens: Int?       // nil when the CLI does not report it
+    var outputTokens: Int?
+    var costUSD: Double?        // only ever set by the api transport
+}
+
+public struct TransportStatus: Sendable, Equatable {
+    var installed: Bool
+    var binaryPath: String?     // resolved real path, nil if not installed
+    var signedIn: Bool?         // nil = unknown / not checkable cheaply
+    var model: String?          // pinned/selected model, nil if none
+    var version: String?
+    var detail: String?         // human-readable note for the Settings row
+}
+```
+
 `LLMRouter` holds the user's ordered fallback chain, tries each available transport, falls back on `notInstalled`, `notLoggedIn`, `rateLimited`, `timeout` and `modelRejected`, never on `cancelled`. JSON mode validates with `Codable` and makes one repair retry. Long transcripts use map-reduce chunking.
 
 ### 5.3 Subprocess rules (all CLI transports)
