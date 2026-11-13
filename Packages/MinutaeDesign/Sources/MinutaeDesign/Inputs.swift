@@ -213,12 +213,15 @@ public struct MinutaeField: View {
 
 /// Small pill-shaped text action with hover, for trailing row actions.
 public struct TextAction: View {
+    public enum Tone: Sendable { case normal, destructive }
     private let title: String
+    private let tone: Tone
     private let action: () -> Void
     @State private var hovering = false
 
-    public init(_ title: String, action: @escaping () -> Void) {
+    public init(_ title: String, tone: Tone = .normal, action: @escaping () -> Void) {
         self.title = title
+        self.tone = tone
         self.action = action
     }
 
@@ -226,7 +229,7 @@ public struct TextAction: View {
         Button(action: action) {
             Text(title)
                 .font(.minutae.ui(size: 13, weight: .medium))
-                .foregroundStyle(Color.minutae.pine)
+                .foregroundStyle(tone == .destructive ? Color.minutae.red : Color.minutae.pine)
                 .padding(.horizontal, Spacing.s12)
                 .padding(.vertical, Spacing.s8)
                 .background(hovering ? Color.minutae.surface : Color.clear, in: Capsule())

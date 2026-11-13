@@ -1,6 +1,8 @@
 import AppKit
 import MinutaeCore
+import MinutaeAudio
 import MinutaeDesign
+import MinutaeMeetings
 import SwiftUI
 import Testing
 
@@ -48,5 +50,36 @@ import Testing
                 navigation: NavigationStore(), isRecording: false, canRecord: true,
                 onToggleRecording: {}, onSearch: {}, isSearchPresented: .constant(false)),
             width: size.0, height: size.1)
+    }
+
+    @Test func meetingsWithRowsRender() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let db = try MinutaeDatabase(path: dir.appendingPathComponent("t.db").path)
+        let runner = JobRunner(database: db, handlers: [:])
+        let iso = ISO8601DateFormatter()
+        let now = Date()
+        let rows: [(String, Date, Int, String)] = [
+            ("Q2 design sync", now.addingTimeInterval(-3600), 1934, "done"),
+            ("Standup", now.addingTimeInterval(-7200), 540, "processing"),
+            ("Customer call: Acme", now.addingTimeInterval(-86400 - 3600), 3725, "done"),
+            ("Family Test", now.addingTimeInterval(-86400 * 4), 45, "failed"),
+        ]
+        for (i, row) in rows.enumerated() {
+            try Repository<Meeting>(db).save(
+                Meeting(
+                    id: "m\(i)", title: row.0, started_at: iso.string(from: row.1), ended_at: nil,
+                    duration_seconds: row.2, status: row.3))
+        }
+        let model = MeetingsViewModel(database: db, runner: runner, summariesDirectory: dir)
+        model.refresh()
+        for (w, h) in [(968.0, 800.0), (760.0, 640.0)] {
+            try await render("meetings-\(Int(w))x\(Int(h))", MeetingsScreen(model: model), width: w, height: h)
+        }
+        let detail = MeetingDetailViewModel(
+            meeting: try #require(model.meetings.first), database: db, runner: runner,
+            summariesDirectory: dir)
+        try await render("meeting-detail", MeetingDetailScreen(model: detail), width: 720, height: 640)
     }
 }
