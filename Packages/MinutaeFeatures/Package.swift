@@ -7,6 +7,8 @@ let package = Package(
     products: [.library(name: "MinutaeFeatures", targets: ["MinutaeFeatures"])],
     dependencies: [
         .package(path: "../MinutaeDesign"),
+        .package(path: "../MinutaeDictation"),
+        .package(path: "../MinutaeLibrary"),
         .package(path: "../MinutaeMeetings"),
         .package(path: "../MinutaeCore"),
         .package(path: "../MinutaeAudio"),
@@ -15,10 +17,18 @@ let package = Package(
     targets: [
         .target(
             name: "MinutaeFeatures",
-            dependencies: ["MinutaeDesign", "MinutaeMeetings", "MinutaeCore", "MinutaeLLM"]),
+            dependencies: [
+                "MinutaeCore", "MinutaeDesign", "MinutaeDictation", "MinutaeLibrary",
+                "MinutaeLLM", "MinutaeMeetings",
+            ]
+        ),
         .testTarget(
             name: "MinutaeFeaturesTests",
-            dependencies: ["MinutaeFeatures", "MinutaeCore", "MinutaeMeetings", "MinutaeAudio"]),
+            dependencies: [
+                "MinutaeFeatures", "MinutaeCore", "MinutaeDictation", "MinutaeLibrary",
+                "MinutaeMeetings", "MinutaeAudio",
+            ]
+        ),
     ],
     swiftLanguageModes: [.v6]
 )

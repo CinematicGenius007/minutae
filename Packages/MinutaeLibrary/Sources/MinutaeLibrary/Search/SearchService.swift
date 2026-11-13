@@ -161,7 +161,8 @@ public struct SearchService: Sendable {
         return hits
     }
 
-    /// Dictations are not in `transcripts_fts`, so this scans `final_text` (or `raw_text`).
+    /// Dictations are not in `transcripts_fts`, so this scans the edited text, else `final_text`,
+    /// else `raw_text`.
     private func dictationHits(query: String) throws -> [SearchHit] {
         let tokens = FTSQuery.tokens(in: query)
         guard !tokens.isEmpty else { return [] }
@@ -170,7 +171,7 @@ public struct SearchService: Sendable {
                 connection,
                 sql: """
                     SELECT id,
-                           final_text AS finalText,
+                           COALESCE(edited_text, final_text) AS finalText,
                            raw_text AS rawText,
                            target_app_name AS targetAppName,
                            started_at AS startedAt

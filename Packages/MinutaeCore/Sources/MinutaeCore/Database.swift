@@ -32,7 +32,19 @@ public struct MinutaeDatabase: Sendable {
         migrator.registerMigration("v3") { db in
             try makeUsageCostsNullable(db)
         }
+        // Dictation edits are stored beside the original. `raw_text` and `final_text` are never
+        // rewritten by an edit. `speech_model` records the Whisper model that produced the text.
+        migrator.registerMigration("v4") { connection in
+            try addDictationEditColumns(connection)
+        }
         try migrator.migrate(pool)
+    }
+}
+
+private func addDictationEditColumns(_ connection: Database) throws {
+    let columns = try Set(connection.columns(in: "dictations").map(\.name))
+    for name in ["edited_text", "edited_at", "speech_model"] where !columns.contains(name) {
+        try connection.execute(sql: "ALTER TABLE dictations ADD COLUMN \(name) TEXT")
     }
 }
 
