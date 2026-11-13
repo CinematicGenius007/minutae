@@ -343,6 +343,18 @@ FTS5 for keyword search. Embeddings use Apple's `NLContextualEmbedding` (macOS 1
 
 Meeting stop, transcription, summary, embedding and export are jobs in the `jobs` table, run by a `JobRunner` actor with bounded concurrency (one speech job, one LLM job at a time). Jobs survive restart: `running` jobs found at launch go back to `queued`. Each job has retry with backoff and a visible error. The UI observes the table.
 
+### 7.2 Job runner policy
+
+| Kind | Max concurrent | Default `max_attempts` |
+|---|---|---|
+| transcribe | 1 | 2 |
+| summarise | 2 | 3 |
+| embed | 1 | 3 |
+| export | 2 | 3 |
+| retention | 1 | 1 |
+
+Retry backoff: `run_after = now + min(30 s * 2^(attempt-1), 15 min)` with +/-10% jitter; the delay function is injectable for tests. A handler can throw a non-retryable error (fails at once, no retry); cancellation is never retried. On start, `running` rows become `queued` without consuming an attempt. A job at `max_attempts` becomes `failed` and keeps its last error text. Limits are configurable per kind in code, not yet in Settings.
+
 ## 8. Meeting pipeline
 
 - Mic detection with Core Audio `kAudioDevicePropertyDeviceIsRunningSomewhere`, same idea as today, now in-process. Calendar awareness with EventKit, per-app detection, a quieter prompt.
