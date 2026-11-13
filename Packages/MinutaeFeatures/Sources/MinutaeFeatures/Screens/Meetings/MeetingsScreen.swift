@@ -161,7 +161,7 @@ public struct MeetingDetailScreen: View {
                 }.disabled(model.summaryFile == nil)
                 SecondaryButton("Re-run summary") { Task { await model.rerun() } }
                 Spacer()
-                TextAction("Delete") { confirmingDelete = true }
+                TextAction("Delete", tone: .destructive) { confirmingDelete = true }
             }
             SegmentedPills(options: tabs, selection: $tab)
             if let error = model.error { Text(error).foregroundStyle(Color.minutae.red) }
@@ -196,7 +196,7 @@ public struct MeetingDetailScreen: View {
                                 }
                             }
                         } else {
-                            Text("No summary yet.")
+                            Text("No summary yet. Use Re-run summary once a transcript exists.").font(.minutae.ui(size: 14)).foregroundStyle(Color.minutae.muted)
                         }
                     case "Transcript":
                         SecondaryButton("Copy transcript") { copy(model.transcript?.raw_text ?? "") }
