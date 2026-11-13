@@ -19,9 +19,28 @@ public struct TransportStatus: Sendable, Equatable {
     public var model: String?
     public var version: String?
     public var detail: String?
-    public init(installed: Bool, binaryPath: String? = nil, signedIn: Bool? = nil, model: String? = nil, version: String? = nil, detail: String? = nil) {
-        self.installed = installed; self.binaryPath = binaryPath; self.signedIn = signedIn
-        self.model = model; self.version = version; self.detail = detail
+    /// Names the transport could list. Empty when it has no list.
+    public var availableModels: [String]
+    /// Whether a local daemon answered. Nil when this transport has no daemon.
+    public var daemonReachable: Bool?
+    public init(
+        installed: Bool,
+        binaryPath: String? = nil,
+        signedIn: Bool? = nil,
+        model: String? = nil,
+        version: String? = nil,
+        detail: String? = nil,
+        availableModels: [String] = [],
+        daemonReachable: Bool? = nil
+    ) {
+        self.installed = installed
+        self.binaryPath = binaryPath
+        self.signedIn = signedIn
+        self.model = model
+        self.version = version
+        self.detail = detail
+        self.availableModels = availableModels
+        self.daemonReachable = daemonReachable
     }
 }
 
