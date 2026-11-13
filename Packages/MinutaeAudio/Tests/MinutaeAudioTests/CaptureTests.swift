@@ -78,3 +78,17 @@ import Testing
     #expect(abs(output.count - 16_000) <= 320)
     for boundary in boundaries { #expect(abs(output[boundary] - output[boundary - 1]) < 0.12) }
 }
+
+@Test func stopFinishesStreams() async throws {
+    let fake = FakeAudioCapture(samples: [0.5])
+    let samples = fake.subscribe()
+    let events = fake.events()
+    try fake.start()
+    _ = try fake.stop()
+    var sampleIterator = samples.makeAsyncIterator()
+    var eventIterator = events.makeAsyncIterator()
+    #expect(await sampleIterator.next() == [0.5])
+    #expect(await sampleIterator.next() == nil)
+    _ = await eventIterator.next()
+    #expect(await eventIterator.next() == nil)
+}

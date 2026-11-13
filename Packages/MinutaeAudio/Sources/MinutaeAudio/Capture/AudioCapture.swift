@@ -95,11 +95,19 @@ public final class CaptureBuffer: @unchecked Sendable {
         for continuation in eventSubscribers.values { continuation.yield(.samples(samples)) }
     }
     public func end(thresholdDB: Float = -45) throws -> CaptureResult {
-        lock.lock(); defer { lock.unlock() }
-        guard let full = captured else { throw CaptureError.notRecording }
-        try writer?.close(); writer = nil; captured = nil
+        lock.lock()
+        guard let full = captured else { lock.unlock(); throw CaptureError.notRecording }
+        do { try writer?.close() } catch { lock.unlock(); throw error }
+        writer = nil; captured = nil
+        let sampleContinuations = Array(subscribers.values)
+        let eventContinuations = Array(eventSubscribers.values)
+        subscribers.removeAll(); eventSubscribers.removeAll()
+        lock.unlock()
+        for continuation in sampleContinuations { continuation.finish() }
+        for continuation in eventContinuations { continuation.finish() }
         return CaptureResult(full: full, trimmed: AudioMath.trim(full, thresholdDB: thresholdDB))
     }
+
 }
 public enum CaptureError: Error { case alreadyRecording, notRecording, conversionFailed }
 
