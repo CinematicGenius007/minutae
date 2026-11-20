@@ -4,10 +4,13 @@
 //! - [`Transcriber`] is the engine trait; [`WhisperTranscriber`] is the real one and
 //!   [`FakeTranscriber`] returns canned segments for tests.
 //!
+//! - [`captions`] turns live audio into rolling caption lines while recording.
+//!
 //! All transcription calls are blocking (CPU/GPU bound). Call them from
 //! `tokio::task::spawn_blocking` or a dedicated worker thread.
 
 mod audio;
+pub mod captions;
 mod fake;
 mod models;
 mod whisper;
