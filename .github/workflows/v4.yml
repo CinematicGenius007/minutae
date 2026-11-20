@@ -102,9 +102,12 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          # Also keeps sherpa-onnx's downloaded prebuilt archive (it lives under target/).
-          # Bumped when build-script env changes (e.g. the CRT settings) to drop stale native builds.
-          key: v4-crt-static
+          # Cache the cargo registry/git only, not target/. Restored target/ dirs carried
+          # stale native build state: sherpa-onnx-sys's build record without its downloaded
+          # libs (macOS link error), and whisper.cpp CMake caches pointing at a previous
+          # runner image's MSVC path (Windows configure error). Native deps rebuild per run.
+          key: v4-registry-only
+          cache-targets: false
           cache-on-failure: true
 
       - name: Setup Bun
