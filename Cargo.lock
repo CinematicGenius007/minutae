@@ -3235,6 +3235,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "minutae-import"
+version = "0.4.0"
+dependencies = [
+ "chrono",
+ "dirs 6.0.0",
+ "minutae-core",
+ "minutae-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "minutae-jobs"
 version = "0.4.0"
 dependencies = [
