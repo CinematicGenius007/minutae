@@ -27,7 +27,9 @@ const liveMask = (page: Page) => [page.locator("canvas"), page.locator("[role=ti
 const SHOTS: Shot[] = [
   { name: "meetings", route: "/", ready: "Q2 Design Sync" },
   { name: "meetings-empty", route: "/", query: "state=empty" },
-  { name: "live", route: "/live", query: "state=recording", mask: liveMask },
+  { name: "live", route: "/live", query: "state=recording", mask: liveMask, ready: "Great, I'll move it on the roadmap today." },
+  { name: "live-captions-waiting", route: "/live", query: "state=recording&captions=none", mask: liveMask, ready: "Captions appear here" },
+  { name: "live-captions-no-model", route: "/live", query: "state=recording&captions=noModel", mask: liveMask, ready: "Get a model" },
   { name: "detail", route: `/meetings/${MEETING}`, ready: "Share updated mockups" },
   { name: "detail-processing", route: `/meetings/${MEETING}`, query: "state=processing", ready: "Hiring loop" },
   { name: "detail-failed", route: `/meetings/${MEETING}`, query: "state=failed", ready: "Vendor call" },
@@ -199,6 +201,7 @@ test("keyboard: Meetings → Detail → Settings, visible focus, esc closes menu
 const A11Y_ROUTES: [string, string, string?][] = [
   ["meetings", "/"],
   ["live", "/live", "state=recording"],
+  ["live-captions-off", "/live", "state=recording&captions=off"],
   ["detail", `/meetings/${MEETING}`],
   ["detail-failed", `/meetings/${MEETING}`, "state=failed"],
   ["dictate", "/dictate"],
@@ -256,6 +259,50 @@ test("record: pill → live → pause / resume → mark moment → stop lands on
   await expect(page.getByText("Saving", { exact: true })).toBeVisible();
   await expect(page).toHaveURL(/#\/meetings\/00000000-0000-4000-8000-000000000009$/);
   await settle(page);
+});
+
+test("live captions: partials become finals, empty finals retract, scrolling up stops following", async ({ page }) => {
+  await page.goto(url("/live", "state=recording"));
+  await settle(page, "Great, I'll move it on the roadmap today.");
+  const feed = page.getByTestId("captions");
+  const lines = feed.locator("[data-final]");
+  const emit = (c: Record<string, unknown>) =>
+    page.evaluate(
+      (c) => (window as unknown as { __minutaeMockEmit: (e: string, p: unknown) => void }).__minutaeMockEmit("recording://caption", c),
+      { meetingId: "00000000-0000-4000-8000-000000000009", track: "mic", speaker: "You", endMs: 0, ...c },
+    );
+  const testing = lines.filter({ hasText: "Testing one" });
+
+  await emit({ id: 9001, atMs: 900000, text: "Testing one", final: false });
+  await expect(testing).toHaveAttribute("data-final", "false");
+  await emit({ id: 9001, atMs: 900000, text: "Testing one two three.", final: true });
+  await expect(testing).toHaveCount(1);
+  await expect(testing).toHaveAttribute("data-final", "true");
+  await expect(testing).toContainText("Testing one two three.");
+
+  await emit({ id: 9002, atMs: 901000, text: "Um, so", final: false });
+  await expect(lines.filter({ hasText: "Um, so" })).toHaveCount(1);
+  await emit({ id: 9002, atMs: 901000, text: "", final: true });
+  await expect(lines.filter({ hasText: "Um, so" })).toHaveCount(0);
+
+  // Enough lines to scroll; scrolling up shows "Jump to latest" and stops following.
+  for (let i = 0; i < 30; i++) await emit({ id: 9100 + i, atMs: 902000 + i * 1000, text: `Line ${i} of a long call.`, final: true });
+  await expect(feed).toContainText("Line 29 of a long call.");
+  await feed.evaluate((el) => el.scrollTo({ top: 0 }));
+  const jump = page.getByRole("button", { name: "Jump to latest" });
+  await expect(jump).toBeVisible();
+  await emit({ id: 9200, atMs: 990000, text: "Newest line.", final: true });
+  expect(await feed.evaluate((el) => el.scrollTop)).toBe(0);
+  await jump.click();
+  await expect(jump).toBeHidden();
+  await expect(feed.getByText("Newest line.")).toBeInViewport();
+});
+
+test("live captions off: the pane says so and can turn them on", async ({ page }) => {
+  await page.goto(url("/live", "state=recording&captions=off"));
+  await settle(page, "Live captions are off.");
+  await page.getByRole("button", { name: "Turn on captions" }).click();
+  await expect(page.getByText("Captions appear here as people talk.")).toBeVisible();
 });
 
 test("onboarding on macOS finishes even when system audio stays notDetermined", async ({ page }) => {

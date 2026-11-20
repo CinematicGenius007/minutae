@@ -214,6 +214,18 @@ export function TranscriptionSection({ settings, update }: SectionProps) {
             </>
           }
         />
+        <SettingRow
+          title="Live captions"
+          htmlFor="s-captions"
+          description={
+            models && !models.some((m) => m.state === "ready")
+              ? "Shows what's said while you record. Needs a downloaded model below."
+              : "Shows what's said while you record, using a small model in the background. Uses some battery."
+          }
+          control={
+            <Toggle id="s-captions" checked={settings.liveCaptions} onCheckedChange={(v) => update({ liveCaptions: v })} />
+          }
+        />
       </section>
 
       <section className={s.group} aria-labelledby="g-model">

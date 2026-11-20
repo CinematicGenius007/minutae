@@ -144,7 +144,18 @@
 .lineText { font-size: var(--fs-body); line-height: var(--lh-body-loose); color: var(--ink); }
 .lineOld { color: var(--muted); }
 .partial { color: var(--faint); }
-.placeholder { font-size: var(--fs-body); line-height: var(--lh-body-loose); color: var(--muted); max-width: 32ch; }
+.placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-3);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body-loose);
+  color: var(--muted);
+  max-width: 32ch;
+}
+.placeholderAction.placeholderAction { min-height: auto; }
+.jump { display: flex; justify-content: center; padding-block: var(--s-4) var(--s-6); }
 .marker {
   display: flex;
   align-items: center;
