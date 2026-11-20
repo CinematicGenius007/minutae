@@ -181,6 +181,34 @@ pub enum SystemAudio {
     Unavailable,
 }
 
+/// Whether live captions run for the current recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CaptionStatus {
+    On,
+    /// Turned off in Settings.
+    Off,
+    /// No Whisper model is downloaded.
+    NoModel,
+}
+
+/// `recording://caption`: one live caption line. A later line with the same `id` replaces
+/// it (partial → final); a final with empty `text` removes it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionLine {
+    pub id: u64,
+    pub meeting_id: String,
+    pub track: Track,
+    /// "You" (mic) or "Them" (system audio).
+    pub speaker: String,
+    pub at_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+    #[serde(rename = "final")]
+    pub is_final: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingState {
@@ -191,6 +219,7 @@ pub struct RecordingState {
     pub elapsed_ms: u64,
     pub system_audio: SystemAudio,
     pub system_audio_error: Option<String>,
+    pub captions: CaptionStatus,
 }
 
 impl RecordingState {
@@ -207,6 +236,7 @@ impl RecordingState {
                 SystemAudio::Off
             },
             system_audio_error: None,
+            captions: CaptionStatus::Off,
         }
     }
 }
@@ -547,6 +577,7 @@ pub struct Navigate {
 pub mod ev {
     pub const RECORDING_STATE: &str = "recording://state";
     pub const LEVELS: &str = "recording://levels";
+    pub const CAPTION: &str = "recording://caption";
     pub const PROGRESS: &str = "job://progress";
     pub const MEETINGS_CHANGED: &str = "meetings://changed";
     pub const DICTATIONS_CHANGED: &str = "dictations://changed";
@@ -784,11 +815,16 @@ mod tests {
                 "elapsedMs",
                 "systemAudio",
                 "systemAudioError",
+                "captions",
             ],
         );
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["phase"], "idle");
         assert_eq!(v["systemAudio"], "on");
+        assert_eq!(
+            serde_json::to_value(CaptionStatus::NoModel).unwrap(),
+            "noModel"
+        );
         assert_keys(
             &LevelFrame {
                 elapsed_ms: 0,
@@ -930,6 +966,7 @@ mod tests {
                 "whisperModel",
                 "language",
                 "labelSpeakers",
+                "liveCaptions",
                 "transportOrder",
                 "apiFallbackEnabled",
                 "summaryLength",

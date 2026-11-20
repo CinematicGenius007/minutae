@@ -5,17 +5,22 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use minutae_asr::captions::{Caption, CaptionConfig, CaptionEngine, CaptionSink};
+use minutae_asr::{ModelManager, TranscribeOptions, Transcriber};
 use minutae_audio::{
-    AudioError, CaptureConfig, CaptureEvent, RecordedTracks, Recorder, RecordingHandle,
+    AudioError, CaptureConfig, CaptureEvent, RecordedTracks, Recorder, RecordingHandle, Taps,
 };
-use minutae_core::{Failure, FailureKind, Meeting, MeetingId, MeetingStatus, Moment, Track};
+use minutae_core::{
+    AppSettings, Failure, FailureKind, Meeting, MeetingId, MeetingStatus, Moment, Track,
+    WhisperModel,
+};
 use minutae_jobs::JobKind;
 use minutae_store::{Store, TrackFile};
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
-use crate::dto::{self, RecordingPhase, RecordingState, SystemAudio, ev};
+use crate::dto::{self, CaptionStatus, RecordingPhase, RecordingState, SystemAudio, ev};
 use crate::pipeline::DEFAULT_TITLE;
 use crate::state::{AppState, emit_meetings_changed, recordings_root};
 use crate::util;
@@ -33,6 +38,10 @@ pub struct ActiveRecording {
     /// callers (a second Stop click, quit, delete, erase) wait on it instead of racing.
     pub stopped: StopSignal,
     ticker: tokio::task::AbortHandle,
+    /// Live captions (present whenever a Whisper model is, even if turned off, so the
+    /// setting can be flipped mid-recording).
+    captions: Option<CaptionEngine>,
+    pub caption_status: CaptionStatus,
 }
 
 /// One-shot completion shared by every caller of [`stop`] for the same recording.
@@ -78,6 +87,7 @@ impl ActiveRecording {
                 SystemAudio::On
             },
             system_audio_error: self.system_error.clone(),
+            captions: self.caption_status,
         }
     }
 }
@@ -149,7 +159,8 @@ pub async fn start(
         out_dir: dir.clone(),
         chunk_secs: 10,
     };
-    let handle = tokio::task::spawn_blocking(move || Recorder::new().start(cfg))
+    let (captions, taps, caption_status) = start_captions(app, &settings, id);
+    let handle = tokio::task::spawn_blocking(move || Recorder::new().start_with_taps(cfg, taps))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| {
@@ -184,6 +195,8 @@ pub async fn start(
         from_call,
         stopped: StopSignal::default(),
         ticker,
+        captions,
+        caption_status,
     });
     tauri::async_runtime::spawn(watch_capture(app.clone(), id, capture_events));
     drop(guard);
@@ -219,7 +232,7 @@ async fn ticker(app: AppHandle, handle: Arc<RecordingHandle>) {
 /// (stitch + database update) and get its result, so nothing races the stitch.
 pub async fn stop(app: &AppHandle) -> Result<MeetingId, String> {
     let st = app.state::<AppState>();
-    let (handle, meeting, ticker, signal) = {
+    let (handle, meeting, ticker, signal, captions) = {
         let mut guard = st.recording.lock().await;
         let Some(r) = guard.as_mut() else {
             return Err("Nothing is recording.".into());
@@ -235,10 +248,27 @@ pub async fn stop(app: &AppHandle) -> Result<MeetingId, String> {
             r.meeting.clone(),
             r.ticker.clone(),
             r.stopped.clone(),
+            r.captions.take(),
         )
     };
     emit_state(app).await;
     ticker.abort();
+    if let Some(engine) = captions {
+        // Aborts a caption in progress; the full files are transcribed after the stop.
+        if let Ok(stats) = tokio::task::spawn_blocking(move || engine.stop()).await {
+            tracing::info!(
+                windows = stats.windows,
+                silent = stats.silent,
+                dropped = stats.dropped,
+                finals = stats.finals,
+                partials = stats.partials,
+                errors = stats.errors,
+                busy_ms = stats.busy_ms,
+                audio_ms = stats.audio_ms,
+                "live captions stopped"
+            );
+        }
+    }
     let id = meeting.id;
     let result = tokio::task::spawn_blocking(move || handle.stop()).await;
     let outcome = match result {
@@ -387,9 +417,136 @@ pub async fn set_paused(app: &AppHandle, paused: bool) -> Result<(), String> {
             r.handle.resume();
             r.phase = RecordingPhase::Recording;
         }
+        if let Some(c) = &r.captions
+            && c.is_enabled()
+        {
+            c.set_paused(paused);
+        }
     }
     emit_state(app).await;
     Ok(())
+}
+
+/// The model live captions use: a small fast one when downloaded, else the selected one,
+/// else any downloaded model. `None` = no Whisper model at all.
+pub fn caption_model(
+    downloaded: impl Fn(WhisperModel) -> bool,
+    selected: WhisperModel,
+) -> Option<WhisperModel> {
+    [
+        WhisperModel::Base,
+        WhisperModel::Tiny,
+        selected,
+        WhisperModel::Small,
+        WhisperModel::Medium,
+    ]
+    .into_iter()
+    .find(|m| downloaded(*m))
+}
+
+pub fn caption_status(enabled: bool, model: Option<WhisperModel>) -> CaptionStatus {
+    match (enabled, model) {
+        (_, None) => CaptionStatus::NoModel,
+        (false, Some(_)) => CaptionStatus::Off,
+        (true, Some(_)) => CaptionStatus::On,
+    }
+}
+
+/// Live captions use a few cores at most and run at low priority (see `minutae_asr::captions`).
+fn caption_threads() -> u32 {
+    std::thread::available_parallelism()
+        .map(|n| (n.get() / 2).clamp(1, 4))
+        .unwrap_or(2) as u32
+}
+
+pub fn caption_line(meeting_id: &str, c: Caption) -> dto::CaptionLine {
+    dto::CaptionLine {
+        id: c.id,
+        meeting_id: meeting_id.to_string(),
+        track: c.track,
+        speaker: match c.track {
+            Track::Mic => "You",
+            Track::System => "Them",
+        }
+        .to_string(),
+        at_ms: c.start_ms,
+        end_ms: c.end_ms,
+        text: c.text,
+        is_final: c.is_final,
+    }
+}
+
+/// Set up live captions for a new recording: the engine (if a model exists) and the taps
+/// that feed it from the recorder's writers.
+fn start_captions(
+    app: &AppHandle,
+    settings: &AppSettings,
+    meeting_id: MeetingId,
+) -> (Option<CaptionEngine>, Taps, CaptionStatus) {
+    let st = app.state::<AppState>();
+    let models: &ModelManager = &st.models;
+    let model = caption_model(|m| models.status(m).downloaded, settings.whisper_model);
+    let status = caption_status(settings.live_captions, model);
+    let Some(model) = model else {
+        return (None, Taps::default(), status);
+    };
+    let transcriber: Arc<dyn Transcriber> = match st.transcribers.get(models, model) {
+        Ok(t) => t,
+        Err(f) => {
+            tracing::warn!(message = %f.message, "live captions unavailable");
+            return (None, Taps::default(), CaptionStatus::NoModel);
+        }
+    };
+    let opts = TranscribeOptions {
+        language: settings.language.clone(),
+        threads: Some(caption_threads()),
+        ..Default::default()
+    }
+    .with_vocabulary(&settings.vocabulary);
+    let emitter = app.clone();
+    let id = meeting_id.to_string();
+    let sink: CaptionSink = Arc::new(move |c: Caption| {
+        let _ = emitter.emit(ev::CAPTION, caption_line(&id, c));
+    });
+    match CaptionEngine::start(transcriber, opts, CaptionConfig::default(), sink) {
+        Ok((engine, mut mic, mut system)) => {
+            engine.set_enabled(settings.live_captions);
+            tracing::info!(
+                ?model,
+                enabled = settings.live_captions,
+                "live captions ready"
+            );
+            let taps = Taps {
+                mic: Some(Box::new(move |at, block: &[f32]| mic.push(at, block))),
+                system: Some(Box::new(move |at, block: &[f32]| system.push(at, block))),
+            };
+            (Some(engine), taps, status)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "live captions failed to start");
+            (None, Taps::default(), CaptionStatus::NoModel)
+        }
+    }
+}
+
+/// The live-captions setting changed: apply it to a recording in progress.
+pub async fn apply_caption_setting(app: &AppHandle, enabled: bool) {
+    let st = app.state::<AppState>();
+    {
+        let mut guard = st.recording.lock().await;
+        let Some(r) = guard.as_mut() else { return };
+        let Some(engine) = &r.captions else { return };
+        engine.set_enabled(enabled);
+        if enabled && r.phase == RecordingPhase::Paused {
+            engine.set_paused(true);
+        }
+        r.caption_status = if enabled {
+            CaptionStatus::On
+        } else {
+            CaptionStatus::Off
+        };
+    }
+    emit_state(app).await;
 }
 
 pub async fn mark_moment(app: &AppHandle, label: Option<String>) -> Result<dto::MomentDto, String> {
@@ -653,6 +810,59 @@ mod tests {
             w.write_sample(0i16).unwrap();
         }
         w.finalize().unwrap();
+    }
+
+    #[test]
+    fn caption_model_prefers_small_fast_models() {
+        use WhisperModel::*;
+        let have = |list: Vec<WhisperModel>| move |m| list.contains(&m);
+        assert_eq!(caption_model(have(vec![Small, Base]), Small), Some(Base));
+        assert_eq!(caption_model(have(vec![Small, Tiny]), Small), Some(Tiny));
+        assert_eq!(
+            caption_model(have(vec![Medium, Small]), Medium),
+            Some(Medium)
+        );
+        assert_eq!(caption_model(have(vec![Small]), Medium), Some(Small));
+        assert_eq!(caption_model(have(vec![]), Small), None);
+        assert_eq!(caption_status(true, None), CaptionStatus::NoModel);
+        assert_eq!(caption_status(false, Some(Base)), CaptionStatus::Off);
+        assert_eq!(caption_status(true, Some(Base)), CaptionStatus::On);
+    }
+
+    #[test]
+    fn caption_lines_name_the_track() {
+        let c = |track| Caption {
+            id: 7,
+            track,
+            start_ms: 3_500,
+            end_ms: 7_500,
+            text: "Hello".into(),
+            is_final: false,
+        };
+        let you = caption_line("m", c(Track::Mic));
+        assert_eq!(
+            (you.speaker.as_str(), you.at_ms, you.end_ms),
+            ("You", 3_500, 7_500)
+        );
+        assert_eq!(caption_line("m", c(Track::System)).speaker, "Them");
+        let v = serde_json::to_value(&you).unwrap();
+        let mut keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "atMs",
+                "endMs",
+                "final",
+                "id",
+                "meetingId",
+                "speaker",
+                "text",
+                "track"
+            ]
+        );
+        assert_eq!(v["final"], false);
+        assert_eq!(v["track"], "mic");
     }
 
     #[test]

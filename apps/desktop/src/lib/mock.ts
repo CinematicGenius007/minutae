@@ -9,6 +9,7 @@
 //   ?os=macos          report this OS instead of guessing from the user agent (macos | windows | linux)
 //   ?perms=none        every permission is notRequired (Windows / Linux): onboarding has nothing to ask
 //   ?audio=1           meetings have short silent audio tracks, so the player is enabled
+//   ?captions=off      live captions turned off (also: noModel = no Whisper model; none = on, nothing said yet)
 //
 // Behaviour mirrors the real backend where the UI must cope with it:
 //   - request_permission("systemAudio" | "accessibility") on macOS can keep answering notDetermined
@@ -17,7 +18,8 @@
 //   - ask() answers take a different time per question, so a later question can land first
 
 import type {
-  Answer, AppSettings, DayGroup, Dictation, MeetingDetail, ModelInfo, Permissions, ProviderStatus, RecordingState, SearchHit,
+  Answer, AppSettings, CaptionLine, CaptionStatus, DayGroup, Dictation, MeetingDetail, ModelInfo, Permissions, ProviderStatus,
+  RecordingState, SearchHit, Track,
   UsageMonth,
 } from "./types";
 
@@ -48,7 +50,7 @@ const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")
 let settings: AppSettings = {
   appearance: "system", launchAtLogin: true, autoDetectMeetings: true, promptDelaySeconds: 5, stopWhenCallEnds: true,
   includeSystemAudio: true, microphone: null, recordShortcut: "CommandOrControl+Alt+R", transcribeWhere: "local",
-  whisperModel: "small", language: null, labelSpeakers: true, transportOrder: ["codexCli", "ollama", "grokCli"],
+  whisperModel: "small", language: null, labelSpeakers: true, liveCaptions: true, transportOrder: ["codexCli", "ollama", "grokCli"],
   apiFallbackEnabled: false, summaryLength: "brief", summariesPath: null, codexModel: null, ollamaModel: "llama3.1:8b",
   dictationHotkey: "Alt+Space", dictationMode: "hold", tidyDictation: true, keepDictationAudio: false,
   vocabulary: ["Minutae", "whisper.cpp", "Priya Raman", "SwiftUI"], deleteAudioAfterDays: 30, recordingsPath: null,
@@ -170,7 +172,42 @@ const dictations: Dictation[] = [
   targetApp: app as string, wordCount: (text as string).split(/\s+/).length, durationMs: 6000, inserted: true,
 }));
 
-let recording: RecordingState = { phase: "idle", meetingId: null, title: null, sourceApp: null, elapsedMs: 0, systemAudio: "on", systemAudioError: null };
+// Live captions. `?captions=off | noModel` sets the status; `?captions=none` keeps them on but
+// silent. In `?state=recording` a few lines are already there, then a new line (partial, then
+// final) arrives every few seconds while recording.
+const captionParam = params.get("captions");
+let captionStatus: CaptionStatus = captionParam === "off" ? "off" : captionParam === "noModel" ? "noModel" : "on";
+if (captionStatus === "off") settings = { ...settings, liveCaptions: false };
+const captionBacklog: CaptionLine[] = [];
+let captionId = 100;
+function caption(line: Omit<CaptionLine, "id" | "meetingId" | "speaker"> & { id?: number }) {
+  const c: CaptionLine = {
+    id: line.id ?? captionId++, meetingId: recording.meetingId ?? id(9),
+    speaker: line.track === "mic" ? "You" : "Them", ...line,
+  };
+  captionBacklog.push(c);
+  if (captionBacklog.length > 200) captionBacklog.shift();
+  emit("recording://caption", c);
+}
+const CAPTION_SCRIPT: [Track, string, string][] = [
+  ["system", "Bob, where did the dashboard numbers", "Bob, where did the dashboard numbers land this week?"],
+  ["system", "Cold start is at one point eight", "Cold start is at one point eight seconds, so still over."],
+  ["mic", "Okay, let's make that", "Okay, let's make that a blocker for the beta."],
+  ["system", "Works for me. I'll write", "Works for me. I'll write up the plan tonight."],
+];
+let scriptStep = 0;
+function startCaptionScript() {
+  setInterval(() => {
+    if (recording.phase !== "recording" || captionStatus !== "on") return;
+    const [track, partial, full] = CAPTION_SCRIPT[scriptStep++ % CAPTION_SCRIPT.length]!;
+    const at = recording.elapsedMs;
+    const lineId = captionId++;
+    caption({ id: lineId, track, atMs: at, endMs: at + 2000, text: partial, final: false });
+    setTimeout(() => caption({ id: lineId, track, atMs: at, endMs: at + 4000, text: full, final: true }), 1800);
+  }, 6000);
+}
+
+let recording: RecordingState = { phase: "idle", meetingId: null, title: null, sourceApp: null, elapsedMs: 0, systemAudio: "on", systemAudioError: null, captions: captionStatus };
 let tick: ReturnType<typeof setInterval> | null = null;
 function startTicker() {
   if (tick) return;
@@ -183,8 +220,15 @@ function startTicker() {
   }, 33);
 }
 if (params.get("state") === "recording") {
-  recording = { phase: "recording", meetingId: id(9), title: "Q2 Design Sync", sourceApp: "Zoom", elapsedMs: 768000, systemAudio: "on", systemAudioError: null };
+  recording = { phase: "recording", meetingId: id(9), title: "Q2 Design Sync", sourceApp: "Zoom", elapsedMs: 768000, systemAudio: "on", systemAudioError: null, captions: captionStatus };
   startTicker();
+  if (captionStatus === "on" && captionParam !== "none") {
+    caption({ track: "system", atMs: 724000, endMs: 731000, text: "So we move to May. Alice, can you share the updated mockups by Friday?", final: true });
+    caption({ track: "system", atMs: 738000, endMs: 744000, text: "Yes, Friday works. I'll loop in Bob on the performance numbers.", final: true });
+    caption({ track: "mic", atMs: 751000, endMs: 755000, text: "Great, I'll move it on the roadmap today.", final: true });
+    caption({ track: "system", atMs: 762000, endMs: 766000, text: "One more thing on the onboarding", final: false });
+    startCaptionScript();
+  }
 }
 
 const models: ModelInfo[] = [
@@ -293,6 +337,13 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
       if (refusal) return fail(refusal);
       settings = { ...settings, ...patch };
       emit("settings://changed", settings);
+      if (patch.liveCaptions !== undefined && captionStatus !== "noModel") {
+        captionStatus = patch.liveCaptions ? "on" : "off";
+        if (recording.phase !== "idle") {
+          recording = { ...recording, captions: captionStatus };
+          emit("recording://state", recording);
+        }
+      }
       return r(settings);
     }
     case "permissions": return r(perms);
@@ -311,7 +362,8 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
     case "recording_state": return r(recording);
     case "start_recording":
     case "accept_call_prompt":
-      recording = { phase: "recording", meetingId: id(9), title: (args.title as string) ?? "Untitled meeting", sourceApp: (args.sourceApp as string) ?? null, elapsedMs: 0, systemAudio: "on", systemAudioError: null };
+      captionBacklog.length = 0;
+      recording = { phase: "recording", meetingId: id(9), title: (args.title as string) ?? "Untitled meeting", sourceApp: (args.sourceApp as string) ?? null, elapsedMs: 0, systemAudio: "on", systemAudioError: null, captions: captionStatus };
       startTicker(); emit("recording://state", recording);
       return r({ id: id(9), title: recording.title, startedAt: new Date().toISOString(), endedAt: null, status: "recording", sourceApp: recording.sourceApp, failure: null });
     case "stop_recording": {
@@ -319,7 +371,7 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
       recording = { ...recording, phase: "stopping" };
       emit("recording://state", recording);
       await new Promise((done) => setTimeout(done, 600));
-      recording = { phase: "idle", meetingId: null, title: null, sourceApp: null, elapsedMs: 0, systemAudio: "on", systemAudioError: null };
+      recording = { phase: "idle", meetingId: null, title: null, sourceApp: null, elapsedMs: 0, systemAudio: "on", systemAudioError: null, captions: captionStatus };
       emit("recording://state", recording);
       return r(meetingId);
     }
@@ -346,6 +398,9 @@ export async function mockListen<T>(event: string, cb: (payload: T) => void): Pr
   const set = listeners.get(event) ?? new Set<Listener>();
   set.add(cb as Listener);
   listeners.set(event, set);
+  // Captions already sent this recording reach late subscribers too (the app keeps them
+  // in one app-wide store, so in the real app nothing is missed after startup).
+  if (event === "recording://caption") for (const c of captionBacklog) (cb as Listener)(c);
   return () => set.delete(cb as Listener);
 }
 
