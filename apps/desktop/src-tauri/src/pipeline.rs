@@ -445,7 +445,12 @@ async fn summarize_step(host: &dyn Host, ctx: &JobContext, id: MeetingId) -> Res
             Ok(o) => (o.summary, o.title_suggestion),
             Err(e) => {
                 tracing::warn!(kind = ?e.kind, attempts = ?e.attempts, "summary failed");
-                return Err(e.failure());
+                // The transcript is already stored at this point: always say so.
+                let mut f = e.failure();
+                if !f.message.contains("Transcript is saved") {
+                    f.message = format!("{} Transcript is saved.", f.message.trim_end());
+                }
+                return Err(f);
             }
         }
     };
@@ -855,13 +860,18 @@ mod tests {
 
         let speakers = store.list_speakers(id).unwrap();
         let labels: Vec<&str> = speakers.iter().map(|s| s.label.as_str()).collect();
-        assert!(labels.contains(&"You"), "{labels:?}");
         assert!(
             labels.contains(&"Speaker 1") && labels.contains(&"Speaker 2"),
             "{labels:?}"
         );
+        // The fake returns identical text on both tracks — exactly what speaker bleed
+        // looks like — so the merge drops the mic duplicates and keeps the system lines.
         let t = store.get_transcript(id).unwrap().unwrap();
-        assert_eq!(t.segments.len(), 4);
+        assert_eq!(t.segments.len(), 2);
+        assert!(
+            t.segments.iter().all(|s| s.track == Track::System),
+            "mic duplicates of system speech are dropped"
+        );
         assert!(t.segments.iter().all(|s| s.speaker_id.is_some()));
 
         let summary = store.get_summary(id).unwrap().unwrap();
@@ -892,8 +902,8 @@ mod tests {
             .unwrap();
         let m = wait_status(&store, id, MeetingStatus::Failed).await;
         let f = m.failure.unwrap();
-        // NotLoggedIn falls through to the next transport; with none left → noProviderReady.
-        assert_eq!(f.kind, FailureKind::NoProviderReady);
+        // The router reports the real cause of the last attempt, not a generic "no provider".
+        assert_eq!(f.kind, FailureKind::NotLoggedIn);
         assert!(f.message.contains("Transcript is saved"));
         assert!(
             store.get_transcript(id).unwrap().is_some(),
@@ -908,7 +918,7 @@ mod tests {
         retry_meeting(&runner, id).await.unwrap();
         // Still failing (same fake), but it went back through the summarize step only.
         let m = wait_status(&store, id, MeetingStatus::Failed).await;
-        assert_eq!(m.failure.unwrap().kind, FailureKind::NoProviderReady);
+        assert_eq!(m.failure.unwrap().kind, FailureKind::NotLoggedIn);
         let jobs = store.jobs_for_meeting(id).unwrap();
         assert_eq!(
             jobs.iter()

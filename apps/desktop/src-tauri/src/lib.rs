@@ -71,6 +71,16 @@ fn sync_autostart(app: &AppHandle, enabled: bool) {
     }
 }
 
+/// Audio may only be deleted once the meeting is fully processed (`Done`, so the
+/// transcript is stored) and it started before `cutoff`. Never for recording,
+/// processing or failed meetings: their audio is still needed to (re)transcribe.
+pub fn retention_eligible(
+    meeting: &minutae_core::Meeting,
+    cutoff: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    meeting.status == minutae_core::MeetingStatus::Done && meeting.started_at < cutoff
+}
+
 /// Delete audio older than `delete_audio_after_days` (transcripts and summaries stay).
 pub async fn run_retention(app: &AppHandle) {
     let st = app.state::<AppState>();
@@ -83,9 +93,10 @@ pub async fn run_retention(app: &AppHandle) {
         return;
     };
     let mut removed = 0;
-    for item in meetings.into_iter().filter(|m| {
-        m.meeting.started_at < cutoff && m.meeting.status != minutae_core::MeetingStatus::Recording
-    }) {
+    for item in meetings
+        .into_iter()
+        .filter(|m| retention_eligible(&m.meeting, cutoff))
+    {
         let id = item.meeting.id;
         let Ok(tracks) = store.call(move |s| s.list_tracks(id)).await else {
             continue;
@@ -364,4 +375,40 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minutae_core::{Meeting, MeetingStatus};
+
+    #[test]
+    fn retention_only_touches_old_done_meetings() {
+        let now = chrono::Utc::now();
+        let cutoff = now - chrono::Duration::days(30);
+        let meeting = |status, age_days| Meeting {
+            id: uuid::Uuid::new_v4(),
+            title: "t".into(),
+            started_at: now - chrono::Duration::days(age_days),
+            ended_at: None,
+            status,
+            source_app: None,
+            failure: None,
+        };
+        assert!(retention_eligible(
+            &meeting(MeetingStatus::Done, 40),
+            cutoff
+        ));
+        assert!(!retention_eligible(
+            &meeting(MeetingStatus::Done, 10),
+            cutoff
+        ));
+        for s in [
+            MeetingStatus::Failed,
+            MeetingStatus::Processing,
+            MeetingStatus::Recording,
+        ] {
+            assert!(!retention_eligible(&meeting(s, 40), cutoff), "{s:?}");
+        }
+    }
 }

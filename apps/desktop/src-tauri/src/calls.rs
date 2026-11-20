@@ -6,7 +6,9 @@ use std::time::Duration;
 use minutae_detect::MicEvent;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::dto::{self, ev};
+use minutae_core::MeetingId;
+
+use crate::dto::{self, RecordingPhase, ev};
 use crate::state::AppState;
 
 const STOP_AFTER_CALL_ENDS: Duration = Duration::from_secs(10);
@@ -99,13 +101,18 @@ async fn on_event(app: &AppHandle, event: MicEvent) {
             tracing::info!("call ended");
             let _ = app.emit(ev::CALL_ENDED, ());
             hide_prompt(app);
-            let from_call = st
+            // Remember which meeting the timer is for: only that meeting, still recording
+            // and started from the call prompt, may be auto-stopped.
+            let started_for = st
                 .recording
                 .lock()
                 .await
                 .as_ref()
-                .is_some_and(|r| r.from_call);
-            if from_call && settings.stop_when_call_ends {
+                .filter(|r| r.from_call)
+                .map(|r| r.meeting.id);
+            if let Some(meeting_id) = started_for
+                && settings.stop_when_call_ends
+            {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(STOP_AFTER_CALL_ENDS).await;
@@ -114,7 +121,13 @@ async fn on_event(app: &AppHandle, event: MicEvent) {
                         let c = st.calls.lock().unwrap_or_else(|e| e.into_inner());
                         c.generation == generation && !c.busy
                     };
-                    if still_free {
+                    let current = st
+                        .recording
+                        .lock()
+                        .await
+                        .as_ref()
+                        .map(|r| (r.meeting.id, r.from_call, r.phase));
+                    if should_auto_stop(meeting_id, current, still_free) {
                         tracing::info!("call ended 10 s ago; stopping the recording");
                         let _ = crate::recording::stop(&app).await;
                     }
@@ -122,6 +135,19 @@ async fn on_event(app: &AppHandle, event: MicEvent) {
             }
         }
     }
+}
+
+/// Auto-stop only the meeting the timer was started for, if it is still recording
+/// (and not already stopping), was started from the call prompt, and the call stayed over.
+pub fn should_auto_stop(
+    started_for: MeetingId,
+    current: Option<(MeetingId, bool, RecordingPhase)>,
+    still_free: bool,
+) -> bool {
+    still_free
+        && current.is_some_and(|(id, from_call, phase)| {
+            id == started_for && from_call && phase != RecordingPhase::Stopping
+        })
 }
 
 pub fn hide_prompt(app: &AppHandle) {
@@ -147,8 +173,24 @@ pub async fn accept(app: &AppHandle) -> Result<dto::Meeting, String> {
         .unwrap_or_else(|e| e.into_inner())
         .app
         .clone();
-    hide_prompt(app);
-    crate::recording::start(app, None, name, true).await
+    // The prompt stays up until recording really started; on failure say why.
+    match crate::recording::start(app, None, name, true).await {
+        Ok(m) => {
+            hide_prompt(app);
+            Ok(m)
+        }
+        Err(e) => {
+            tracing::warn!("call prompt start: {e}");
+            use tauri_plugin_notification::NotificationExt;
+            let _ = app
+                .notification()
+                .builder()
+                .title("Minutae")
+                .body(&e)
+                .show();
+            Err(e)
+        }
+    }
 }
 
 pub fn dismiss(app: &AppHandle, always: bool) {
@@ -170,5 +212,34 @@ pub fn dismiss(app: &AppHandle, always: bool) {
             flags.never_prompt_apps.push(n);
             flags.save();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_stop_only_for_the_same_call_meeting() {
+        let a = uuid::Uuid::new_v4();
+        let b = uuid::Uuid::new_v4();
+        let rec = RecordingPhase::Recording;
+        assert!(should_auto_stop(a, Some((a, true, rec)), true));
+        assert!(should_auto_stop(
+            a,
+            Some((a, true, RecordingPhase::Paused)),
+            true
+        ));
+        // A new call started in the meantime.
+        assert!(!should_auto_stop(a, Some((a, true, rec)), false));
+        // The user stopped and started another recording.
+        assert!(!should_auto_stop(a, Some((b, true, rec)), true));
+        assert!(!should_auto_stop(a, Some((b, false, rec)), true));
+        assert!(!should_auto_stop(a, None, true));
+        assert!(!should_auto_stop(
+            a,
+            Some((a, true, RecordingPhase::Stopping)),
+            true
+        ));
     }
 }

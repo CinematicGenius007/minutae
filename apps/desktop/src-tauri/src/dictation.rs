@@ -164,6 +164,7 @@ pub fn init(app: &AppHandle, rt: tokio::runtime::Handle) {
     let (controller, mut rx) =
         DictationController::new(deps, DictationConfig::from_settings(&st.settings()), rt);
     let _ = st.dictation.set(controller);
+    spawn_key_worker(app);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
@@ -171,6 +172,17 @@ pub fn init(app: &AppHandle, rt: tokio::runtime::Handle) {
                 DictationEvent::Hud(h) => on_hud(&app, &h),
                 DictationEvent::Finished(f) => {
                     let st = app.state::<AppState>();
+                    if let Some(samples) = f.audio.as_ref().filter(|a| !a.is_empty()) {
+                        let path = dictation_audio_path(f.dictation.id);
+                        let samples = samples.clone();
+                        let r = tokio::task::spawn_blocking(move || {
+                            save_dictation_audio(&path, &samples)
+                        })
+                        .await;
+                        if let Ok(Err(e)) | Err(e) = r.map_err(std::io::Error::other) {
+                            tracing::warn!(error = %e, "saving dictation audio failed");
+                        }
+                    }
                     let d = f.dictation.clone();
                     if let Err(e) = st.store.call(move |s| s.insert_dictation(&d)).await {
                         tracing::warn!(error = %e, "saving dictation failed");
@@ -180,6 +192,55 @@ pub fn init(app: &AppHandle, rt: tokio::runtime::Handle) {
             }
         }
     });
+}
+
+/// Hotkey presses (`true`) and releases (`false`) are applied in order on one worker
+/// thread: `key_down`/`key_up` start/stop the mic (and stitch + read the clip), which
+/// must not block the main thread that delivers global-shortcut events.
+fn spawn_key_worker(app: &AppHandle) {
+    let (tx, rx) = std::sync::mpsc::channel::<bool>();
+    let a = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("minutae-dictation-keys".into())
+        .spawn(move || {
+            while let Ok(down) = rx.recv() {
+                if let Some(c) = a.state::<AppState>().dictation.get() {
+                    if down { c.key_down() } else { c.key_up() }
+                }
+            }
+        });
+    match spawned {
+        Ok(_) => {
+            let _ = app.state::<AppState>().dictation_keys.set(tx);
+        }
+        Err(e) => tracing::error!(error = %e, "dictation key worker failed to start"),
+    }
+}
+
+/// `<data_dir>/dictations/<id>.wav` (kept when "Keep dictation audio" is on).
+pub fn dictation_audio_path(id: uuid::Uuid) -> PathBuf {
+    minutae_core::paths::data_dir()
+        .join("dictations")
+        .join(format!("{id}.wav"))
+}
+
+/// 16 kHz mono 16-bit PCM.
+pub fn save_dictation_audio(path: &std::path::Path, samples: &[f32]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 16_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut w = hound::WavWriter::create(path, spec).map_err(std::io::Error::other)?;
+    for &x in samples {
+        let v = (x.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
+        w.write_sample(v).map_err(std::io::Error::other)?;
+    }
+    w.finalize().map_err(std::io::Error::other)
 }
 
 fn on_hud(app: &AppHandle, h: &HudState) {
@@ -210,5 +271,22 @@ fn on_hud(app: &AppHandle, h: &HudState) {
 pub fn apply_settings(app: &AppHandle, settings: &AppSettings) {
     if let Some(c) = app.state::<AppState>().dictation.get() {
         c.set_config(DictationConfig::from_settings(settings));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dictation_audio_is_16k_mono_pcm() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("d/x.wav");
+        save_dictation_audio(&p, &[0.0, 0.5, -1.0, 2.0]).unwrap();
+        let r = hound::WavReader::open(&p).unwrap();
+        assert_eq!(r.spec().sample_rate, 16_000);
+        assert_eq!(r.spec().channels, 1);
+        let v: Vec<i16> = r.into_samples().map(|s| s.unwrap()).collect();
+        assert_eq!(v, vec![0, 16_384, -32_767, 32_767]);
     }
 }

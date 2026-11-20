@@ -98,6 +98,112 @@ pub fn walk_files(root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// File types `open_path` may hand to the OS (never executables or scripts).
+pub const OPENABLE_EXTENSIONS: [&str; 3] = ["md", "wav", "txt"];
+
+/// Validate a path the UI asks to open or reveal: absolute, no `..`, existing, and
+/// (after resolving symlinks) inside one of `roots` or equal to one of `exact`.
+/// With `open`, only folders and [`OPENABLE_EXTENSIONS`] files are accepted.
+pub fn checked_user_path(
+    path: &str,
+    roots: &[PathBuf],
+    exact: &[PathBuf],
+    open: bool,
+) -> Result<PathBuf, String> {
+    let denied = || "Minutae can only open its own files.".to_string();
+    let p = Path::new(path);
+    if !p.is_absolute()
+        || p.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(denied());
+    }
+    let real = p
+        .canonicalize()
+        .map_err(|_| "That file no longer exists.".to_string())?;
+    let canon = |r: &PathBuf| r.canonicalize().ok();
+    let inside = roots
+        .iter()
+        .filter_map(canon)
+        .any(|r| real.starts_with(&r) && r.parent().is_some())
+        || exact.iter().filter_map(canon).any(|e| e == real);
+    if !inside {
+        return Err(denied());
+    }
+    if open && !real.is_dir() {
+        let ext = real
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase);
+        if !ext.is_some_and(|e| OPENABLE_EXTENSIONS.contains(&e.as_str())) {
+            return Err("Minutae only opens notes, transcripts and recordings.".into());
+        }
+    }
+    Ok(real)
+}
+
+/// A folder the user may choose for recordings/summaries: absolute, no `..`, and not
+/// the top of a disk (that would expose everything through the asset protocol).
+pub fn acceptable_folder(path: &Path) -> bool {
+    path.is_absolute()
+        && path.parent().is_some()
+        && !path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
+/// A global shortcut must have a modifier other than Shift (Ctrl/Alt/Cmd), unless it
+/// is a function key, and must differ from Minutae's other shortcut.
+pub fn validate_accelerator(
+    accelerator: &str,
+    other: &str,
+) -> Result<tauri_plugin_global_shortcut::Shortcut, String> {
+    use std::str::FromStr;
+    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
+    let s = Shortcut::from_str(accelerator.trim())
+        .map_err(|_| "That isn't a shortcut Minutae can use.".to_string())?;
+    let function_key = matches!(
+        s.key,
+        Code::F1
+            | Code::F2
+            | Code::F3
+            | Code::F4
+            | Code::F5
+            | Code::F6
+            | Code::F7
+            | Code::F8
+            | Code::F9
+            | Code::F10
+            | Code::F11
+            | Code::F12
+            | Code::F13
+            | Code::F14
+            | Code::F15
+            | Code::F16
+            | Code::F17
+            | Code::F18
+            | Code::F19
+            | Code::F20
+            | Code::F21
+            | Code::F22
+            | Code::F23
+            | Code::F24
+    );
+    let real_modifier = s
+        .mods
+        .intersects(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER);
+    if !function_key && !real_modifier {
+        return Err("Choose a shortcut with a modifier key".into());
+    }
+    if let Ok(o) = Shortcut::from_str(other.trim())
+        && o.mods == s.mods
+        && o.key == s.key
+    {
+        return Err("Minutae already uses that shortcut for something else".into());
+    }
+    Ok(s)
+}
+
 /// RMS (0..1) → meter level (0..1) on a -60..0 dBFS scale.
 pub fn meter_level(rms: f32) -> f32 {
     if rms <= 0.0 {
@@ -185,5 +291,69 @@ mod tests {
         assert_eq!(mask_key("short"), "••••");
         assert_eq!(meter_level(0.0), 0.0);
         assert!((meter_level(1.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn user_paths_are_confined() {
+        let data = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let md = data.path().join("a.md");
+        std::fs::write(&md, "# x").unwrap();
+        let exe = data.path().join("run.command");
+        std::fs::write(&exe, "#!/bin/sh").unwrap();
+        let outside = other.path().join("b.md");
+        std::fs::write(&outside, "# y").unwrap();
+        let zip = other.path().join("export.zip");
+        std::fs::write(&zip, "z").unwrap();
+        let roots = vec![data.path().to_path_buf()];
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+
+        assert!(checked_user_path(&s(&md), &roots, &[], true).is_ok());
+        assert!(checked_user_path(&s(data.path()), &roots, &[], true).is_ok());
+        assert!(checked_user_path(&s(&exe), &roots, &[], true).is_err());
+        assert!(checked_user_path(&s(&exe), &roots, &[], false).is_ok());
+        assert!(checked_user_path(&s(&outside), &roots, &[], false).is_err());
+        let sneaky = data
+            .path()
+            .join("..")
+            .join(other.path().file_name().unwrap())
+            .join("b.md");
+        assert!(checked_user_path(&s(&sneaky), &roots, &[], false).is_err());
+        assert!(checked_user_path("relative/a.md", &roots, &[], false).is_err());
+        assert!(checked_user_path(&s(&zip), &roots, &[], false).is_err());
+        assert!(checked_user_path(&s(&zip), &roots, std::slice::from_ref(&zip), false).is_ok());
+        // A root of "/" never counts.
+        assert!(checked_user_path(&s(&outside), &[PathBuf::from("/")], &[], false).is_err());
+        #[cfg(unix)]
+        {
+            let link = data.path().join("link.md");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            assert!(checked_user_path(&s(&link), &roots, &[], true).is_err());
+        }
+    }
+
+    #[test]
+    fn folder_choice() {
+        assert!(acceptable_folder(Path::new("/Users/me/Notes")));
+        assert!(!acceptable_folder(Path::new("/")));
+        assert!(!acceptable_folder(Path::new("notes")));
+        assert!(!acceptable_folder(Path::new("/Users/me/../../etc")));
+    }
+
+    #[test]
+    fn accelerators() {
+        let rec = "CommandOrControl+Alt+R";
+        assert!(validate_accelerator("Alt+Space", rec).is_ok());
+        assert!(validate_accelerator("Control+Shift+D", rec).is_ok());
+        assert!(validate_accelerator("F5", rec).is_ok());
+        assert!(validate_accelerator("Shift+F13", rec).is_ok());
+        assert_eq!(
+            validate_accelerator("Shift+D", rec).unwrap_err(),
+            "Choose a shortcut with a modifier key"
+        );
+        assert!(validate_accelerator("Space", rec).is_err());
+        assert!(validate_accelerator("Alt+R+Q+nonsense", rec).is_err());
+        assert!(validate_accelerator(rec, rec).is_err());
+        assert!(validate_accelerator("CmdOrCtrl+Option+R", rec).is_err());
     }
 }

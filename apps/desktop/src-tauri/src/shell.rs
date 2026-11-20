@@ -10,6 +10,8 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
+use minutae_core::AppSettings;
+
 use crate::dto::{self, RecordingPhase, RecordingState, ev};
 use crate::state::AppState;
 use crate::util;
@@ -285,10 +287,8 @@ pub fn quit(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let st = app.state::<AppState>();
-        let recording = st.recording.lock().await.is_some();
-        if recording {
-            let _ = crate::recording::stop(&app).await;
-        }
+        // Waits for an in-flight stop too, so we never exit mid-stitch.
+        crate::recording::stop_and_wait(&app).await;
         if let Ok(r) = st.runner() {
             // Aborts running steps; their guards raise whisper's abort flag.
             r.shutdown().await;
@@ -363,10 +363,10 @@ pub struct Shortcuts {
     pub dictate: Option<Shortcut>,
 }
 
-/// (Re)register the record and dictation shortcuts from settings.
-pub fn apply_shortcuts(app: &AppHandle) {
+/// Register exactly the record + dictation shortcuts of `settings` (replacing any
+/// others). Returns the accelerators the OS refused (e.g. another app owns them).
+pub fn register_shortcuts(app: &AppHandle, settings: &AppSettings) -> Vec<String> {
     let st = app.state::<AppState>();
-    let settings = st.settings();
     let gs = app.global_shortcut();
     if let Err(e) = gs.unregister_all() {
         tracing::debug!(error = %e, "unregister shortcuts");
@@ -378,12 +378,25 @@ pub fn apply_shortcuts(app: &AppHandle) {
     };
     let record = parse(&settings.record_shortcut);
     let dictate = parse(&settings.dictation_hotkey);
-    for s in [record, dictate].into_iter().flatten() {
+    let mut failed = vec![];
+    for (s, text) in [
+        (record, &settings.record_shortcut),
+        (dictate, &settings.dictation_hotkey),
+    ] {
+        let Some(s) = s else { continue };
         if let Err(e) = gs.register(s) {
             tracing::warn!(shortcut = %s, error = %e, "could not register shortcut");
+            failed.push(text.clone());
         }
     }
     *st.shortcuts.lock().unwrap_or_else(|e| e.into_inner()) = Shortcuts { record, dictate };
+    failed
+}
+
+/// (Re)register the record and dictation shortcuts from the current settings.
+pub fn apply_shortcuts(app: &AppHandle) {
+    let settings = app.state::<AppState>().settings();
+    let _ = register_shortcuts(app, &settings);
 }
 
 pub fn on_shortcut(app: &AppHandle, shortcut: &Shortcut, state: ShortcutState) {
@@ -393,11 +406,10 @@ pub fn on_shortcut(app: &AppHandle, shortcut: &Shortcut, state: ShortcutState) {
         (s.record.map(|r| r.id()), s.dictate.map(|d| d.id()))
     };
     if Some(shortcut.id()) == dictate {
-        if let Some(c) = st.dictation.get() {
-            match state {
-                ShortcutState::Pressed => c.key_down(),
-                ShortcutState::Released => c.key_up(),
-            }
+        // Starting/stopping the mic (and stitching + reading the clip) blocks, so the
+        // key events go, in order, to the dictation worker thread instead.
+        if let Some(tx) = st.dictation_keys.get() {
+            let _ = tx.send(state == ShortcutState::Pressed);
         }
     } else if Some(shortcut.id()) == record && state == ShortcutState::Pressed {
         let app = app.clone();

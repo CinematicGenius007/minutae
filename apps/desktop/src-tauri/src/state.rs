@@ -139,6 +139,13 @@ pub struct AppState {
     pub shortcuts: Mutex<crate::shell::Shortcuts>,
     pub hud_generation: AtomicU64,
     pub tray_record_item: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>,
+    /// Folders the user chose with `pick_folder` this session: the only custom
+    /// recordings/summaries folders `update_settings` accepts.
+    pub picked_folders: Mutex<std::collections::HashSet<PathBuf>>,
+    /// Last export archive, so the UI may reveal it (it lives outside the data folder).
+    pub last_export: Mutex<Option<PathBuf>>,
+    /// Dictation hotkey presses/releases, handled in order off the main thread.
+    pub dictation_keys: OnceLock<std::sync::mpsc::Sender<bool>>,
 }
 
 impl AppState {
@@ -167,6 +174,9 @@ impl AppState {
             shortcuts: Mutex::new(Default::default()),
             hud_generation: AtomicU64::new(0),
             tray_record_item: Mutex::new(None),
+            picked_folders: Mutex::new(Default::default()),
+            last_export: Mutex::new(None),
+            dictation_keys: OnceLock::new(),
         }
     }
 
@@ -227,6 +237,17 @@ pub fn summaries_root(settings: &AppSettings) -> PathBuf {
         .filter(|p| !p.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(paths::summaries_dir)
+}
+
+/// Folders `open_path` / `reveal_path` may touch.
+pub fn user_path_roots(settings: &AppSettings) -> Vec<PathBuf> {
+    vec![
+        paths::data_dir(),
+        paths::recordings_dir(),
+        paths::summaries_dir(),
+        recordings_root(settings),
+        summaries_root(settings),
+    ]
 }
 
 pub fn emit_meetings_changed(app: &AppHandle, id: Option<MeetingId>) {

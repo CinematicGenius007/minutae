@@ -62,11 +62,41 @@ pub async fn update_settings(app: AppHandle, patch: serde_json::Value) -> R<AppS
     let st = app.state::<AppState>();
     let old = st.settings();
     let new = merge_settings(&old, patch)?;
+    {
+        let picked = st.picked_folders.lock().unwrap_or_else(|e| e.into_inner());
+        check_folder_setting(
+            old.recordings_path.as_deref(),
+            new.recordings_path.as_deref(),
+            &picked,
+        )?;
+        check_folder_setting(
+            old.summaries_path.as_deref(),
+            new.summaries_path.as_deref(),
+            &picked,
+        )?;
+    }
+    let shortcuts_changed =
+        old.record_shortcut != new.record_shortcut || old.dictation_hotkey != new.dictation_hotkey;
+    if shortcuts_changed {
+        check_shortcuts(&old, &new)?;
+        // Register the new pair now; if the changed one is refused, the old pair stays.
+        let failed = shell::register_shortcuts(&app, &new);
+        let changed_failed = failed.iter().any(|f| {
+            (f == &new.record_shortcut && new.record_shortcut != old.record_shortcut)
+                || (f == &new.dictation_hotkey && new.dictation_hotkey != old.dictation_hotkey)
+        });
+        if changed_failed {
+            shell::register_shortcuts(&app, &old);
+            return Err("That shortcut is already used by another app".into());
+        }
+    }
     let s = new.clone();
-    st.store
-        .call(move |store| store.set_settings(&s))
-        .await
-        .map_err(err)?;
+    if let Err(e) = st.store.call(move |store| store.set_settings(&s)).await {
+        if shortcuts_changed {
+            shell::register_shortcuts(&app, &old);
+        }
+        return Err(err(e));
+    }
     *st.settings.write().unwrap_or_else(|e| e.into_inner()) = new.clone();
     crate::apply_settings(&app, &old, &new);
     let _ = app.emit(ev::SETTINGS_CHANGED, &new);
@@ -91,14 +121,69 @@ pub fn open_system_settings(app: AppHandle, kind: dto::PermissionKind) -> R<()> 
     app.opener().open_url(url, None::<&str>).map_err(err)
 }
 
+/// Only Minutae's own folders (and the last export) may be opened or revealed.
+fn allowed_path(app: &AppHandle, path: &str, open: bool) -> R<PathBuf> {
+    let st = app.state::<AppState>();
+    let roots = crate::state::user_path_roots(&st.settings());
+    let exact: Vec<PathBuf> = st
+        .last_export
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .cloned()
+        .collect();
+    util::checked_user_path(path, &roots, &exact, open)
+}
+
 #[tauri::command]
 pub fn reveal_path(app: AppHandle, path: String) -> R<()> {
-    app.opener().reveal_item_in_dir(&path).map_err(err)
+    let p = allowed_path(&app, &path, false)?;
+    app.opener().reveal_item_in_dir(&p).map_err(err)
 }
 
 #[tauri::command]
 pub fn open_path(app: AppHandle, path: String) -> R<()> {
-    app.opener().open_path(&path, None::<&str>).map_err(err)
+    let p = allowed_path(&app, &path, true)?;
+    app.opener()
+        .open_path(p.to_string_lossy(), None::<&str>)
+        .map_err(err)
+}
+
+/// A custom recordings/summaries folder is accepted only if it is unchanged, cleared
+/// (back to the default), or one the user picked with `pick_folder` this session.
+pub fn check_folder_setting(
+    old: Option<&str>,
+    new: Option<&str>,
+    picked: &std::collections::HashSet<PathBuf>,
+) -> R<()> {
+    let norm = |v: Option<&str>| {
+        v.map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from)
+    };
+    let Some(new) = norm(new) else { return Ok(()) };
+    if norm(old).as_ref() == Some(&new) {
+        return Ok(());
+    }
+    if !util::acceptable_folder(&new) {
+        return Err("Choose a different folder.".into());
+    }
+    if !picked.contains(&new) {
+        return Err("Choose that folder again from Settings.".into());
+    }
+    Ok(())
+}
+
+/// Validate a new record/dictation shortcut against the other one (see
+/// [`util::validate_accelerator`]).
+fn check_shortcuts(old: &AppSettings, new: &AppSettings) -> R<()> {
+    if new.record_shortcut != old.record_shortcut {
+        util::validate_accelerator(&new.record_shortcut, &new.dictation_hotkey)?;
+    }
+    if new.dictation_hotkey != old.dictation_hotkey {
+        util::validate_accelerator(&new.dictation_hotkey, &new.record_shortcut)?;
+    }
+    Ok(())
 }
 
 /// Kept alive for the whole run: on Linux (X11/Wayland) the clipboard owner must outlive
@@ -127,9 +212,11 @@ pub fn copy_text(text: String) -> R<()> {
     }
 }
 
+/// True once finished, or right away when this OS has no permission to grant
+/// (Windows/Linux), so the UI never shows an empty onboarding.
 #[tauri::command]
 pub fn onboarding_done(state: State<'_, AppState>) -> bool {
-    state.flags().onboarding_done
+    state.flags().onboarding_done || platform::nothing_to_grant(&platform::permissions())
 }
 
 #[tauri::command]
@@ -333,7 +420,9 @@ pub async fn delete_meeting(app: AppHandle, id: String) -> R<()> {
         .as_ref()
         .is_some_and(|r| r.meeting.id == id);
     if recording_this {
-        recording::stop(&app).await?;
+        // Waits for a stop already in progress, so the stitch can't recreate files
+        // after they are deleted below.
+        let _ = recording::stop(&app).await;
     }
     let store = st.store.clone();
     if let Ok(runner) = st.runner() {
@@ -538,6 +627,7 @@ pub async fn delete_dictation(app: AppHandle, id: String) -> R<()> {
         .call(move |s| s.delete_dictation(id))
         .await
         .map_err(err)?;
+    let _ = std::fs::remove_file(crate::dictation::dictation_audio_path(id));
     let _ = app.emit(ev::DICTATIONS_CHANGED, ());
     Ok(())
 }
@@ -921,15 +1011,26 @@ pub async fn storage_usage(state: State<'_, AppState>) -> R<dto::StorageUsage> {
 
 #[tauri::command]
 pub async fn pick_folder(app: AppHandle) -> R<Option<String>> {
-    tokio::task::spawn_blocking(move || {
-        app.dialog()
+    let a = app.clone();
+    let picked = tokio::task::spawn_blocking(move || {
+        a.dialog()
             .file()
             .blocking_pick_folder()
             .and_then(|p| p.into_path().ok())
-            .map(|p| p.to_string_lossy().into_owned())
     })
     .await
-    .map_err(err)
+    .map_err(err)?;
+    let Some(p) = picked else { return Ok(None) };
+    if !util::acceptable_folder(&p) {
+        return Err("Choose a folder inside your disk, not the top of it.".into());
+    }
+    let s = p.to_string_lossy().into_owned();
+    app.state::<AppState>()
+        .picked_folders
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(PathBuf::from(s.trim()));
+    Ok(Some(s))
 }
 
 /// Zip the data folder (database, recordings, summaries; not the downloadable models).
@@ -1011,17 +1112,16 @@ pub async fn export_all(app: AppHandle) -> R<Option<String>> {
         .await
         .map_err(err)?
         .map_err(|e| format!("The export couldn't be written: {e}"))?;
+    *st.last_export.lock().unwrap_or_else(|e| e.into_inner()) = Some(dest.clone());
     Ok(Some(dest.to_string_lossy().into_owned()))
 }
 
-/// Delete every meeting, dictation, recording, summary file, usage row, key flag and
-/// setting. Downloaded models are kept (they are not personal data).
+/// Delete every meeting, dictation (and kept dictation audio), recording, summary file,
+/// usage row, flag, setting, saved API key and downloaded model.
 #[tauri::command]
 pub async fn erase_all(app: AppHandle) -> R<()> {
     let st = app.state::<AppState>();
-    if st.recording.lock().await.is_some() {
-        let _ = recording::stop(&app).await;
-    }
+    recording::stop_and_wait(&app).await;
     if let Ok(runner) = st.runner() {
         let jobs = st
             .store
@@ -1039,6 +1139,40 @@ pub async fn erase_all(app: AppHandle) -> R<()> {
         for j in jobs {
             let _ = runner.cancel(j.id).await;
         }
+    }
+    // Stop model downloads and unload whisper before their files go.
+    let downloads: Vec<String> = st
+        .downloads
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .keys()
+        .cloned()
+        .collect();
+    for k in downloads {
+        models::cancel(&app, &k);
+    }
+    let cache = st.transcribers.clone();
+    let _ = tokio::task::spawn_blocking(move || cache.shutdown(std::time::Duration::from_secs(10)))
+        .await;
+    // API keys: remove every provider's key from the keychain.
+    let secrets = st.secrets.clone();
+    let key_errors = tokio::task::spawn_blocking(move || {
+        use minutae_llm::SecretStore;
+        [
+            dto::ApiProvider::Anthropic,
+            dto::ApiProvider::Openai,
+            dto::ApiProvider::Gemini,
+            dto::ApiProvider::Grok,
+        ]
+        .into_iter()
+        .filter_map(|p| secrets.delete(p.secret_account()).err())
+        .map(|e| e.detail)
+        .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(err)?;
+    for e in &key_errors {
+        tracing::warn!(error = %e, "removing an API key failed");
     }
     let settings = st.settings();
     let meeting_ids: Vec<Uuid> = st
@@ -1063,8 +1197,13 @@ pub async fn erase_all(app: AppHandle) -> R<()> {
         .map_err(err)?;
     let (rec_root, sum_root) = (recordings_root(&settings), summaries_root(&settings));
     tokio::task::spawn_blocking(move || {
-        // Minutae's own folders go entirely.
-        for d in [paths::recordings_dir(), paths::summaries_dir()] {
+        // Minutae's own folders go entirely (models too: "erase all" means all).
+        for d in [
+            paths::recordings_dir(),
+            paths::summaries_dir(),
+            paths::models_dir(),
+            paths::data_dir().join("dictations"),
+        ] {
             let _ = std::fs::remove_dir_all(&d);
         }
         // User-chosen folders may hold other files: only remove what Minutae wrote there.
@@ -1087,10 +1226,18 @@ pub async fn erase_all(app: AppHandle) -> R<()> {
     let defaults = AppSettings::default();
     *st.settings.write().unwrap_or_else(|e| e.into_inner()) = defaults.clone();
     crate::apply_settings(&app, &settings, &defaults);
+    // The router caches which API keys exist; rebuild it now that they are gone.
+    st.rebuild_router(&defaults);
     let _ = app.emit(ev::SETTINGS_CHANGED, &defaults);
     let _ = app.emit(ev::DICTATIONS_CHANGED, ());
     emit_meetings_changed(&app, None);
     shell::navigate(&app, "/onboarding");
+    if !key_errors.is_empty() {
+        return Err(
+            "Everything else was erased, but some API keys couldn't be removed from the keychain."
+                .into(),
+        );
+    }
     Ok(())
 }
 
