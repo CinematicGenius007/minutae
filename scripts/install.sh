@@ -127,7 +127,7 @@ install_macos_app() { # src .app
 # ── From source ──────────────────────────────────────────────────────────────
 if [ "$FROM_SOURCE" = 1 ]; then
   SRC=""
-  HERE="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
+  HERE="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || HERE=""
   if [ -n "$HERE" ] && [ -f "$HERE/../apps/desktop/src-tauri/tauri.conf.json" ]; then
     SRC="$(cd "$HERE/.." && pwd)"
   else

@@ -41,7 +41,7 @@ if [ -z "$CURRENT" ]; then
   fi
 fi
 SRC=""
-HERE="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
+HERE="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || HERE=""
 if [ -n "$HERE" ] && [ -f "$HERE/../Cargo.toml" ] && [ -f "$HERE/../apps/desktop/src-tauri/tauri.conf.json" ]; then
   SRC="$(cd "$HERE/.." && pwd)"
   if [ -z "$CURRENT" ]; then
