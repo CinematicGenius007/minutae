@@ -1,0 +1,63 @@
+/* HUD window: the pill centered in a transparent window. */
+.hudStage {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: transparent;
+}
+
+/* Call prompt window: the card fills the window minus room for its shadow. */
+.promptStage {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--s-5);
+  background: transparent;
+}
+.card {
+  width: 340px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: var(--s-5);
+  border-radius: calc(var(--radius-md) + var(--s-2));
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: var(--shadow-2);
+  animation: card-in var(--t-slow);
+}
+.cardHead { display: flex; align-items: center; gap: 10px; }
+.liveDot {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--onair);
+  animation: mn-pulse 1.6s ease-in-out infinite;
+}
+.cardTitle {
+  min-width: 0;
+  font-size: var(--fs-body-sm);
+  line-height: var(--lh-body-sm);
+  font-weight: var(--fw-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.now { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-meta-sm); line-height: var(--lh-meta-sm); color: var(--muted); }
+.cardBody { font-size: var(--fs-caption); line-height: var(--lh-caption-loose); color: var(--muted); }
+.cardActions { display: flex; gap: var(--s-3); }
+.grow.grow { flex: 1 1 0; height: 34px; font-size: var(--fs-caption); line-height: var(--lh-caption); }
+.check { flex-shrink: 0; }
+.checkLabel { font-size: var(--fs-meta); line-height: var(--lh-meta); color: var(--muted); font-family: var(--font-sans); }
+
+@keyframes card-in { from { opacity: 0; transform: translateY(-6px); } }
+@media (prefers-reduced-motion: reduce) {
+  @keyframes card-in { from { opacity: 0; } }
+}

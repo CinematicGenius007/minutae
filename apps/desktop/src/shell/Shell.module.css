@@ -1,0 +1,119 @@
+/*
+ * App shell. Defines --page-pad for every screen (DESIGN-LANGUAGE §4):
+ * 72 at ≥ 1200, 40 at 900–1199, 20 below 900.
+ */
+.shell {
+  --page-pad: var(--s-12);
+  --top-inset: 0px;
+  position: relative;
+  display: flex;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--bg);
+}
+.mac { --top-inset: var(--s-8); }
+
+@media (max-width: 1199px) {
+  .shell { --page-pad: calc(var(--s-6) * 2); --sidebar-w: calc(var(--s-12) * 2 + var(--s-11)); }
+}
+@media (max-width: 899px) {
+  .shell { --page-pad: var(--s-6); flex-direction: column; }
+}
+
+.main {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* macOS: the window has a transparent title bar; this strip lets you drag it. */
+.drag {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: var(--s-7);
+  z-index: 5;
+}
+
+.skip {
+  position: absolute;
+  left: var(--s-4);
+  top: var(--s-4);
+  z-index: 10;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--radius-sm);
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: var(--shadow-2);
+  font-size: var(--fs-body-sm);
+  transform: translateY(-200%);
+  opacity: 0; /* its shadow otherwise bleeds into the top edge; still focusable */
+}
+.skip:focus, .skip:focus-visible { transform: none; opacity: 1; box-shadow: var(--shadow-2), var(--focus-ring); }
+
+/* ── Narrow (< 900): top bar + bottom tab bar (Paper 07 Mobile) ─────────── */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  padding: calc(var(--s-4) + var(--top-inset)) var(--page-pad) var(--s-2);
+}
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--s-10);
+  height: var(--s-10);
+  margin-right: calc(var(--s-4) * -1);
+  border-radius: var(--radius-full);
+  color: var(--ink);
+  transition: background-color var(--t-fast);
+}
+.iconButton:hover { background: var(--surface); }
+
+.tabbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  padding: 10px var(--s-8) var(--s-4);
+  border-top: var(--hairline) solid var(--line);
+  background: var(--bg);
+}
+.tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-2);
+  width: var(--s-11);
+  min-height: var(--s-10);
+  padding-block: var(--s-1);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: var(--fs-meta-sm);
+  line-height: var(--lh-meta-sm);
+  text-decoration: none;
+}
+.tab:hover { color: var(--ink); }
+.tabActive { color: var(--ink); font-weight: var(--fw-semibold); }
+
+.recordFab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: calc(var(--s-11) + var(--s-2));
+  height: calc(var(--s-11) + var(--s-2));
+  border-radius: var(--radius-full);
+  background: var(--ink);
+  transition: background-color var(--t-fast), box-shadow var(--t-fast);
+}
+.recordFab:hover { background: var(--ink-hover); }
+.recordFabDot { width: var(--s-6); height: var(--s-6); border-radius: var(--radius-full); background: var(--onair); }
+.recordFabLive { background: var(--onair); }
+.recordFabLive:hover { background: color-mix(in srgb, var(--onair) 90%, black); }
+.recordFabStop { width: var(--s-5); height: var(--s-5); border-radius: var(--s-1); background: var(--on-onair); }
