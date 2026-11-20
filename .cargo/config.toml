@@ -1,0 +1,9 @@
+# Windows: link the static C runtime (/MT) everywhere. sherpa-onnx's prebuilt static library
+# (minutae-diarize, default `static` feature) is /MT; whisper.cpp and other cc/cmake-built
+# code follow `crt-static`, so this keeps every object on the same CRT (mixing /MT and /MD
+# fails with LNK2038 "RuntimeLibrary mismatch"). See .github/workflows/v4.yml.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

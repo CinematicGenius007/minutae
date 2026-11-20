@@ -1,0 +1,13 @@
+{
+  "name": "minutae",
+  "private": true,
+  "workspaces": ["apps/*", "libs/*"],
+  "scripts": {
+    "dev": "bun --cwd apps/desktop tauri dev",
+    "build": "bun --cwd apps/desktop tauri build",
+    "web": "bun --cwd apps/desktop dev",
+    "typecheck": "bun --cwd apps/desktop typecheck && bun --cwd libs/ui typecheck",
+    "test:ui": "bun --cwd libs/ui test",
+    "test:rust": "cargo test --workspace"
+  }
+}
