@@ -3,6 +3,27 @@
 Merged to `main` in PR #38 (2026-11-20, all CI green). Plan: [`CROSS-PLATFORM.md`](./CROSS-PLATFORM.md). Design rules: [`DESIGN-LANGUAGE.md`](./DESIGN-LANGUAGE.md).
 
 
+## Backlog status (2026-11-21)
+
+Every item has an open PR. None are merged yet. Suggested merge order (each PR touches the IPC contract files, so rebase the next one after each merge):
+
+| # | Item | PR | Verified | Needs a human |
+|---|---|---|---|---|
+| 10 | Contrast: `--onair-fill #DB2F17` for filled live surfaces (4.74:1) | #40 | axe a11y on all routes, light/dark | — |
+| 3 | New mark, app/tray icons, favicon (Paper page "Brand & icons", sources in `assets/brand/`) | #41 | icons regenerated, tray PNG test | see it in the Dock/menu bar |
+| 4 | macOS menu-bar panel `#/tray` (Paper page "Menu bar panel"), stacked on #41 | #42 | screenshots + a11y, clippy, app bundle builds | click the real tray icon; outside-click close |
+| 2 | Release workflow, hardened runtime, signing hooks, updater (`docs/RELEASE.md`) | #43 | actionlint, unsigned .app/.dmg, updater off without key | add secrets; first tagged release; Windows/Linux installers |
+| 8 | Import Swift + Tauri v1 databases (MIG-10) | #44 | fixture DBs from both schemas, idempotent | run once on real legacy data |
+| 6 | Echo cancellation (`minutae-aec`, offline, schema v4), stacked on #44 | #48 | synthetic ERLE 26–50 dB, near-end unchanged | a real laptop-speaker meeting |
+| 5 | Live captions (`recording://caption`) | #45 | real Base model on WAV files, ~7% of one core | a real recording in the app |
+| 1, 7 | macOS per-app tap + ScreenCaptureKit fallback (13–14.3) | #46 | tap isolation on this Mac (macOS 27) | macOS 13.x launch; Zoom/Meet/Teams |
+| 7 | Wayland global shortcuts (XDG portal) | #47 | fake portal tests; Linux compile in CI | GNOME / KDE / Hyprland |
+| 9 | Hand-test on real hardware | — | — | everything in the column above |
+
+Testing rule (from 2026-11-20): automated sessions do not open the mic, camera or screen capture and do not launch the app. Hardware checks are done by the owner.
+
+Parallel worktrees: run Playwright with `E2E_PORT=<unique>`; otherwise `reuseExistingServer` tests another checkout's dev server.
+
 ## Backlog for the next session (written 2026-11-20, after PR #38 merged)
 
 Work on a new branch off `main`, one PR per item or small group. Order is a suggestion.
