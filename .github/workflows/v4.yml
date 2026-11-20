@@ -1,5 +1,6 @@
 # Minutae v4 (Tauri 2 + Rust workspace + Bun). The Swift app and `legacy/` keep their own
-# workflows (ci.yml / release.yml); this one only covers crates/*, apps/desktop and libs/ui.
+# workflows (ci.yml / release-legacy.yml); this one only covers crates/*, apps/desktop and libs/ui.
+# v4 releases: release.yml (tag `v*`).
 #
 # Windows C runtime: everything is linked with the static CRT (/MT, no VC++ redistributable
 # needed at install time). sherpa-onnx's prebuilt static archive (minutae-diarize, feature

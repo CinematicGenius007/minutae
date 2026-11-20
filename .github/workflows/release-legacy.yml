@@ -1,9 +1,11 @@
-name: Release
+# Legacy Tauri v1 app (legacy/, pnpm). Kept for reference until v4 reaches parity.
+# Triggers on `legacy-v*` tags so it never runs for a v4 release (`v*`, see release.yml).
+name: Release (legacy v1)
 
 on:
   push:
     tags:
-      - "v*"
+      - "legacy-v*"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
