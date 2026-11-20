@@ -28,3 +28,14 @@ dist-ssr
 
 /Config/Local.xcconfig
 **/.build/
+
+# v4 (Tauri + Rust workspace)
+target/
+target-*/
+apps/desktop/src-tauri/gen/
+apps/desktop/dist/
+/models/
+*.bin.part
+# Xcode / SwiftPM per-user state (legacy Swift app)
+xcuserdata/
+**/.swiftpm/
