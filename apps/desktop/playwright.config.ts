@@ -6,6 +6,10 @@
 //   bun run test:e2e:update     regenerate baselines (review the PNG diff before committing)
 import { defineConfig, devices } from "@playwright/test";
 
+// Each checkout (git worktree) can run its own server: E2E_PORT=1431 bun run test:e2e.
+// reuseExistingServer would otherwise silently test whichever checkout already holds the port.
+const port = Number(process.env.E2E_PORT ?? 1420);
+
 export default defineConfig({
   testDir: "./e2e",
   outputDir: "./e2e/.results",
@@ -26,7 +30,7 @@ export default defineConfig({
     },
   },
   use: {
-    baseURL: "http://localhost:1420",
+    baseURL: `http://localhost:${port}`,
     viewport: { width: 1440, height: 900 },
     deviceScaleFactor: 1,
     locale: "en-GB",
@@ -38,8 +42,8 @@ export default defineConfig({
     { name: "webkit", use: { ...devices["Desktop Safari"], viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 } },
   ],
   webServer: {
-    command: "bunx vite --port 1420 --strictPort",
-    url: "http://localhost:1420",
+    command: `bunx vite --port ${port} --strictPort`,
+    url: `http://localhost:${port}`,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
   },
