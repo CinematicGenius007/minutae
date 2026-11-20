@@ -412,7 +412,7 @@ pub struct PlatformInfo {
     pub app_version: String,
 }
 
-/// Where the in-app updater is. `disabled`: this build has no updater public key.
+/// Where the updater is. `disabled`: update checks are turned off (`MINUTAE_UPDATE_CHECK=off`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum UpdatePhase {
@@ -438,6 +438,23 @@ pub struct UpdateStatus {
     pub fraction: Option<f32>,
     /// One plain sentence when `error`.
     pub error: Option<String>,
+    /// How this copy was installed; decides who applies updates.
+    pub channel: InstallChannel,
+    /// The app can download and install the update itself ("Install and restart").
+    pub can_install: bool,
+    /// When it can't: the command that updates this install (`scoop update minutae`, …).
+    pub update_command: Option<String>,
+}
+
+/// How this copy of Minutae was installed.
+/// `direct`: a release download or `install.sh`; `scoop`: Scoop on Windows;
+/// `source`: built from a git checkout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InstallChannel {
+    Direct,
+    Scoop,
+    Source,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -990,6 +1007,9 @@ mod tests {
             notes: None,
             fraction: None,
             error: None,
+            channel: InstallChannel::Scoop,
+            can_install: false,
+            update_command: Some("scoop update minutae".into()),
         };
         assert_keys(
             &s,
@@ -1000,9 +1020,13 @@ mod tests {
                 "notes",
                 "fraction",
                 "error",
+                "channel",
+                "canInstall",
+                "updateCommand",
             ],
         );
         assert_eq!(serde_json::to_value(&s).unwrap()["phase"], "upToDate");
+        assert_eq!(serde_json::to_value(&s).unwrap()["channel"], "scoop");
         assert_eq!(ev::UPDATE_STATUS, "update://status");
     }
 

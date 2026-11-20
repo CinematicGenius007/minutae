@@ -1,14 +1,23 @@
 # Minutae v4 release: builds every platform and attaches the installers to a DRAFT GitHub
 # Release (publish it by hand). Owner setup, secrets and the release checklist: docs/RELEASE.md.
 #
-# Runs UNSIGNED with no secrets at all. Each secret group switches one thing on:
-#   macOS signing      APPLE_CERTIFICATE + APPLE_CERTIFICATE_PASSWORD (+ APPLE_SIGNING_IDENTITY)
+# Free by design: runs with no secrets at all, and every secret below is free to create.
+#   macOS signing      APPLE_CERTIFICATE + APPLE_CERTIFICATE_PASSWORD + APPLE_SIGNING_IDENTITY.
+#                      The plan is the free self-signed certificate from
+#                      scripts/macos-self-signed-cert.sh: a stable identity, so macOS keeps
+#                      mic / system-audio / accessibility permissions across updates. Without
+#                      it builds are ad-hoc signed and users re-grant permissions per update.
+#   In-app updater     TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD) and the public key, either in
+#                      tauri.conf.json `plugins.updater.pubkey` or repo variable TAURI_UPDATER_PUBKEY
+#   Optional, paid, not planned (kept so they can be switched on later):
 #   macOS notarization APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID, or
 #                      APPLE_API_ISSUER + APPLE_API_KEY + APPLE_API_PRIVATE_KEY (.p8 contents)
 #   Windows signing    AZURE_CLIENT_ID + AZURE_CLIENT_SECRET + AZURE_TENANT_ID and repo variables
 #                      AZURE_SIGNING_ENDPOINT / AZURE_SIGNING_ACCOUNT / AZURE_SIGNING_PROFILE
-#   In-app updater     TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD) and the public key, either in
-#                      tauri.conf.json `plugins.updater.pubkey` or repo variable TAURI_UPDATER_PUBKEY
+#
+# Besides the installers it uploads a Windows portable zip, the Scoop manifest
+# (minutae.json) and SHA256SUMS.txt. Binaries are compiled with MINUTAE_CHANNEL=release so
+# the app knows it is a release copy (see apps/desktop/src-tauri/src/updater.rs).
 # Secrets are exported only when non-empty: an empty APPLE_CERTIFICATE would make Tauri try
 # (and fail) to import a certificate.
 #
@@ -88,6 +97,8 @@ jobs:
             args: --bundles appimage,deb,rpm
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
+    env:
+      MINUTAE_CHANNEL: release
 
     steps:
       - name: Checkout
@@ -167,7 +178,7 @@ jobs:
           if [ "$RUNNER_OS" = "macOS" ]; then
             if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ]; then
               for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do export_if_set "$v"; done
-              echo "macOS: signing with Developer ID"
+              echo "macOS: signing as ${APPLE_SIGNING_IDENTITY:-the identity in the certificate}"
               if [ -n "$APPLE_API_ISSUER" ] && [ -n "$APPLE_API_KEY" ] && [ -n "$APPLE_API_PRIVATE_KEY" ]; then
                 key="$RUNNER_TEMP/AuthKey_$APPLE_API_KEY.p8"
                 printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$key"
@@ -178,13 +189,13 @@ jobs:
                 for v in APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do export_if_set "$v"; done
                 echo "macOS: notarizing with an Apple ID"
               else
-                echo "::warning::macOS build is signed but NOT notarized (no notarization secrets)"
+                echo "macOS: not notarized (expected with the free self-signed certificate)"
               fi
             else
               # Ad-hoc signature: no Developer ID, but the bundle is consistently signed, so
               # Gatekeeper offers "Open Anyway" instead of calling the app damaged.
               echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
-              echo "::warning::macOS build is UNSIGNED (ad-hoc). Add the APPLE_* secrets to sign + notarize."
+              echo "::warning::macOS build is ad-hoc signed: users re-grant permissions after each update. Run scripts/macos-self-signed-cert.sh and add the APPLE_CERTIFICATE secrets (free)."
             fi
           fi
 
@@ -226,33 +237,73 @@ jobs:
 
             _Write the highlights here before publishing._
 
-            ## Downloads
+            ## Install
+
+            **macOS and Linux**
+
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ needs.prepare.outputs.tag }}/scripts/install.sh | sh
+            ```
+
+            **Windows** ([Scoop](https://scoop.sh))
+
+            ```powershell
+            scoop install https://github.com/${{ github.repository }}/releases/latest/download/minutae.json
+            ```
+
+            Install guide: [docs/install](https://github.com/${{ github.repository }}/tree/${{ needs.prepare.outputs.tag }}/docs/install). AI agents: read [docs/agents/INSTALL.md](https://github.com/${{ github.repository }}/blob/${{ needs.prepare.outputs.tag }}/docs/agents/INSTALL.md).
+
+            ## Files
 
             | System | File |
             | --- | --- |
             | macOS, Apple silicon | `Minutae_${{ needs.prepare.outputs.version }}_aarch64.dmg` |
             | macOS, Intel | `Minutae_${{ needs.prepare.outputs.version }}_x64.dmg` |
-            | Windows | `Minutae_${{ needs.prepare.outputs.version }}_x64-setup.exe` (or the `.msi`) |
+            | Windows | `Minutae_${{ needs.prepare.outputs.version }}_x64-portable.zip` (Scoop), `_x64-setup.exe` or `.msi` |
             | Linux | `.AppImage`, `.deb` (Debian/Ubuntu) or `.rpm` (Fedora) |
 
             Checksums: `SHA256SUMS.txt`.
 
-            If this build is unsigned: on macOS open it once from System Settings → Privacy & Security → **Open Anyway**; on Windows choose **More info → Run anyway** in SmartScreen.
+            Minutae isn't notarized by Apple or signed for Windows SmartScreen (both cost money). The install commands above avoid the warnings. If you download a file by hand: on macOS open it once from System Settings → Privacy & Security → **Open Anyway**; on Windows choose **More info → Run anyway**.
 
-  checksums:
-    name: Checksums
-    needs: [prepare, build]
-    runs-on: ubuntu-latest
-    steps:
-      - name: SHA256SUMS.txt
+      - name: Windows portable zip (for Scoop)
+        if: runner.os == 'Windows'
+        shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          $exe = "target/release/minutae-desktop.exe"
+          if (-not (Test-Path $exe)) { throw "missing $exe" }
+          $dir = New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP/portable"
+          Copy-Item $exe "$dir/Minutae.exe"
+          $zip = "$env:RUNNER_TEMP/Minutae_${env:VERSION}_x64-portable.zip"
+          Compress-Archive -Path "$dir/*" -DestinationPath $zip -Force
+          gh release upload $env:TAG $zip --repo $env:GITHUB_REPOSITORY --clobber
+
+  checksums:
+    name: Checksums and Scoop manifest
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+      - name: SHA256SUMS.txt and minutae.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           mkdir assets && cd assets
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern "*.dmg" --pattern "*.exe" --pattern "*.msi" \
+            --pattern "*.dmg" --pattern "*.exe" --pattern "*.msi" --pattern "*-portable.zip" \
             --pattern "*.AppImage" --pattern "*.deb" --pattern "*.rpm"
           sha256sum -- * > SHA256SUMS.txt
           cat SHA256SUMS.txt
-          gh release upload "$TAG" SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --clobber
+          ZIP="Minutae_${VERSION}_x64-portable.zip"
+          HASH="$(sha256sum -- "$ZIP" | cut -d' ' -f1)"
+          bun "$GITHUB_WORKSPACE/scripts/scoop-manifest.ts" "$VERSION" "$HASH" minutae.json
+          gh release upload "$TAG" SHA256SUMS.txt minutae.json --repo "$GITHUB_REPOSITORY" --clobber

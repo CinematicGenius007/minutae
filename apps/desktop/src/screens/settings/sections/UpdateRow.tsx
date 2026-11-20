@@ -45,11 +45,17 @@ export function UpdateRow() {
     </Button>
   );
 
-  let description: string;
+  const copy = (cmd: string) =>
+    navigator.clipboard
+      .writeText(cmd)
+      .then(() => toast.show({ title: "Command copied. Paste it into a terminal." }))
+      .catch(() => toast.show({ title: "Couldn't copy. Select the command and copy it." }));
+
+  let description: ReactNode;
   let control: ReactNode = null;
   switch (u.phase) {
     case "disabled":
-      description = `Version ${u.currentVersion}. This build doesn't update itself.`;
+      description = `Version ${u.currentVersion}. Update checks are off.`;
       break;
     case "idle":
       description = `Version ${u.currentVersion}.`;
@@ -68,6 +74,26 @@ export function UpdateRow() {
       control = check("Check again");
       break;
     case "available":
+      if (!u.canInstall) {
+        const lead = `Version ${u.version} is available. You have ${u.currentVersion}.`;
+        description = u.updateCommand ? (
+          <>
+            {lead} {u.channel === "scoop" ? "Scoop installed this copy. Update it with:" : "Update it with:"}
+            <code className={s.command} data-update-command>{u.updateCommand}</code>
+          </>
+        ) : (
+          `${lead} Download it from github.com/CinematicGenius007/minutae/releases.`
+        );
+        const cmd = u.updateCommand;
+        control = cmd ? (
+          <Button variant="secondary" className={`${s.smallBtn} ${s.inkOutline}`} onClick={() => void copy(cmd)}>
+            Copy command
+          </Button>
+        ) : (
+          check("Check again")
+        );
+        break;
+      }
       description = `Version ${u.version} is available. You have ${u.currentVersion}.`;
       control = (
         <Button variant="secondary" className={`${s.smallBtn} ${s.inkOutline}`} onClick={() => void run(api.installUpdate)}>

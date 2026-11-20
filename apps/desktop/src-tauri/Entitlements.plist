@@ -6,9 +6,9 @@
 
   - audio-input: microphone (meetings + dictation). System audio uses a Core Audio process
     tap, which needs NSAudioCaptureUsageDescription in Info.plist, not an entitlement.
-  - automation.apple-events: tauri-plugin-updater runs an in-process AppleScript
-    ("do shell script … with administrator privileges") when the app's folder is not
-    writable by the user. Without it that one path fails under the hardened runtime.
+  - No automation.apple-events: the updater would only use it to ask for an admin password
+    when the app's folder isn't writable. install.sh puts the app where the user can write
+    (/Applications if writable, else ~/Applications), so that never comes up.
 
   Not needed: JIT / unsigned memory (WebKit's JIT lives in Apple's WebContent process) and
   disable-library-validation (whisper.cpp and sherpa-onnx/onnxruntime are linked
@@ -17,8 +17,6 @@
 <plist version="1.0">
 <dict>
   <key>com.apple.security.device.audio-input</key>
-  <true/>
-  <key>com.apple.security.automation.apple-events</key>
   <true/>
 </dict>
 </plist>

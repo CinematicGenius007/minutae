@@ -57,6 +57,8 @@ const SHOTS: Shot[] = [
     query: `update=${u}`,
     ready: "Updates",
   })),
+  // A Scoop copy can't install itself: the row shows its update command instead.
+  { name: "settings-general-update-scoop", route: "/settings/general", query: "update=available&channel=scoop", ready: "Updates" },
   { name: "onboarding", route: "/onboarding", ready: "Microphone" },
   { name: "prompt", route: "/prompt" },
   { name: "gallery", route: "/gallery" },
@@ -254,6 +256,14 @@ test("updates: check → up to date; available → install shows progress", asyn
   await expect(page.getByText("Version 0.5.0 is available. You have 0.4.0.")).toBeVisible();
   await page.getByRole("button", { name: "Install and restart" }).click();
   await expect(page.getByRole("progressbar", { name: "Update download" })).toBeVisible();
+});
+
+test("updates: a Scoop copy shows its command instead of installing", async ({ page }) => {
+  await page.goto(url("/settings/general", "update=available&channel=scoop"));
+  await settle(page, "Updates");
+  await expect(page.getByText("scoop update minutae", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Install and restart" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Copy command" })).toBeVisible();
 });
 
 test("record: pill → live → pause / resume → mark moment → stop lands on the meeting", async ({ page }) => {
