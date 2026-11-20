@@ -63,6 +63,8 @@ export type RecordingPhase = "idle" | "recording" | "paused" | "stopping";
 export interface RecordingState {
   phase: RecordingPhase; meetingId: Uuid | null; title: string | null; sourceApp: string | null;
   elapsedMs: number; systemAudio: "on" | "off" | "unavailable"; systemAudioError: string | null;
+  /** While system audio is on: only the call app ("app") or everything the computer plays ("all"). */
+  systemAudioScope: "app" | "all" | null;
 }
 export interface LevelFrame { elapsedMs: number; mic: number; system: number }
 /** Optional live captions (may never fire in v1). */
