@@ -326,7 +326,9 @@ fn stitch_impl(
         total = w.len() as u64;
         w.finalize()?;
     }
-    File::open(&tmp)?.sync_all()?;
+    // Write access is required: Windows `FlushFileBuffers` fails with "Access is denied"
+    // on a read-only handle.
+    fs::OpenOptions::new().write(true).open(&tmp)?.sync_all()?;
 
     // 3. Record which chunks the tmp file holds, then swap it in and clean up.
     let last_seq = chunks.last().map(|(s, _)| *s).unwrap_or(0);
