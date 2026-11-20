@@ -1,0 +1,60 @@
+.list {
+  display: flex;
+  gap: var(--s-8);
+  border-bottom: var(--hairline) solid var(--line);
+}
+.trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--h-tabs);
+  padding: 0 0 var(--s-4);
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-weight: var(--fw-regular);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--t-fast);
+}
+.trigger::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--hairline) * -1);
+  height: 2px;
+  background: var(--ink);
+  opacity: 0;
+  transition: opacity var(--t-base);
+}
+.trigger:hover { color: var(--ink); }
+.trigger[data-state="active"] { color: var(--ink); font-weight: var(--fw-semibold); }
+.trigger[data-state="active"]::after { opacity: 1; }
+.trigger:focus-visible { box-shadow: none; }
+.trigger:focus-visible .text { border-radius: var(--s-1); box-shadow: var(--focus-ring); }
+.trigger:disabled { color: var(--faint); cursor: default; }
+
+/* Reserve bold width so tabs don't shift when activated. */
+.text { display: inline-grid; }
+.text::after {
+  content: attr(data-text);
+  height: 0;
+  visibility: hidden;
+  overflow: hidden;
+  font-weight: var(--fw-semibold);
+  user-select: none;
+  pointer-events: none;
+}
+.shortcut {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta-sm);
+  line-height: var(--lh-meta-sm);
+  font-weight: var(--fw-regular);
+  color: var(--muted);
+}
+.content:focus-visible { outline: none; border-radius: var(--radius-sm); box-shadow: var(--focus-ring); }

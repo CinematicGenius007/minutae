@@ -1,0 +1,33 @@
+/* 01 Meetings — Paper 9P-0. Page: 28 top, --page-pad sides, 48 between toolbar / header / list. */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--s-10) + var(--s-2));
+  min-height: 100%;
+  max-width: calc(var(--content-max) + var(--page-pad) * 2);
+  padding: var(--s-8) var(--page-pad) calc(var(--s-6) * 2);
+}
+.toolbar { display: flex; justify-content: flex-end; align-items: center; min-height: var(--h-search); }
+.search { width: var(--rail-w); max-width: 100%; }
+
+.groups { display: flex; flex-direction: column; gap: var(--s-9); }
+.group { display: flex; flex-direction: column; }
+
+.statLoading { color: var(--faint); }
+
+/* Status lane */
+.progress { padding-top: var(--s-2); }
+.failed { display: flex; flex-direction: column; align-items: flex-end; gap: var(--s-1); text-align: right; }
+.failedLabel { font-size: var(--fs-caption); line-height: var(--lh-meta-lg); color: var(--destructive); white-space: nowrap; }
+.fix {
+  min-height: 0;
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+  white-space: nowrap;
+}
+.errorBox { padding-block: var(--s-9); }
+
+@media (max-width: 899px) {
+  .page { gap: var(--s-9); padding-top: var(--s-3); }
+  .toolbar { display: none; }
+}

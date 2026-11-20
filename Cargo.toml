@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/desktop/src-tauri"]
+# The v3 Tauri app keeps its own Cargo.lock/target and its own workflows (ci.yml, release.yml).
+exclude = ["legacy"]
+
+[workspace.package]
+version = "0.4.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.90"
+
+[workspace.dependencies]
+minutae-core = { path = "crates/minutae-core" }
+minutae-store = { path = "crates/minutae-store" }
+minutae-jobs = { path = "crates/minutae-jobs" }
+minutae-audio = { path = "crates/minutae-audio" }
+minutae-detect = { path = "crates/minutae-detect" }
+minutae-asr = { path = "crates/minutae-asr" }
+minutae-diarize = { path = "crates/minutae-diarize" }
+minutae-llm = { path = "crates/minutae-llm" }
+minutae-dictation = { path = "crates/minutae-dictation" }
+minutae-search = { path = "crates/minutae-search" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "io-util"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+dirs = "6"
+
+# Hashing a 0.5–1.6 GB model in an unoptimized dev build takes long enough to look stuck.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true

@@ -1,0 +1,59 @@
+/* Page header: mono overline + 56 px display + optional right slot */
+.header { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--s-9); }
+.headerText { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.overline {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  line-height: var(--lh-label);
+  letter-spacing: var(--tr-label);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-display);
+  line-height: var(--lh-display);
+  letter-spacing: var(--tr-display);
+  font-weight: var(--fw-bold);
+  color: var(--ink);
+}
+.right { display: flex; align-items: flex-end; gap: 40px; padding-bottom: var(--s-2); flex-shrink: 0; }
+@media (max-width: 899px) {
+  .title { font-size: var(--fs-display-sm); line-height: var(--lh-display-sm); }
+  .header { flex-wrap: wrap; }
+}
+
+/* Stat */
+.stat { display: flex; flex-direction: column; gap: var(--s-2); }
+.statEnd { align-items: flex-end; text-align: right; }
+.statValue {
+  font-size: var(--fs-stat);
+  line-height: var(--lh-stat);
+  letter-spacing: var(--tr-stat);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.statCaption {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta-sm);
+  line-height: var(--lh-meta);
+  letter-spacing: var(--tr-label);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Empty state: teaches one thing */
+.empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s-2); padding-block: var(--s-12); max-width: 480px; }
+.emptyCenter { align-items: center; text-align: center; margin-inline: auto; }
+.emptyTitle {
+  margin: 0;
+  font-size: var(--fs-heading);
+  line-height: var(--lh-heading);
+  letter-spacing: var(--tr-heading);
+  font-weight: var(--fw-semibold);
+  color: var(--ink);
+}
+.emptyBody { font-size: var(--fs-body-sm); line-height: var(--lh-body-sm); color: var(--muted); }
+.emptyAction { margin-top: var(--s-6); display: flex; align-items: center; gap: var(--s-6); }

@@ -1,0 +1,33 @@
+[package]
+name = "minutae-asr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Optional GPU back-ends for whisper.cpp (off by default; need the vendor SDK at build time).
+vulkan = ["whisper-rs/vulkan"]
+cuda = ["whisper-rs/cuda"]
+
+[dependencies]
+minutae-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+hound = "3.5"
+whisper-rs = { version = "0.16", features = ["tracing_backend"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
+sha2 = "0.10"
+# Same version whisper-rs 0.16 uses; for the raw progress-callback signature.
+whisper-rs-sys = "0.15"
+
+# Metal is always on for macOS builds (Apple Silicon + Intel with Metal GPUs).
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16", features = ["metal"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["net"] }

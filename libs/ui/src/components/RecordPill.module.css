@@ -1,0 +1,41 @@
+.pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  height: var(--h-record);
+  min-width: 180px;
+  padding-inline: 14px var(--s-5);
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--ink);
+  color: var(--on-ink);
+  font-family: var(--font-sans);
+  cursor: pointer;
+  user-select: none;
+  transition: background-color var(--t-fast), box-shadow var(--t-fast);
+}
+.full { width: 100%; }
+.pill:hover, .pill[data-force="hover"] { background: var(--ink-hover); }
+.pill:active, .pill[data-force="pressed"] { background: var(--ink-pressed); }
+.pill:focus-visible, .pill[data-force="focus"] { box-shadow: var(--focus-ring); }
+.pill:disabled { background: var(--surface); color: var(--faint); cursor: default; }
+.pill:disabled .dot { background: var(--faint); }
+
+.live { background: var(--onair); color: var(--on-onair); }
+.live:hover, .live[data-force="hover"] { background: color-mix(in srgb, var(--onair) 90%, black); }
+.live:active, .live[data-force="pressed"] { background: color-mix(in srgb, var(--onair) 80%, black); }
+
+.lead { display: flex; align-items: center; gap: 10px; }
+.dot { width: var(--s-4); height: var(--s-4); border-radius: var(--radius-full); background: var(--onair); flex-shrink: 0; }
+.stop { width: 10px; height: 10px; border-radius: var(--s-1); background: var(--on-onair); flex-shrink: 0; }
+.label { font-size: var(--fs-body); line-height: var(--lh-body); font-weight: var(--fw-semibold); }
+
+.trail {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: var(--lh-meta);
+  font-variant-numeric: tabular-nums;
+}
+.shortcut { color: var(--on-ink-muted); }
+.timer { color: var(--on-onair); }

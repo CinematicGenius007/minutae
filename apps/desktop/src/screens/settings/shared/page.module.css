@@ -1,0 +1,41 @@
+/* Shared page frame for screens inside the shell: owns padding and scrolling. */
+/* The shell's <main> is the scroll container and provides --page-pad (72 / 40 / 20). */
+.page {
+  min-height: 100%;
+  padding: var(--s-8) var(--page-pad, var(--s-12)) 40px;
+  background: var(--bg);
+  color: var(--ink);
+}
+.inner { max-width: var(--content-max); margin-inline: auto; }
+/* Pages without a toolbar start the header lower (Paper: 84 px). */
+.noToolbar { padding-top: 84px; }
+
+.toolbar { display: flex; justify-content: flex-end; align-items: center; min-height: var(--h-search); }
+.toolbarSearch { width: 320px; }
+
+.label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  line-height: var(--lh-label);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--tr-label);
+  text-transform: uppercase;
+  color: var(--ink);
+}
+.meta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: var(--lh-meta);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.capsMeta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta-sm);
+  line-height: var(--lh-meta);
+  letter-spacing: var(--tr-caps-sm);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.muted { color: var(--muted); }
+.loading { display: flex; align-items: center; gap: var(--s-3); padding-block: var(--s-9); color: var(--muted); font-size: var(--fs-body-sm); }

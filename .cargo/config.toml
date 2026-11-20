@@ -1,0 +1,20 @@
+# Windows: link the static C runtime (/MT) everywhere. sherpa-onnx's prebuilt static library
+# (minutae-diarize, default `static` feature) is /MT, and mixing /MT and /MD objects fails to
+# link (LNK2038 / LNK2019 `__imp_*` / LNK4098 MSVCRT conflicts). See .github/workflows/v4.yml.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# whisper.cpp (whisper-rs-sys, built with the `cmake` crate) does NOT reliably follow
+# `crt-static`: in debug builds whisper-rs-sys sets CMAKE_BUILD_TYPE=RelWithDebInfo while the
+# Visual Studio generator builds the `Release` config, so the cmake crate's /MT flags land in
+# CMAKE_<LANG>_FLAGS_RELWITHDEBINFO and the Release config keeps CMake's default /MD.
+# whisper-rs-sys forwards every `CMAKE_*` env var as a `-D` define, so select the runtime
+# through CMake itself. whisper.cpp declares cmake_minimum_required(3.5), which leaves
+# CMP0091 unset (OLD), so its default must be switched to NEW for the variable to apply.
+# Both are ignored by non-MSVC toolchains.
+[env]
+CMAKE_POLICY_DEFAULT_CMP0091 = "NEW"
+CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"

@@ -1,5 +1,7 @@
 # Minutae v3 (native Swift) — Implementation Task List
 
+> **Superseded 2026-11-20.** The owner moved to Tauri 2 + Rust for macOS, Windows and Linux. The current plan and task list are in [`CROSS-PLATFORM.md`](./CROSS-PLATFORM.md); design rules in [`DESIGN-LANGUAGE.md`](./DESIGN-LANGUAGE.md). This file stays as a reference for the Swift logic being ported.
+
 For the implementing agent. Read [`ARCHITECTURE.md`](./ARCHITECTURE.md) first, then `docs/llm-providers.md` and `docs/spike-01-results.md`. Design source of truth: Paper file "Xenial horizon", page "Ink & signal".
 
 Written 2026-11-13. Replaces the Tauri task list (the old FND-01 to FND-06, LLM-02 to LLM-09, and the Rust and React lanes are obsolete; IDs below are new).

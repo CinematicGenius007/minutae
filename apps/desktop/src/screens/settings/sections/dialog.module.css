@@ -1,0 +1,22 @@
+/* Local modal (the kit only ships ConfirmDialog). Same surface as the kit dialog. */
+.dialog {
+  width: min(440px, calc(100vw - 2 * var(--s-6)));
+  max-width: none;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: var(--shadow-2);
+}
+.dialog[open] { animation: dialog-in var(--t-slow); }
+.dialog::backdrop { background: color-mix(in srgb, var(--bg) 60%, transparent); }
+.body { display: flex; flex-direction: column; gap: var(--s-6); padding: var(--s-7); }
+.title { font-size: var(--fs-heading); line-height: var(--lh-heading); letter-spacing: var(--tr-heading); font-weight: var(--fw-semibold); }
+.description { margin-top: calc(var(--s-5) * -1); font-size: var(--fs-body-sm); line-height: var(--lh-body-sm); color: var(--muted); }
+.actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--s-4); margin-top: var(--s-2); }
+.left { margin-right: auto; }
+@keyframes dialog-in { from { opacity: 0; transform: translateY(8px); } }
+@media (prefers-reduced-motion: reduce) {
+  @keyframes dialog-in { from { opacity: 0; } }
+}

@@ -1,0 +1,119 @@
+.stack { display: flex; flex-direction: column; gap: 48px; }
+.body { display: flex; flex-direction: column; gap: var(--s-10); }
+
+/* How-to strip: the one surface on the page (it is a demo of a control). */
+.howto {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-7);
+  padding: var(--s-8) 32px;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.howtoLead { display: flex; align-items: center; gap: var(--s-6); min-width: 0; }
+.keyGroup { display: flex; align-items: center; gap: var(--s-3); flex-shrink: 0; }
+.bigCap.bigCap {
+  height: var(--s-10);
+  min-width: var(--s-11);
+  padding-inline: 14px;
+  border-radius: var(--s-3);
+  box-shadow: 0 2px 0 var(--line-strong);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-weight: var(--fw-medium);
+}
+.keyHint { font-family: var(--font-mono); font-size: var(--fs-meta-lg); line-height: var(--lh-meta); color: var(--muted); }
+.howtoText { display: flex; flex-direction: column; gap: var(--s-1); min-width: 0; }
+.howtoTitle {
+  font-size: var(--fs-wordmark);
+  line-height: 26px;
+  letter-spacing: -0.015em;
+  font-weight: var(--fw-semibold);
+  color: var(--ink);
+}
+.howtoBody { font-size: var(--fs-body-sm); line-height: var(--lh-body-sm); color: var(--muted); }
+
+/* Static picture of the listening HUD (decorative). */
+.hudPreview {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-4);
+  flex-shrink: 0;
+  height: var(--s-10);
+  padding-inline: 14px 18px;
+  border-radius: var(--radius-full);
+  background: var(--hud);
+  color: var(--on-hud);
+}
+.hudDot { width: var(--s-3); height: var(--s-3); border-radius: var(--radius-full); background: var(--onair); }
+.hudBars { display: flex; align-items: center; gap: var(--s-1); height: var(--s-6); }
+.hudBar { width: 2px; min-height: 5px; border-radius: var(--s-1); background: var(--on-hud); }
+.hudTime { font-family: var(--font-mono); font-size: var(--fs-meta); line-height: var(--lh-meta); color: var(--on-hud-muted); font-variant-numeric: tabular-nums; }
+
+/* Recent list: fixed lanes (time 64 · text · app 120 · words 64 · actions). */
+.list { display: flex; flex-direction: column; }
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-7);
+  padding-block: 18px;
+  border-bottom: var(--hairline) solid var(--line);
+}
+.time, .words {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta-lg);
+  line-height: var(--s-7);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.time { width: 64px; }
+.words { width: 64px; text-align: right; white-space: nowrap; }
+.text {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: var(--fs-body);
+  line-height: var(--s-7);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.app {
+  flex-shrink: 0;
+  width: 120px;
+  font-size: var(--fs-body-sm);
+  line-height: var(--s-7);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.actions { flex-shrink: 0; display: flex; align-items: center; justify-content: flex-end; gap: var(--s-2); width: 88px; height: var(--s-7); }
+.copy {
+  font-size: var(--fs-body-sm);
+  line-height: var(--s-7);
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-thickness: var(--hairline);
+  text-underline-offset: 3px;
+  border-radius: var(--s-2);
+}
+.copy:hover { text-decoration-thickness: 2px; }
+.more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity var(--t-fast), background-color var(--t-fast);
+}
+.row:hover .more, .more:focus-visible, .more[data-state="open"] { opacity: 1; }
+.more:hover { background: var(--surface); color: var(--ink); }
+
+@media (max-width: 1199px) {
+  .app { width: 88px; }
+  .howto { flex-wrap: wrap; }
+}
