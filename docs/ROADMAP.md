@@ -1,6 +1,32 @@
 # v4 build roadmap (agent run, 2026-11-20)
 
-Branch `v4-tauri`. Plan: [`CROSS-PLATFORM.md`](./CROSS-PLATFORM.md). Design rules: [`DESIGN-LANGUAGE.md`](./DESIGN-LANGUAGE.md).
+Merged to `main` in PR #38 (2026-11-20, all CI green). Plan: [`CROSS-PLATFORM.md`](./CROSS-PLATFORM.md). Design rules: [`DESIGN-LANGUAGE.md`](./DESIGN-LANGUAGE.md).
+
+
+## Backlog for the next session (written 2026-11-20, after PR #38 merged)
+
+Work on a new branch off `main`, one PR per item or small group. Order is a suggestion.
+
+1. **Per-process system audio (macOS).** The Core Audio tap records *all* computer audio (music, videos). Tap only the detected call app's process; fall back to all audio when no app is known.
+2. **Release setup (REL-10).** `release.yml` with `tauri-action` on tag push → draft GitHub Release: macOS `.dmg` (arm64 + x64 or universal), Windows NSIS/MSI (WebView2 bootstrapper), Linux AppImage/.deb/.rpm (bundle onnxruntime, declare webkit2gtk-4.1, libpulse, appindicator deps). macOS hardened runtime + entitlements (mic, `NSAudioCaptureUsageDescription`, Apple Events/Accessibility), sign bundled dylibs, notarize. Windows `signCommand` (Azure Trusted Signing or OV cert). `tauri-plugin-updater` + `latest.json` + "Check for updates" in Settings → General. Single version source; `tauri icon`. Owner must buy: Apple Developer ($99/yr), Windows signing; generate updater key (`tauri signer generate`). Build everything so it runs unsigned until secrets exist.
+3. **New logo + favicon/app icon assets.** Design in Paper first (file in CLAUDE.md, new page), following DESIGN-LANGUAGE.md ("minutae •" wordmark, ink + on-air dot). Deliver: app icon master (1024², macOS rounded-rect with margins, Windows/Linux square), tray/menu-bar template icon (monochrome, 16/32 @1x/@2x, filled variant while recording), favicon/web icons for the UI + gallery, light/dark checks. Regenerate `apps/desktop/src-tauri/icons/*` with `tauri icon`; replace the placeholder tray image in `shell.rs`.
+4. **Mac menu-bar panel.** Click the tray icon → non-activating NSPanel anchored under it (tauri-nspanel already used by HUD/prompt), closes on outside click. Contents: Record/Stop + timer + levels, "Listening for calls", Pause / Mark moment, last 3 meetings with status + Retry, dictation, Open Minutae. New route `#/tray`, design in Paper first, light/dark screenshots. macOS only; Windows/Linux keep the native menu. Est. 3–5 h, 500–800 LOC.
+5. **Live captions** (`recording://caption` is in the contract but never emitted).
+6. **Echo cancellation** when not using headphones (mic hears the speakers).
+7. **macOS 13–14.5 system-audio fallback** (ScreenCaptureKit) and **Wayland** global-shortcut portal.
+8. **Import old databases (MIG-10)** from Swift and Tauri v1 apps.
+9. **Hand-test** on real hardware: call prompt with a real Zoom/Meet call, dictation into TextEdit/VS Code, speaker rename; first run on Windows and Linux.
+10. **Design decision:** white text on the red live pill is 3.6:1 contrast.
+
+New ideas, not yet scoped (ask the owner before building):
+- Recording-consent helper ("let others know" message + note in onboarding).
+- Remember voices across meetings (name Speaker 2 once → recognized later).
+- Calendar integration (titles, attendees → speaker names, expected call start).
+- Diagnostics: log files on disk + "Copy diagnostics" button.
+- Pre-flight checks: low disk space warning; keep the machine awake while recording (verify current behaviour first).
+- Send summaries to Notion / Slack / email (Obsidian already works via `.md` files).
+- Optional encryption at rest / app lock.
+- Phone app (designed in Paper, no stack chosen).
 
 | Phase | Work | Who | Folders owned |
 |---|---|---|---|
