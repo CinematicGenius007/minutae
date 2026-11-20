@@ -22,6 +22,7 @@ minutae-llm = { path = "crates/minutae-llm" }
 minutae-dictation = { path = "crates/minutae-dictation" }
 minutae-search = { path = "crates/minutae-search" }
 minutae-import = { path = "crates/minutae-import" }
+minutae-aec = { path = "crates/minutae-aec" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -36,6 +37,14 @@ dirs = "6"
 
 # Hashing a 0.5–1.6 GB model in an unoptimized dev build takes long enough to look stuck.
 [profile.dev.package.sha2]
+opt-level = 3
+
+# Echo cancellation is a few hundred FFTs per second of audio: unoptimized it is ~30x
+# slower, which makes dev builds (and the synthetic-meeting tests) crawl.
+[profile.dev.package.minutae-aec]
+opt-level = 3
+
+[profile.dev.package.rustfft]
 opt-level = 3
 
 [profile.release]
