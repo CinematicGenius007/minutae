@@ -543,6 +543,8 @@ fn non_empty(v: &Value) -> Option<String> {
 }
 
 fn ollama_locations() -> Vec<PathBuf> {
+    // `mut` is only used by the macOS/Windows additions below.
+    #[cfg_attr(not(any(target_os = "macos", windows)), allow(unused_mut))]
     let mut v = known_locations("ollama", &[]);
     #[cfg(target_os = "macos")]
     v.push(PathBuf::from(
