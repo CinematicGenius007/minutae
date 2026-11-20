@@ -134,7 +134,20 @@ impl SubprocessRunner {
 
         let started = tokio::time::Instant::now();
         let deadline = started + timeout;
-        let mut child = cmd.spawn().map_err(|e| spawn_error(&e, program))?;
+        // Linux returns ETXTBSY ("Text file busy") when the binary was just written and
+        // another thread's fork still holds it open for a moment (seen after CLI updates
+        // and with test scripts). It is transient: retry briefly instead of failing.
+        let mut attempt = 0u64;
+        let mut child = loop {
+            match cmd.spawn() {
+                Ok(c) => break c,
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 5 => {
+                    attempt += 1;
+                    tokio::time::sleep(Duration::from_millis(25 * attempt)).await;
+                }
+                Err(e) => return Err(spawn_error(&e, program)),
+            }
+        };
         // The whole tree (npm launchers spawn a native grandchild) dies with this guard.
         let tree = ProcessTree::attach(&child);
         let mut stdin_pipe = child.stdin.take();

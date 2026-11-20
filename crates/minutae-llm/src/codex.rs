@@ -517,7 +517,7 @@ mod tests {
                 "cat > /dev/null; cat <<'EOF'\n{REJECTED}EOF\nexit 1"
             ));
             let e = t.complete(&Request::new("hi")).await.unwrap_err();
-            assert_eq!(e.kind, FailureKind::ModelRejected);
+            assert_eq!(e.kind, FailureKind::ModelRejected, "detail: {}", e.detail);
             assert!(e.detail.contains("not supported"));
         }
 
