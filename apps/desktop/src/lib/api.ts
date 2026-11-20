@@ -38,7 +38,8 @@ export const api = {
   copyText: (text: string) => call<void>("copy_text", { text }),
   /** Path → URL playable by <audio>. */
   audioUrl: async (path: string) => {
-    if (!inTauri) return "";
+    // The browser mock hands out data: URLs as "paths"; real files only play inside Tauri.
+    if (!inTauri) return path.startsWith("data:") ? path : "";
     const { convertFileSrc } = await import("@tauri-apps/api/core");
     return convertFileSrc(path);
   },

@@ -1,12 +1,12 @@
 // App shell: sidebar (≥ 900 px) or top bar + bottom tab bar (< 900 px), global shortcuts,
-// backend navigation, theme from settings, and the macOS title-bar drag strip.
+// backend navigation, first-run redirect and the macOS title-bar drag strip.
 //
 // Screens render inside <main>, which is the scroll container. Screens get `--page-pad`
 // (72 / 40 / 20 by width) and `--top-inset` (28 px on macOS narrow layouts) from here.
 import { Search } from "lucide-react";
 import { type ReactNode, useEffect } from "react";
 import { useLocation } from "wouter";
-import { cx, MicStatus, NavItem, RecordPill, Sidebar, useTheme, Wordmark } from "@minutae/ui";
+import { cx, MicStatus, NavItem, RecordPill, Sidebar, Wordmark } from "@minutae/ui";
 import {
   openSearch,
   useEvent,
@@ -35,17 +35,22 @@ function usePlaces(): Place[] {
 }
 
 // First run: checked once per window load. Onboarding's "finish" returns to "/".
+// Nothing to switch on (all permissions notRequired, e.g. Windows/Linux): finish setup
+// silently instead of showing an empty onboarding screen.
 let onboardingChecked = false;
 function useFirstRunRedirect(go: (to: string, opts?: { replace?: boolean }) => void) {
   useEffect(() => {
     if (onboardingChecked) return;
     onboardingChecked = true;
-    api
-      .onboardingDone()
-      .then((done) => {
-        if (!done) go("/onboarding", { replace: true });
-      })
-      .catch(() => {});
+    (async () => {
+      if (await api.onboardingDone()) return;
+      const perms = await api.permissions().catch(() => null);
+      if (perms && Object.values(perms).every((p) => p === "notRequired")) {
+        await api.finishOnboarding();
+        return;
+      }
+      go("/onboarding", { replace: true });
+    })().catch(() => {});
   }, [go]);
 }
 
@@ -59,13 +64,7 @@ export default function Shell({ children }: { children: ReactNode }) {
   const { state, elapsedMs, live, paused } = useRecording();
   const { start, toggle, busy } = useRecordActions();
   const { settings } = useSettings();
-  const { setPreference } = useTheme();
   useFirstRunRedirect(go);
-
-  // Theme follows Settings → General → Appearance (loaded on start, live on change).
-  useEffect(() => {
-    if (settings) setPreference(settings.appearance);
-  }, [settings?.appearance, setPreference, settings]);
 
   // Tray, menu bar and global shortcuts ask the window to navigate.
   useEvent(events.navigate, ({ route }) => go(route));

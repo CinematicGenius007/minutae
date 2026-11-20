@@ -1,15 +1,15 @@
-// Call-detected prompt window (label "prompt"). Non-activating panel: ⏎ records, esc dismisses.
-import { Button, Checkbox, localPhrase, usePlatform, useToast } from "@minutae/ui";
+// Call-detected prompt window (label "prompt"). A non-activating panel: it never takes keyboard
+// focus from the call app, so it has no key bindings or keycap hints; it is used with the pointer.
+// If accepting fails the backend posts a notification, so the prompt just hides.
+import { Button, Checkbox, localPhrase, usePlatform } from "@minutae/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, events } from "../../lib/api";
-import { errorText } from "../../hooks";
 import s from "./overlays.module.css";
 import { useTransparentWindow } from "./useTransparentWindow";
 
 export default function CallPromptWindow() {
   useTransparentWindow();
   const platform = usePlatform();
-  const toast = useToast();
   const [app, setApp] = useState<string | null>(null);
   const [visible, setVisible] = useState(true);
   const [always, setAlways] = useState(false);
@@ -41,10 +41,12 @@ export default function CallPromptWindow() {
     setBusy("record");
     api
       .acceptCallPrompt()
-      .then(() => setVisible(false))
-      .catch((e) => toast.show({ title: `Couldn't start recording. ${errorText(e)}` }))
-      .finally(() => setBusy(null));
-  }, [toast]);
+      .catch(() => {})
+      .finally(() => {
+        setVisible(false);
+        setBusy(null);
+      });
+  }, []);
 
   const dismiss = useCallback(() => {
     if (busyRef.current) return;
@@ -56,29 +58,11 @@ export default function CallPromptWindow() {
       .finally(() => setBusy(null));
   }, [always]);
 
-  useEffect(() => {
-    if (!visible) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        dismiss();
-      } else if (e.key === "Enter") {
-        // A focused button handles its own Enter.
-        const t = e.target as HTMLElement | null;
-        if (t?.closest("button")) return;
-        e.preventDefault();
-        record();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [visible, record, dismiss]);
-
   if (!visible) return null;
   const name = app ?? "An app";
 
   return (
-    <div className={s.promptStage}>
+    <div className={s.promptStage} data-screen="prompt" data-ready="true">
       <section className={s.card} role="dialog" aria-labelledby="prompt-title" aria-describedby="prompt-body">
         <div className={s.cardHead}>
           <span className={s.liveDot} aria-hidden />
@@ -91,10 +75,10 @@ export default function CallPromptWindow() {
           Record this call? Audio stays {localPhrase(platform)}.
         </p>
         <div className={s.cardActions}>
-          <Button className={s.grow} onClick={record} loading={busy === "record"} shortcut="enter" platform={platform}>
+          <Button className={s.grow} onClick={record} loading={busy === "record"}>
             Record
           </Button>
-          <Button variant="secondary" className={s.grow} onClick={dismiss} disabled={busy === "record"} shortcut="esc" platform={platform}>
+          <Button variant="secondary" className={s.grow} onClick={dismiss} disabled={busy === "record"}>
             Not now
           </Button>
         </div>

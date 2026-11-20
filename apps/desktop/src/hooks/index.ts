@@ -10,3 +10,5 @@ export { FOCUS_SEARCH_EVENT, openSearch, useGo } from "./useNav";
 export { useRecordActions } from "./useRecordActions";
 export { errorText, type Load, useLoad } from "./useLoad";
 export { useDebounced } from "./useDebounced";
+export { useAppearance } from "./useAppearance";
+export { useFailureFix } from "./useFailureFix";

@@ -136,7 +136,7 @@ export default function LiveScreen() {
 
   if (!live) {
     return (
-      <div className={s.idle}>
+      <div className={s.idle} data-screen="live" data-ready="true">
         <EmptyState
           title="Not recording"
           description={`Join a call and Minutae will ask, or press ${formatShortcut("mod+r", platform)}. Audio stays ${localPhrase(platform)}.`}
@@ -155,7 +155,7 @@ export default function LiveScreen() {
   const stopping = state.phase === "stopping";
 
   return (
-    <div className={s.screen}>
+    <div className={s.screen} data-screen="live" data-ready="true">
       <section className={s.capture} aria-label="Recording">
         <div className={s.status}>
           <div className={s.statusLine} role="status">

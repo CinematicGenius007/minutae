@@ -18,7 +18,7 @@ import {
   StatusDot,
   useToast,
 } from "@minutae/ui";
-import { openSearch, toError, useEvent, useGo, useNarrow, usePlatform, useQuery, useShortcut } from "../../hooks";
+import { openSearch, toError, useEvent, useFailureFix, useGo, useNarrow, usePlatform, useQuery, useShortcut } from "../../hooks";
 import { api, events } from "../../lib/api";
 import type { DayGroup, MeetingListItem, Progress as JobProgress } from "../../lib/types";
 import s from "./Meetings.module.css";
@@ -54,6 +54,7 @@ export default function MeetingsScreen() {
   const toast = useToast();
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const fixFailure = useFailureFix();
 
   const list = useQuery(() => api.listMeetings(), [], { refetchOn: [events.meetingsChanged] });
   const stats = useQuery(() => api.weekStats(), [], { refetchOn: [events.meetingsChanged] });
@@ -120,7 +121,7 @@ export default function MeetingsScreen() {
               className={s.fix}
               onClick={(e) => {
                 e.stopPropagation();
-                if (fix) go("/settings/summaries");
+                if (fix) fixFailure(it.failure?.kind, () => void retry(it.id));
                 else void retry(it.id);
               }}
               onKeyDown={(e) => e.stopPropagation()}
@@ -149,7 +150,7 @@ export default function MeetingsScreen() {
   const empty = !list.loading && !list.error && (list.data?.length ?? 0) === 0;
 
   return (
-    <div className={s.page}>
+    <div className={s.page} data-screen="meetings" data-ready={String(!list.loading && !stats.loading)}>
       <div className={s.toolbar}>
         <SearchField
           ref={searchRef}

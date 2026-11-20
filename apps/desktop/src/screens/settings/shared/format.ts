@@ -64,3 +64,43 @@ export function acceleratorFromEvent(e: KeyboardEvent, platform: Platform): stri
   else name = key.length === 1 ? key.toUpperCase() : key;
   return [...mods, name].join("+");
 }
+
+const MODIFIERS = new Set(["commandorcontrol", "cmdorctrl", "cmdorcontrol", "command", "cmd", "super", "meta", "control", "ctrl", "alt", "option", "shift"]);
+
+/**
+ * Canonical form for comparing accelerators on one platform: modifiers resolved
+ * (CommandOrControl → Cmd on macOS, Ctrl elsewhere), sorted, key upper-cased.
+ */
+export function normalizeAccelerator(accelerator: string, platform: Platform): string {
+  const parts = toKitShortcut(accelerator).split("+").filter(Boolean);
+  const mods = new Set<string>();
+  let key = "";
+  for (const p of parts) {
+    if (p === "mod") mods.add(platform === "mac" ? "cmd" : "ctrl");
+    else if (p === "cmd") mods.add(platform === "mac" ? "cmd" : "super");
+    else if (p === "ctrl" || p === "alt" || p === "shift" || p === "super") mods.add(p);
+    else key = p;
+  }
+  return [...[...mods].sort(), key.toUpperCase()].join("+");
+}
+
+/**
+ * Why a global shortcut can't be used, or null when it can. A global shortcut fires in every
+ * app, so it needs a modifier other than Shift (function keys F1–F24 may stand alone) and must
+ * not collide with the other Minutae shortcut. The backend re-checks and may still refuse
+ * (e.g. the OS or another app already owns the combination).
+ */
+export function shortcutProblem(accelerator: string, platform: Platform, taken: { accelerator: string; name: string }[] = []): string | null {
+  const parts = accelerator.split("+").map((k) => k.trim()).filter(Boolean);
+  const key = parts.find((k) => !MODIFIERS.has(k.toLowerCase())) ?? "";
+  const mods = parts.filter((k) => MODIFIERS.has(k.toLowerCase()) && k.toLowerCase() !== "shift");
+  if (!key) return "Add a key after the modifiers.";
+  if (mods.length === 0 && !/^F([1-9]|1\d|2[0-4])$/.test(key)) {
+    const options = platform === "mac" ? "⌘, ⌥ or ⌃" : "Ctrl or Alt";
+    return `${key} on its own would fire while you type. Hold ${options} with it.`;
+  }
+  const mine = normalizeAccelerator(accelerator, platform);
+  const clash = taken.find((t) => normalizeAccelerator(t.accelerator, platform) === mine);
+  if (clash) return `That's already the ${clash.name} shortcut. Pick another.`;
+  return null;
+}

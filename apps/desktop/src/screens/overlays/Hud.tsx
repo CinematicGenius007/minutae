@@ -15,6 +15,7 @@ export default function HudWindow() {
   const [levels, setLevels] = useState<number[]>(() => Array(BARS).fill(0.15));
   const [elapsedMs, setElapsedMs] = useState(0);
   const startedAt = useRef<number | null>(null);
+  const [subscribed, setSubscribed] = useState(false);
 
   useEffect(() => {
     let off: (() => void) | null = null;
@@ -36,7 +37,10 @@ export default function HudWindow() {
       })
       .then((u) => {
         if (dead) u();
-        else off = u;
+        else {
+          off = u;
+          setSubscribed(true);
+        }
       });
     return () => {
       dead = true;
@@ -54,7 +58,7 @@ export default function HudWindow() {
   }, [listening]);
 
   return (
-    <div className={s.hudStage}>
+    <div className={s.hudStage} data-screen="hud" data-ready={String(subscribed)}>
       {hud.state === "idle" ? null : hud.state === "listening" ? (
         <HudPill
           state="listening"

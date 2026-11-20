@@ -12,10 +12,10 @@ import {
   usePlatform,
 } from "@minutae/ui";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { api } from "../../lib/api";
 import type { Answer, SearchHit, SearchKind } from "../../lib/types";
-import { errorText, useDebounced, useLoad } from "../../hooks";
+import { errorText, FOCUS_SEARCH_EVENT, useDebounced, useLoad } from "../../hooks";
 import p from "../settings/shared/page.module.css";
 import s from "./library.module.css";
 
@@ -45,12 +45,6 @@ type SearchState =
   | { status: "done"; hits: SearchHit[] }
   | { status: "error"; message: string };
 
-const FOCUS_SEARCH_EVENT = "minutae:focus-search"; // fired by the shell's openSearch()
-
-function routeParams(): URLSearchParams {
-  const q = window.location.hash.split("?")[1] ?? window.location.search.slice(1);
-  return new URLSearchParams(q);
-}
 
 /** Renders a snippet with its highlight ranges in ink semibold. */
 function Highlighted({ text, ranges }: { text: string; ranges: [number, number][] }) {
@@ -86,7 +80,9 @@ function isOnDevice(provider: string): boolean {
 
 export default function LibraryScreen() {
   const platform = usePlatform();
-  const [location, navigate] = useLocation();
+  const [, navigate] = useLocation();
+  // Route params live inside the hash (#/library?q=…&focus=1), never in location.search.
+  const routeSearch = useSearch();
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState<SearchKind>("all");
@@ -102,13 +98,12 @@ export default function LibraryScreen() {
   });
 
   // Autofocus when opened with ?focus=1 (⌘K from anywhere); ?q= prefills.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: re-run when the route changes
   useEffect(() => {
-    const params = routeParams();
+    const params = new URLSearchParams(routeSearch);
     const q = params.get("q");
     if (q) setQuery(q);
     if (params.get("focus") === "1") inputRef.current?.focus();
-  }, [location]);
+  }, [routeSearch]);
   useEffect(() => {
     const onFocus = (e: Event) => {
       const q = (e as CustomEvent<{ query?: string }>).detail?.query;
@@ -137,19 +132,28 @@ export default function LibraryScreen() {
     };
   }, [debounced, kind, retry]);
 
+  // Only the latest question may land: each ask (and each edit of the question) bumps the
+  // sequence, and an answer for an older sequence is dropped.
+  const askSeq = useRef(0);
+  const askedFor = useRef<string | null>(null);
   const runAsk = (question: string) => {
     const q = question.trim();
     if (!q) return;
+    const mine = ++askSeq.current;
+    askedFor.current = q;
     setAsk({ status: "asking", question: q });
     api
       .ask(q)
-      .then((answer) => setAsk({ status: "done", question: q, answer }))
-      .catch((e) => setAsk({ status: "error", question: q, message: errorText(e) }));
+      .then((answer) => mine === askSeq.current && setAsk({ status: "done", question: q, answer }))
+      .catch((e) => mine === askSeq.current && setAsk({ status: "error", question: q, message: errorText(e) }));
   };
 
-  // A new question (edited text) hides the stale answer.
+  // A new question (edited text) hides the stale answer and cancels one still in flight.
   useEffect(() => {
-    setAsk((a) => (a.status !== "idle" && a.question !== query.trim() ? { status: "idle" } : a));
+    if (askedFor.current === null || askedFor.current === query.trim()) return;
+    askSeq.current++;
+    askedFor.current = null;
+    setAsk({ status: "idle" });
   }, [query]);
 
   const open = (h: SearchHit) => {
@@ -170,7 +174,12 @@ export default function LibraryScreen() {
   }, [counts.data, platform]);
 
   return (
-    <section className={cx(p.page, p.noToolbar)} aria-labelledby="library-title">
+    <section
+      className={cx(p.page, p.noToolbar)}
+      aria-labelledby="library-title"
+      data-screen="library"
+      data-ready={String(counts.status !== "loading" && debounced === query.trim() && search.status !== "searching" && ask.status !== "asking")}
+    >
       <div className={cx(p.inner, s.stack)}>
         <header className={s.header}>
           <div className={s.overline}>{overline}</div>

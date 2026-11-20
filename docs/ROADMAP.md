@@ -45,3 +45,4 @@ Open items:
 - macOS 13–14.5 system-audio fallback (ScreenCaptureKit); Wayland global shortcut portal.
 - Import old (Tauri v1 / Swift) databases (MIG-10); signing + updater (REL-10).
 - Design decision: white text on the red live pill is 3.6:1 contrast.
+- macOS system-audio tap records **all** computer audio (music, videos), not just the call. Tap only the detected call app's process (Core Audio process taps support per-process capture).

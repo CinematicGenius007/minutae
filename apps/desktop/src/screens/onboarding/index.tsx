@@ -1,5 +1,5 @@
 import { Button, EmptyState, Spinner, Wordmark, cx, localPhrase, usePlatform, useToast } from "@minutae/ui";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { api } from "../../lib/api";
 import type { PermissionState, Permissions } from "../../lib/types";
@@ -8,7 +8,7 @@ import s from "./onboarding.module.css";
 
 type Kind = keyof Permissions;
 
-const WORDS = ["Zero", "One", "Two", "Three"];
+const WORDS = ["", "One", "Two", "Three"];
 
 function copyFor(kind: Kind, platform: string): { title: string; body: string } {
   switch (kind) {
@@ -38,6 +38,9 @@ export default function OnboardingScreen() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<Kind | null>(null);
   const [skipped, setSkipped] = useState<Set<Kind>>(new Set());
+  // Kinds asked for in this session. Some never report back (macOS keeps "notDetermined"
+  // for system audio and accessibility until the app restarts), so asking once settles the row.
+  const [requested, setRequested] = useState<Set<Kind>>(new Set());
   const [finishing, setFinishing] = useState(false);
 
   const refresh = useCallback(() => {
@@ -61,7 +64,10 @@ export default function OnboardingScreen() {
     setBusy(kind);
     api
       .requestPermission(kind)
-      .then(setPerms)
+      .then((p) => {
+        setPerms(p);
+        setRequested((prev) => new Set(prev).add(kind));
+      })
       .catch((e) => toast.show({ title: `Couldn't ask for access. ${errorText(e)}` }))
       .finally(() => setBusy(null));
   };
@@ -70,21 +76,34 @@ export default function OnboardingScreen() {
     api.openSystemSettings(kind).catch((e) => toast.show({ title: `Couldn't open settings. ${errorText(e)}` }));
   };
 
-  const finish = () => {
-    setFinishing(true);
-    api
-      .finishOnboarding()
-      .then(() => navigate("/"))
-      .catch((e) => {
-        toast.show({ title: `Couldn't finish setup. ${errorText(e)}` });
-        setFinishing(false);
-      });
-  };
+  const finish = useCallback(
+    (replace = false) => {
+      setFinishing(true);
+      api
+        .finishOnboarding()
+        .then(() => navigate("/", { replace }))
+        .catch((e) => {
+          toast.show({ title: `Couldn't finish setup. ${errorText(e)}` });
+          setFinishing(false);
+        });
+    },
+    [navigate, toast],
+  );
 
   const kinds: Kind[] = (["microphone", "systemAudio", "accessibility"] as Kind[]).filter(
     (k) => perms && perms[k] !== "notRequired",
   );
-  const settled = (k: Kind, st: PermissionState) => st === "granted" || st === "unsupported" || skipped.has(k);
+  const settled = (k: Kind, st: PermissionState) =>
+    st === "granted" || st === "unsupported" || skipped.has(k) || (requested.has(k) && st === "notDetermined");
+
+  // Nothing to switch on here (Windows / Linux: every permission is notRequired): skip the screen.
+  const nothingToAsk = perms !== null && kinds.length === 0;
+  const autoFinished = useRef(false);
+  useEffect(() => {
+    if (!nothingToAsk || autoFinished.current) return;
+    autoFinished.current = true;
+    finish(true);
+  }, [nothingToAsk, finish]);
   // The next row that needs the user is the only primary button on screen.
   const next = perms ? kinds.find((k) => !settled(k, perms[k])) : undefined;
   const allDone = perms !== null && next === undefined;
@@ -92,20 +111,24 @@ export default function OnboardingScreen() {
   const deviceWord = localPhrase(platform);
 
   return (
-    <main className={s.page} aria-labelledby="onboarding-title">
+    <main className={s.page} aria-labelledby="onboarding-title" data-screen="onboarding" data-ready={String(perms !== null || error !== null)}>
       <div className={s.top}>
         <Wordmark />
       </div>
       <div className={s.layout}>
         <div className={s.intro}>
           <h1 id="onboarding-title" className={s.title}>
-            {count === 1 ? "One switch" : `${WORDS[count] ?? count} switches`}, then you're done.
+            {!perms
+              ? "A few switches, then you're done."
+              : count === 0
+                ? "Nothing to switch on. You're done."
+                : `${count === 1 ? "One switch" : `${WORDS[count] ?? count} switches`}, then you're done.`}
           </h1>
           <p className={s.lead}>
             Everything stays {deviceWord}. You can change any of these later in Settings.
           </p>
           <div className={s.continue}>
-            <Button variant={allDone ? "primary" : "secondary"} onClick={finish} loading={finishing} disabled={!perms}>
+            <Button variant={allDone ? "primary" : "secondary"} onClick={() => finish()} loading={finishing} disabled={!perms}>
               Continue
             </Button>
             {!allDone && perms ? <span className={s.later}>You can skip for now.</span> : null}
@@ -134,6 +157,7 @@ export default function OnboardingScreen() {
                 const c = copyFor(k, platform);
                 const optional = k === "accessibility";
                 const quiet = optional && st !== "granted";
+                const asked = requested.has(k) && st === "notDetermined";
                 return (
                   <li key={k} className={s.row}>
                     <span className={s.no} aria-hidden>
@@ -146,7 +170,9 @@ export default function OnboardingScreen() {
                           ? `Turned off. Allow Minutae in ${platform === "mac" ? "System Settings" : "Settings"}, then come back.`
                           : st === "unsupported"
                             ? "Not available on this system. Minutae records your mic only."
-                            : c.body}
+                            : asked
+                              ? `Asked. If it's still off, allow Minutae in ${platform === "mac" ? "System Settings" : "Settings"}.`
+                              : c.body}
                       </p>
                     </div>
                     <div className={s.action}>
@@ -159,7 +185,7 @@ export default function OnboardingScreen() {
                         </span>
                       ) : st === "unsupported" ? (
                         <span className={s.na}>Not available</span>
-                      ) : st === "denied" ? (
+                      ) : st === "denied" || asked ? (
                         <Button variant="secondary" className={s.btn} onClick={() => openSettings(k)}>
                           Open Settings
                         </Button>

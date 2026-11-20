@@ -48,7 +48,12 @@ export default function SettingsScreen() {
   const needsSettings = section !== "usage";
 
   return (
-    <section className={cx(p.page, p.noToolbar)} aria-labelledby="settings-title">
+    <section
+      className={cx(p.page, p.noToolbar)}
+      aria-labelledby="settings-title"
+      data-screen="settings"
+      data-ready={String(!needsSettings || !!ctx.settings || !!ctx.error)}
+    >
       <div className={cx(p.inner, s.layout)}>
         <nav className={s.index} aria-label="Settings sections">
           <h1 id="settings-title" className={s.title}>

@@ -122,7 +122,7 @@ function GalleryBody() {
   const here = localPhrase(platform);
 
   return (
-    <div className={g.page}>
+    <div className={g.page} data-screen="gallery" data-ready="true">
       <div className={g.inner}>
         <header className={g.head}>
           <div className={g.headText}>

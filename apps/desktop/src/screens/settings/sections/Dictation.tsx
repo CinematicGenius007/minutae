@@ -1,6 +1,7 @@
 import { GroupLabel, Segmented, SettingRow, Tag, TextField, Toggle, cx, shortcutKeys, usePlatform } from "@minutae/ui";
 import { useEffect, useState } from "react";
-import { acceleratorFromEvent, toKitShortcut } from "../shared/format";
+import { errorText, updateSettings } from "../../../hooks";
+import { acceleratorFromEvent, shortcutProblem, toKitShortcut } from "../shared/format";
 import s from "../settings.module.css";
 import type { SectionProps } from "./types";
 
@@ -8,6 +9,9 @@ export function DictationSection({ settings, update }: SectionProps) {
   const platform = usePlatform();
   const [recording, setRecording] = useState(false);
   const [word, setWord] = useState("");
+  // Inline error under the shortcut control: local validation or the backend's refusal.
+  const [shortcutError, setShortcutError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   // Shortcut recorder: click the keycap, press the new combination; esc cancels.
   useEffect(() => {
@@ -22,7 +26,19 @@ export function DictationSection({ settings, update }: SectionProps) {
       const acc = acceleratorFromEvent(e, platform);
       if (!acc) return;
       setRecording(false);
-      void update({ dictationHotkey: acc });
+      const problem = shortcutProblem(acc, platform, [{ accelerator: settings.recordShortcut, name: "Record" }]);
+      if (problem) {
+        setShortcutError(problem);
+        return;
+      }
+      if (acc === settings.dictationHotkey) return;
+      // Written directly (not through the section's toast wrapper) so a refusal shows inline;
+      // the settings store restores the previous shortcut on failure.
+      setSaving(true);
+      updateSettings({ dictationHotkey: acc })
+        .then(() => setShortcutError(null))
+        .catch((err) => setShortcutError(errorText(err)))
+        .finally(() => setSaving(false));
     };
     const stop = () => setRecording(false);
     window.addEventListener("keydown", onKey, true);
@@ -31,7 +47,7 @@ export function DictationSection({ settings, update }: SectionProps) {
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("blur", stop);
     };
-  }, [recording, platform, update]);
+  }, [recording, platform, settings.recordShortcut, settings.dictationHotkey]);
 
   const keys = shortcutKeys(toKitShortcut(settings.dictationHotkey), platform);
   const keyLabel = platform === "mac" ? keys.join(" ") : keys.join(" + ");
@@ -51,15 +67,30 @@ export function DictationSection({ settings, update }: SectionProps) {
         <GroupLabel id="g-dictation">Dictation</GroupLabel>
         <SettingRow
           title="Shortcut"
-          description={recording ? "Press the new shortcut. Esc cancels." : "Click the key, then press the one you want."}
+          description={
+            <>
+              {recording ? "Press the new shortcut. Esc cancels." : "Click the key, then press the one you want."}
+              {shortcutError ? (
+                <span id="s-shortcut-error" className={s.fieldError} role="alert">
+                  {shortcutError}
+                </span>
+              ) : null}
+            </>
+          }
           control={
             <>
               <button
                 type="button"
-                className={cx(s.capButton, recording && s.capRecording)}
-                onClick={() => setRecording((r) => !r)}
+                className={cx(s.capButton, recording && s.capRecording, shortcutError && !recording && s.capInvalid)}
+                onClick={() => {
+                  if (!recording) setShortcutError(null);
+                  setRecording((r) => !r);
+                }}
+                disabled={saving}
                 aria-label={recording ? "Recording shortcut. Press the new keys." : `Dictation shortcut: ${keys.join(" ")}. Click to change.`}
                 aria-pressed={recording}
+                aria-invalid={shortcutError ? true : undefined}
+                aria-describedby={shortcutError ? "s-shortcut-error" : undefined}
               >
                 {recording ? "Press keys…" : keyLabel}
               </button>

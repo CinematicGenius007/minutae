@@ -12,7 +12,7 @@ import {
   TextField,
   useToast,
 } from "@minutae/ui";
-import { toError, useGo } from "../../hooks";
+import { toError, useFailureFix, useGo } from "../../hooks";
 import { api } from "../../lib/api";
 import type { ActionItem, Answer, Failure, MeetingDetail, Moment, Progress as JobProgress, Segment, Speaker } from "../../lib/types";
 import s from "./Detail.module.css";
@@ -96,7 +96,7 @@ export function ProcessingPanel({ progress, platform }: { progress: JobProgress 
 }
 
 export function FailedPanel({ meetingId, failure, onRetried }: { meetingId: string; failure: Failure | null; onRetried: () => void }) {
-  const go = useGo();
+  const fixFailure = useFailureFix();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const retry = async () => {
@@ -110,21 +110,7 @@ export function FailedPanel({ meetingId, failure, onRetried }: { meetingId: stri
       setBusy(false);
     }
   };
-  const fix = () => {
-    switch (failure?.kind) {
-      case "permissionDenied":
-        return void api.openSystemSettings("microphone");
-      case "modelMissing":
-        return go("/settings/transcription");
-      case "notInstalled":
-      case "notLoggedIn":
-      case "noProviderReady":
-      case "unavailable":
-        return go("/settings/summaries");
-      default:
-        return void retry();
-    }
-  };
+  const fix = () => fixFailure(failure?.kind, () => void retry());
   return (
     <div className={s.statePanel} role="alert">
       <h3 className={`${s.stateTitle} ${s.stateTitleFailed}`}>Not summarized</h3>

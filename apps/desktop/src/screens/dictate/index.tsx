@@ -75,7 +75,12 @@ export default function DictateScreen() {
     settings?.deleteAudioAfterDays != null ? `Kept ${settings.deleteAudioAfterDays} days` : list.data ? `${list.data.length}` : "";
 
   return (
-    <section className={p.page} aria-labelledby="dictate-title">
+    <section
+      className={p.page}
+      aria-labelledby="dictate-title"
+      data-screen="dictate"
+      data-ready={String(list.status !== "loading" && stats.status !== "loading" && settings !== null)}
+    >
       <div className={cx(p.inner, s.stack)}>
         <div className={p.toolbar}>
           <SearchField

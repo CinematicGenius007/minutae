@@ -52,6 +52,7 @@ export function TranscriptionSection({ settings, update }: SectionProps) {
   const [models, setModels] = useState<ModelInfo[] | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [diarize, setDiarize] = useState<DiarizeModelInfo | null>(null);
+  const [diarizeChecked, setDiarizeChecked] = useState(false);
   const [storage] = useLoad(() => api.storageUsage());
   const [pendingDelete, setPendingDelete] = useState<WhisperModel | null>(null);
 
@@ -66,7 +67,8 @@ export function TranscriptionSection({ settings, update }: SectionProps) {
     api
       .diarizeModel()
       .then(setDiarize)
-      .catch(() => setDiarize(null));
+      .catch(() => setDiarize(null))
+      .finally(() => setDiarizeChecked(true));
   }, []);
 
   useEffect(() => {
@@ -141,7 +143,11 @@ export function TranscriptionSection({ settings, update }: SectionProps) {
 
   return (
     <>
-      <section className={s.group} aria-labelledby="g-transcription">
+      <section
+        className={s.group}
+        aria-labelledby="g-transcription"
+        data-ready={String((models !== null || modelsError !== null) && diarizeChecked && storage.status !== "loading")}
+      >
         <GroupLabel id="g-transcription">Transcription</GroupLabel>
         <SettingRow
           title="Where it runs"

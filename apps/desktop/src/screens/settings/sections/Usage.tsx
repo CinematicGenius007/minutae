@@ -16,7 +16,7 @@ export function UsageSection() {
 
   if (usage.status === "loading") {
     return (
-      <div className={p.loading}>
+      <div className={p.loading} data-ready="false">
         <Spinner /> Adding up this month…
       </div>
     );

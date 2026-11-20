@@ -89,7 +89,11 @@ export function SummariesSection({ settings, update }: SectionProps) {
 
   return (
     <>
-      <section className={s.group} aria-labelledby="g-providers">
+      <section
+        className={s.group}
+        aria-labelledby="g-providers"
+        data-ready={String(statuses.status !== "loading" && storage.status !== "loading")}
+      >
         <GroupLabel id="g-providers" count="Tried in order · drag to reorder">
           Summarize with
         </GroupLabel>

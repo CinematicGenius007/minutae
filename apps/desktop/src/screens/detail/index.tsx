@@ -152,7 +152,7 @@ export default function DetailScreen() {
     } else setLive(p);
   });
 
-  const player = useAudioPlayer(detail?.audio ?? null, detail?.durationMs ?? 0);
+  const player = useAudioPlayer(id, detail?.audio ?? null, detail?.durationMs ?? 0);
   useShortcut("space", player.toggle, { enabled: player.available });
   const seek = (ms: number) => player.seek(ms, true);
 
@@ -170,7 +170,7 @@ export default function DetailScreen() {
 
   if (q.error && !detail) {
     return (
-      <div className={s.screen}>
+      <div className={s.screen} data-screen="detail" data-ready={String(!!detail || !!q.error)}>
         <Toolbar detail={undefined} />
         <div className={s.body}>
           <EmptyState
@@ -198,7 +198,7 @@ export default function DetailScreen() {
     : "";
 
   return (
-    <div className={s.screen}>
+    <div className={s.screen} data-screen="detail" data-ready={String(!!detail || !!q.error)}>
       <Toolbar detail={detail} />
       <div className={s.body} aria-busy={!detail || undefined}>
         <div className={s.reading}>

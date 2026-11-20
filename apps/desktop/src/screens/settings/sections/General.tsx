@@ -41,7 +41,7 @@ export function GeneralSection({ settings, update }: SectionProps) {
 
   return (
     <>
-      <section className={s.group} aria-labelledby="g-recording">
+      <section className={s.group} aria-labelledby="g-recording" data-ready={String(devices.status !== "loading")}>
         <GroupLabel id="g-recording">Recording</GroupLabel>
         <SettingRow
           title="Ask when a call starts"

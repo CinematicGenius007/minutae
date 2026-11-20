@@ -151,6 +151,9 @@
 }
 .capButton:hover { border-color: var(--muted); }
 .capRecording { border-color: var(--ink); box-shadow: var(--halo); color: var(--muted); }
+.capInvalid, .capInvalid:hover { border-color: var(--destructive); }
+.capButton:disabled { color: var(--faint); cursor: default; }
+.fieldError { display: block; margin-top: var(--s-1); color: var(--destructive); }
 
 /* Storage */
 .disk { display: flex; flex-direction: column; gap: var(--s-5); }

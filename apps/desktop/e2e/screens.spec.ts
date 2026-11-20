@@ -36,15 +36,14 @@ const SHOTS: Shot[] = [
   { name: "library", route: "/library" },
   {
     name: "library-answer",
-    route: "/library",
-    // wouter's hash navigate() keeps the query before the hash: /?q=…#/library
-    query: `q=${encodeURIComponent("When did we move the launch to May")}`,
+    // Route params live inside the hash: #/library?q=…
+    route: `/library?q=${encodeURIComponent("When did we move the launch to May")}`,
     act: async (page) => {
       const input = page.getByRole("searchbox").first();
       await expect(input).toHaveValue(/launch/);
-      await page.waitForTimeout(400); // debounce + mock search
       await input.press("Enter");
       await expect(page.getByText("Carol proposed May")).toBeVisible();
+      await settle(page);
     },
   },
   ...(["general", "transcription", "summaries", "dictation", "storage", "usage"] as const).map((s) => ({
@@ -77,10 +76,14 @@ async function open(page: Page, theme: Theme, route: string, query?: string) {
   await expect(page.locator("#root > *").first()).toBeAttached();
 }
 
-/** Mock calls resolve after ~120 ms; let lazy routes, data and fonts settle. */
+/**
+ * Waits for the screen's own "data loaded" marker: a `[data-screen]` root with
+ * `data-ready="true"` and no component on the page still reporting `data-ready="false"`.
+ */
 async function settle(page: Page, ready?: string) {
+  await expect(page.locator('[data-screen][data-ready="true"]').first()).toBeAttached();
+  await expect(page.locator('[data-ready="false"]')).toHaveCount(0);
   if (ready) await expect(page.getByText(ready).first()).toBeVisible();
-  await page.waitForTimeout(500);
   await page.evaluate(() => document.fonts.ready);
 }
 
@@ -103,7 +106,7 @@ for (const theme of THEMES) {
         await page.setViewportSize({ width: 480, height: 120 });
         await open(page, theme, "/hud");
         await page.waitForFunction(() => "__minutaeMockEmit" in window);
-        await page.waitForTimeout(300); // lazy route + subscription
+        await settle(page); // lazy route + hud subscription
         await page.evaluate((p) => {
           const emit = (window as unknown as { __minutaeMockEmit: (e: string, p: unknown) => void }).__minutaeMockEmit;
           // Listening: a few level frames so the bars have a shape.
@@ -140,7 +143,7 @@ test("first run opens onboarding, finishing returns to Meetings", async ({ page 
 });
 
 test("library highlights match the query words", async ({ page }) => {
-  await page.goto(url("/library", "q=mockups%20Friday"));
+  await page.goto(url("/library?q=mockups%20Friday"));
   const marks = page.locator("mark");
   await expect(marks.first()).toBeVisible();
   const texts = await marks.allTextContents();
@@ -199,7 +202,7 @@ const A11Y_ROUTES: [string, string, string?][] = [
   ["detail", `/meetings/${MEETING}`],
   ["detail-failed", `/meetings/${MEETING}`, "state=failed"],
   ["dictate", "/dictate"],
-  ["library", "/library", "q=launch"],
+  ["library", "/library?q=launch"],
   ["settings-general", "/settings/general"],
   ["settings-transcription", "/settings/transcription"],
   ["settings-summaries", "/settings/summaries"],
@@ -227,3 +230,154 @@ for (const theme of THEMES) {
     });
   }
 }
+
+// ── Behaviour ───────────────────────────────────────────────────────────────
+
+const mod = (browserName: string) => (browserName === "webkit" ? "Meta" : "Control");
+
+test("record: pill → live → pause / resume → mark moment → stop lands on the meeting", async ({ page }) => {
+  await page.goto(url("/"));
+  await settle(page);
+  await page.getByRole("button", { name: /^Record/ }).first().click();
+  await expect(page).toHaveURL(/#\/live$/);
+  await expect(page.getByText("On air", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Pause" }).click();
+  await expect(page.getByRole("button", { name: "Resume" })).toBeVisible();
+  await expect(page.getByText("Paused", { exact: true }).first()).toBeVisible();
+  await page.getByRole("button", { name: "Resume" }).click();
+  await expect(page.getByRole("button", { name: "Pause" })).toBeVisible();
+
+  await page.getByRole("button", { name: /Mark moment/ }).click();
+  await expect(page.getByText(/Moment marked at/).first()).toBeVisible();
+
+  await page.getByRole("button", { name: /Stop & summarize/ }).click();
+  // The mock takes ~600 ms in phase "stopping" before the meeting is saved.
+  await expect(page.getByText("Saving", { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/#\/meetings\/00000000-0000-4000-8000-000000000009$/);
+  await settle(page);
+});
+
+test("onboarding on macOS finishes even when system audio stays notDetermined", async ({ page }) => {
+  await page.goto(url("/", "os=macos&onboarding=0"));
+  await expect(page).toHaveURL(/#\/onboarding$/);
+  await settle(page);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Three switches, then you're done.");
+  await expect(page.getByText("You can skip for now.")).toBeVisible();
+
+  // System audio is next: asking settles the row although the backend still says notDetermined.
+  await page.getByRole("button", { name: "Allow…" }).click();
+  await expect(page.getByText(/^Asked\. If it's still off/)).toBeVisible();
+  // The state machine moves on to Accessibility (optional): Later finishes the list.
+  await page.getByRole("button", { name: "Later" }).click();
+  await expect(page.getByText("You can skip for now.")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page).toHaveURL(/#\/$/);
+  await expect(page.getByText("Q2 Design Sync").first()).toBeVisible();
+});
+
+test("onboarding with nothing to ask (all notRequired) goes straight to Meetings", async ({ page }) => {
+  await page.goto(url("/onboarding", "perms=none"));
+  await expect(page).toHaveURL(/#\/$/);
+  await expect(page.getByText("Q2 Design Sync").first()).toBeVisible();
+});
+
+test("dictation shortcut recorder rejects a bare key and a duplicate, inline", async ({ page, browserName }) => {
+  await page.goto(url("/settings/dictation"));
+  await settle(page);
+  const cap = page.getByRole("button", { name: /Dictation shortcut/ });
+  const before = await cap.textContent();
+
+  await cap.click();
+  await page.keyboard.press("a");
+  await expect(page.getByRole("alert")).toContainText("A on its own would fire while you type");
+  await expect(cap).toHaveAttribute("aria-invalid", "true");
+  await expect(cap).toHaveText(before ?? "");
+
+  // Same combination as the Record shortcut (CommandOrControl+Alt+R).
+  await cap.click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.keyboard.press(`${mod(browserName)}+Alt+KeyR`);
+  await expect(page.getByRole("alert")).toContainText("already the Record shortcut");
+  await expect(cap).toHaveText(before ?? "");
+
+  // The backend refuses one the UI allows (owned by the OS): its message shows inline, value kept.
+  await cap.click();
+  await page.keyboard.press("Alt+F4");
+  await expect(page.getByRole("alert")).toContainText("The system already uses it");
+  await expect(cap).toHaveText(before ?? "");
+
+  // A valid combination saves and clears the error.
+  await cap.click();
+  await page.keyboard.press("Control+Shift+KeyD");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(cap).not.toHaveText(before ?? "");
+});
+
+test("library ask: only the latest question's answer shows", async ({ page }) => {
+  await page.goto(url("/library"));
+  await settle(page);
+  const input = page.getByRole("searchbox").first();
+  // The mock answers this one slowly (1.6 s)…
+  await input.fill("Who owns the dashboard budget");
+  await input.press("Enter");
+  // …and this one faster (0.9 s), so the first answer would land last.
+  await input.fill("When did we move the launch to May");
+  await input.press("Enter");
+  await expect(page.getByText("Carol proposed May")).toBeVisible();
+  await page.waitForTimeout(1200); // past the slow answer's arrival
+  await expect(page.getByText("Carol proposed May")).toBeVisible();
+  await expect(page.getByText("Bob owns the dashboard performance budget")).toHaveCount(0);
+});
+
+test("audio player keeps its speed when switching meetings", async ({ page }) => {
+  // Record every <audio> the player creates so we can read the real playbackRate.
+  await page.addInitScript(() => {
+    const made: HTMLAudioElement[] = [];
+    (window as unknown as { __audios: HTMLAudioElement[] }).__audios = made;
+    const Native = window.Audio;
+    window.Audio = function (src?: string) {
+      const a = new Native(src);
+      made.push(a);
+      return a;
+    } as unknown as typeof Audio;
+  });
+  await page.goto(url(`/meetings/${MEETING}`, "audio=1"));
+  await settle(page);
+  const speed = page.getByRole("button", { name: /Playback speed/ });
+  await expect(speed).toBeEnabled();
+  await speed.click(); // 1 → 1.25
+  await speed.click(); // → 1.5
+  await expect(speed).toHaveAccessibleName(/1\.5/);
+
+  // Same Detail screen instance, another meeting: the player builds new <audio> elements.
+  const before = await page.evaluate(() => (window as unknown as { __audios: HTMLAudioElement[] }).__audios.length);
+  await page.evaluate(() => {
+    window.location.hash = "#/meetings/00000000-0000-4000-8000-000000000003";
+  });
+  const fresh = () =>
+    page.evaluate((n) => (window as unknown as { __audios: HTMLAudioElement[] }).__audios.slice(n).map((a) => a.playbackRate), before);
+  await expect.poll(async () => (await fresh()).length).toBeGreaterThan(0);
+  expect(await fresh()).toEqual((await fresh()).map(() => 1.5));
+  await expect(speed).toBeEnabled();
+  await expect(speed).toHaveAccessibleName(/1\.5/);
+});
+
+test("search params live in the hash and don't come back from the sidebar", async ({ page, browserName }) => {
+  await page.goto(url("/"));
+  await settle(page);
+  const search = page.getByRole("searchbox").first();
+  await search.fill("launch");
+  await search.press("Enter");
+  await expect(page).toHaveURL(/#\/library\?focus=1&q=launch$/);
+  expect(await page.evaluate(() => window.location.search)).toBe("");
+  await expect(page.getByRole("searchbox", { name: "Search or ask" })).toHaveValue("launch");
+
+  await page.getByRole("link", { name: /Meetings/ }).first().click();
+  await expect(page).toHaveURL(/#\/$/);
+  await expect(page.locator('[data-screen="meetings"]')).toBeAttached(); // Library has unmounted
+  await page.keyboard.press(`${mod(browserName)}+3`);
+  await expect(page).toHaveURL(/#\/library$/);
+  await expect(page.getByRole("searchbox", { name: "Search or ask" })).toHaveValue("");
+});

@@ -1,13 +1,19 @@
 import { Suspense } from "react";
 import { Route, Router, Switch } from "wouter";
-import { useHashLocation } from "wouter/use-hash-location";
 import { Gallery } from "@minutae/ui";
+import { useAppearance, usePlatformInfo } from "./hooks";
+import { useHashPath, useHashSearch } from "./lib/hashLocation";
 import Shell from "./shell/Shell";
 import { paths, screens as S } from "./routes";
 
 export default function App() {
+  // Every window (main, HUD, call prompt) follows Settings → General → Appearance.
+  useAppearance();
+  const platform = usePlatformInfo();
   return (
-    <Router hook={useHashLocation}>
+    <Router hook={useHashPath} searchHook={useHashSearch}>
+      {/* Test hook: copy depends on the platform answer; screens add their own data-ready. */}
+      <span hidden data-ready={String(platform !== null)} />
       <Suspense fallback={null}>
         <Switch>
           {/* Overlay windows: no shell */}

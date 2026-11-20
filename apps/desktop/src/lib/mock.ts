@@ -6,9 +6,19 @@
 //   ?state=processing  the Detail screen shows a meeting still transcribing (no summary yet)
 //   ?state=failed      the Detail screen shows a meeting whose summary failed (reason + fix)
 //   ?onboarding=0      first run: onboarding_done() is false, so the shell sends you to /onboarding
+//   ?os=macos          report this OS instead of guessing from the user agent (macos | windows | linux)
+//   ?perms=none        every permission is notRequired (Windows / Linux): onboarding has nothing to ask
+//   ?audio=1           meetings have short silent audio tracks, so the player is enabled
+//
+// Behaviour mirrors the real backend where the UI must cope with it:
+//   - request_permission("systemAudio" | "accessibility") on macOS can keep answering notDetermined
+//   - update_settings refuses bare-key and duplicate global shortcuts with an error string
+//   - stop_recording reports phase "stopping" for ~600 ms before the meeting is saved
+//   - ask() answers take a different time per question, so a later question can land first
 
 import type {
-  AppSettings, DayGroup, Dictation, MeetingDetail, ModelInfo, ProviderStatus, RecordingState, SearchHit, UsageMonth,
+  Answer, AppSettings, DayGroup, Dictation, MeetingDetail, ModelInfo, Permissions, ProviderStatus, RecordingState, SearchHit,
+  UsageMonth,
 } from "./types";
 
 type Listener = (payload: unknown) => void;
@@ -18,7 +28,16 @@ const emit = (event: string, payload: unknown) => listeners.get(event)?.forEach(
 const params = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
 const state = params.get("state");
 const empty = state === "empty";
-let onboarded = params.get("onboarding") !== "0";
+const osParam = params.get("os");
+const os = osParam === "macos" || osParam === "windows" || osParam === "linux"
+  ? osParam
+  : typeof navigator !== "undefined" && /Mac/.test(navigator.userAgent) ? "macos" : typeof navigator !== "undefined" && /Win/.test(navigator.userAgent) ? "windows" : "linux";
+const noPerms = params.get("perms") === "none";
+let perms: Permissions = noPerms
+  ? { microphone: "notRequired", systemAudio: "notRequired", accessibility: "notRequired" }
+  : { microphone: "granted", systemAudio: "notDetermined", accessibility: "notDetermined" };
+// Like the backend: nothing to grant means setup is already done.
+let onboarded = params.get("onboarding") !== "0" || noPerms;
 
 const iso = (d: number, h: number, m: number) => {
   const t = new Date(2026, 10, 20 - d, h, m);
@@ -96,9 +115,27 @@ const baseDetail = (meetingId: string): MeetingDetail => ({
     { meetingId, atMs: 718000, label: "Decision: May" },
     { meetingId, atMs: 1450000, label: "Perf numbers from Bob" },
   ],
-  audio: { mic: null, system: null },
+  audio: params.get("audio") === "1" ? { mic: silentWav(), system: silentWav() } : { mic: null, system: null },
   progress: null,
 });
+
+/** 2 s of 8 kHz 8-bit mono silence as a data: URL (the browser mock's "file path"). */
+let wav: string | null = null;
+function silentWav(): string {
+  if (wav) return wav;
+  const rate = 8000;
+  const n = rate * 2;
+  const b = new DataView(new ArrayBuffer(44 + n));
+  const str = (o: number, t: string) => [...t].forEach((c, i) => b.setUint8(o + i, c.charCodeAt(0)));
+  str(0, "RIFF"); b.setUint32(4, 36 + n, true); str(8, "WAVE"); str(12, "fmt ");
+  b.setUint32(16, 16, true); b.setUint16(20, 1, true); b.setUint16(22, 1, true); b.setUint32(24, rate, true);
+  b.setUint32(28, rate, true); b.setUint16(32, 1, true); b.setUint16(34, 8, true); str(36, "data"); b.setUint32(40, n, true);
+  for (let i = 0; i < n; i++) b.setUint8(44 + i, 128);
+  let bin = "";
+  for (let i = 0; i < b.byteLength; i++) bin += String.fromCharCode(b.getUint8(i));
+  wav = `data:audio/wav;base64,${btoa(bin)}`;
+  return wav;
+}
 
 function detail(meetingId: string): MeetingDetail {
   const d = baseDetail(meetingId);
@@ -203,15 +240,68 @@ export function highlightRanges(text: string, query: string): [number, number][]
 const hitsFor = (query: string) => hits.map((h) => ({ ...h, highlights: highlightRanges(h.snippet, query) }));
 
 const delay = <T,>(v: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
+const fail = (message: string, ms = 120) => new Promise<never>((_, reject) => setTimeout(() => reject(message), ms));
+
+// Global shortcut checks, worded like the backend's update_settings refusals.
+const MODS = new Set(["commandorcontrol", "cmdorctrl", "command", "cmd", "super", "meta", "control", "ctrl", "alt", "option", "shift"]);
+function normShortcut(acc: string): string {
+  return acc
+    .split("+")
+    .map((k) => k.trim().toLowerCase())
+    .map((k) => (k === "commandorcontrol" || k === "cmdorctrl" ? (os === "macos" ? "cmd" : "ctrl") : k === "command" || k === "meta" ? "cmd" : k === "control" ? "ctrl" : k === "option" ? "alt" : k))
+    .sort()
+    .join("+");
+}
+function shortcutRefusal(patch: Partial<AppSettings>): string | null {
+  const next = { ...settings, ...patch };
+  for (const field of ["dictationHotkey", "recordShortcut"] as const) {
+    const acc = patch[field];
+    if (acc === undefined) continue;
+    const parts = acc.split("+").map((k) => k.trim());
+    const key = parts.find((k) => !MODS.has(k.toLowerCase()));
+    const mods = parts.filter((k) => MODS.has(k.toLowerCase()) && k.toLowerCase() !== "shift");
+    if (!key) return `Invalid shortcut "${acc}": it needs a key.`;
+    if (mods.length === 0 && !/^F([1-9]|1\d|2[0-4])$/.test(key)) return `"${acc}" needs a modifier key such as Ctrl, Alt or Cmd.`;
+  }
+  if (normShortcut(next.dictationHotkey) === normShortcut(next.recordShortcut)) return "The dictation and record shortcuts must be different.";
+  // Registration can still fail when the OS owns the combination.
+  for (const acc of [patch.dictationHotkey, patch.recordShortcut]) {
+    if (acc && normShortcut(acc) === "alt+f4") return `Couldn't register ${acc}. The system already uses it.`;
+  }
+  return null;
+}
+
+const ANSWERS: { match: RegExp; text: string; ms: number }[] = [
+  { match: /launch|may/i, ms: 900, text: "On Thursday 20 Nov in the Q2 Design Sync. Carol proposed May so onboarding could ship with the redesign; Alice and Bob agreed." },
+  { match: /budget|perf|dashboard/i, ms: 1600, text: "Bob owns the dashboard performance budget. He is sharing the numbers with Alice before beta." },
+];
+function answerFor(question: string): Promise<Answer> {
+  const a = ANSWERS.find((x) => x.match.test(question));
+  const sources = hitsFor(question).slice(0, 2);
+  if (!a) return delay({ text: "Nothing in your library answers that yet.", sources: [], provider: "Codex" }, 600);
+  return delay({ text: a.text, sources, provider: "Codex" }, a.ms);
+}
 
 export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   const r = (v: unknown) => delay(v) as Promise<T>;
   switch (cmd) {
-    case "platform": return r({ os: /Mac/.test(navigator.userAgent) ? "macos" : /Win/.test(navigator.userAgent) ? "windows" : "linux", sessionKind: null, appVersion: "0.4.0-dev" });
+    case "platform": return r({ os, sessionKind: null, appVersion: "0.4.0-dev" });
     case "get_settings": return r(settings);
-    case "update_settings": settings = { ...settings, ...(args.patch as Partial<AppSettings>) }; emit("settings://changed", settings); return r(settings);
-    case "permissions": return r({ microphone: "granted", systemAudio: "notDetermined", accessibility: "notDetermined" });
-    case "request_permission": return r({ microphone: "granted", systemAudio: "granted", accessibility: "notDetermined" });
+    case "update_settings": {
+      const patch = args.patch as Partial<AppSettings>;
+      const refusal = shortcutRefusal(patch);
+      if (refusal) return fail(refusal);
+      settings = { ...settings, ...patch };
+      emit("settings://changed", settings);
+      return r(settings);
+    }
+    case "permissions": return r(perms);
+    case "request_permission": {
+      // The mic prompt answers; system audio and accessibility stay notDetermined until relaunch.
+      const kind = args.kind as keyof Permissions;
+      if (kind === "microphone" && perms.microphone === "notDetermined") perms = { ...perms, microphone: "granted" };
+      return r(perms);
+    }
     case "onboarding_done": return r(onboarded);
     case "finish_onboarding": onboarded = true; return r(undefined);
     case "list_meetings": return r(empty ? [] : groups);
@@ -224,7 +314,15 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
       recording = { phase: "recording", meetingId: id(9), title: (args.title as string) ?? "Untitled meeting", sourceApp: (args.sourceApp as string) ?? null, elapsedMs: 0, systemAudio: "on", systemAudioError: null };
       startTicker(); emit("recording://state", recording);
       return r({ id: id(9), title: recording.title, startedAt: new Date().toISOString(), endedAt: null, status: "recording", sourceApp: recording.sourceApp, failure: null });
-    case "stop_recording": recording = { ...recording, phase: "idle" }; emit("recording://state", recording); return r(id(9));
+    case "stop_recording": {
+      const meetingId = recording.meetingId ?? id(9);
+      recording = { ...recording, phase: "stopping" };
+      emit("recording://state", recording);
+      await new Promise((done) => setTimeout(done, 600));
+      recording = { phase: "idle", meetingId: null, title: null, sourceApp: null, elapsedMs: 0, systemAudio: "on", systemAudioError: null };
+      emit("recording://state", recording);
+      return r(meetingId);
+    }
     case "pause_recording": recording = { ...recording, phase: "paused" }; emit("recording://state", recording); return r(undefined);
     case "resume_recording": recording = { ...recording, phase: "recording" }; emit("recording://state", recording); return r(undefined);
     case "mark_moment": return r({ meetingId: recording.meetingId, atMs: recording.elapsedMs, label: (args.label as string) ?? "Moment" });
@@ -232,7 +330,7 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
     case "list_dictations": return r(empty ? [] : dictations);
     case "dictation_stats": return r({ wordsThisWeek: 4210, minutesSaved: 38 });
     case "search": return r(!empty && (args.query as string)?.trim() ? hitsFor(args.query as string) : []);
-    case "ask": return delay({ text: "On Thursday 20 Nov in the Q2 Design Sync. Carol proposed May so onboarding could ship with the redesign; Alice and Bob agreed.", sources: hitsFor(args.question as string).slice(0, 2), provider: "Codex" }, 900) as Promise<T>;
+    case "ask": return answerFor(args.question as string) as Promise<T>;
     case "list_models": return r(models);
     case "diarize_model": return r({ state: "ready", fraction: null, sizeBytes: 35e6 });
     case "provider_statuses": return r(providers);

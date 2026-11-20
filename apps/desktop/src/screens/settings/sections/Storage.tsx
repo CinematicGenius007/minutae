@@ -60,7 +60,7 @@ export function StorageSection({ settings, update }: SectionProps) {
 
   return (
     <>
-      <section className={s.disk} aria-label="Disk usage">
+      <section className={s.disk} aria-label="Disk usage" data-ready={String(usage.status !== "loading")}>
         {usage.status === "loading" ? (
           <div className={p.loading}>
             <Spinner /> Measuring…

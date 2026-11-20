@@ -1,5 +1,7 @@
 // Plays a meeting's two tracks (mic + system) in sync. The system track (or mic if it's the
 // only one) is the clock; the other follows and is re-aligned when it drifts > 150 ms.
+// The chosen speed carries over when the Detail screen switches meetings; position, duration
+// and play state reset with each meeting (`key`).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../lib/api";
 
@@ -14,20 +16,31 @@ export interface AudioPlayer {
   setSpeed: (v: number) => void;
 }
 
-export function useAudioPlayer(paths: { mic: string | null; system: string | null } | null, fallbackMs: number): AudioPlayer {
+export function useAudioPlayer(
+  key: string,
+  paths: { mic: string | null; system: string | null } | null,
+  fallbackMs: number,
+): AudioPlayer {
   const [els, setEls] = useState<HTMLAudioElement[]>([]);
   const [playing, setPlaying] = useState(false);
   const [currentMs, setCurrentMs] = useState(0);
   const [durationMs, setDurationMs] = useState(fallbackMs);
   const [speed, setSpeedState] = useState(1);
   const pendingSeek = useRef<number | null>(null);
+  const speedRef = useRef(speed);
+  speedRef.current = speed;
 
   const mic = paths?.mic ?? null;
   const system = paths?.system ?? null;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `key` resets the player per meeting
   useEffect(() => {
     let alive = true;
     const made: HTMLAudioElement[] = [];
+    setCurrentMs(0);
+    setDurationMs(0);
+    setPlaying(false);
+    pendingSeek.current = null;
     (async () => {
       for (const p of [system, mic]) {
         if (!p) continue;
@@ -36,6 +49,8 @@ export function useAudioPlayer(paths: { mic: string | null; system: string | nul
         const a = new Audio();
         a.preload = "metadata";
         a.src = url;
+        a.playbackRate = speedRef.current;
+        a.defaultPlaybackRate = speedRef.current;
         made.push(a);
       }
       if (alive) setEls(made);
@@ -49,7 +64,7 @@ export function useAudioPlayer(paths: { mic: string | null; system: string | nul
       setEls([]);
       setPlaying(false);
     };
-  }, [mic, system]);
+  }, [key, mic, system]);
 
   useEffect(() => {
     const [master, ...rest] = els;
@@ -105,7 +120,10 @@ export function useAudioPlayer(paths: { mic: string | null; system: string | nul
   const setSpeed = useCallback(
     (v: number) => {
       setSpeedState(v);
-      for (const a of els) a.playbackRate = v;
+      for (const a of els) {
+        a.playbackRate = v;
+        a.defaultPlaybackRate = v;
+      }
     },
     [els],
   );

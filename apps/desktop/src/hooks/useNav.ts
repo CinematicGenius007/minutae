@@ -1,12 +1,12 @@
 /**
- * Navigation helpers on top of wouter's hash location.
+ * Navigation helpers on top of the hash router (src/lib/hashLocation.ts).
  *
  *   const go = useGo();  go("/meetings/abc");
- *   openSearch(go)       // → /library?focus=1 and fires the `minutae:focus-search` window event
+ *   openSearch(go)       // → #/library?focus=1 and fires the `minutae:focus-search` window event
  *
- * `go()` clears a stale `?focus=1` left by openSearch so later visits don't re-focus.
- * The Library screen can read `useSearch()` (wouter) for `focus=1`, or listen for
- * `window.addEventListener(FOCUS_SEARCH_EVENT, …)` when it is already mounted.
+ * Query params live inside the hash, so any `go()` to another route drops them; nothing
+ * stale (`?q=`, `?focus=1`) survives a later visit. The Library screen reads them with
+ * wouter's `useSearch()`, or listens for `FOCUS_SEARCH_EVENT` when it is already mounted.
  */
 import { useCallback } from "react";
 import { useLocation } from "wouter";
@@ -15,14 +15,7 @@ export const FOCUS_SEARCH_EVENT = "minutae:focus-search";
 
 export function useGo() {
   const [, navigate] = useLocation();
-  return useCallback(
-    (to: string, opts?: { replace?: boolean }) => {
-      let target = to;
-      if (!to.includes("?") && /(^|&|\?)focus=/.test(window.location.search)) target = `${to}?`;
-      navigate(target, opts);
-    },
-    [navigate],
-  );
+  return useCallback((to: string, opts?: { replace?: boolean }) => navigate(to, opts), [navigate]);
 }
 
 export function openSearch(go: (to: string) => void, query?: string) {
