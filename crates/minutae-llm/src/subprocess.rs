@@ -508,12 +508,11 @@ fn executable(path: &Path) -> Option<PathBuf> {
         }
     }
     // Keep the path the caller named when canonicalisation produced a `\\?\` prefix on Windows.
-    #[cfg(windows)]
-    {
-        return Some(path.to_path_buf());
+    if cfg!(windows) {
+        Some(path.to_path_buf())
+    } else {
+        Some(real)
     }
-    #[cfg(not(windows))]
-    Some(real)
 }
 
 /// Common per-user and system install directories for a CLI named `name`.

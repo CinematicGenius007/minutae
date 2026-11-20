@@ -1,7 +1,7 @@
 //! End-to-end check: download models → transcribe → diarize → merge → print.
 //!
 //! ```sh
-//! cargo run --release -p minutae-diarize --example e2e -- <models_dir> <mic.wav> <system.wav> [mixed.wav]
+//! cargo run --release -p minutae-diarize --example diarize_e2e -- <models_dir> <mic.wav> <system.wav> [mixed.wav]
 //! ```
 //! Env: `WHISPER_MODEL=tiny|base|small|medium` (default base), `NUM_SPEAKERS=<n>`, `NO_GPU=1`.
 
