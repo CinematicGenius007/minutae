@@ -412,6 +412,34 @@ pub struct PlatformInfo {
     pub app_version: String,
 }
 
+/// Where the in-app updater is. `disabled`: this build has no updater public key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdatePhase {
+    Disabled,
+    Idle,
+    Checking,
+    UpToDate,
+    Available,
+    Installing,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatus {
+    pub phase: UpdatePhase,
+    pub current_version: String,
+    /// The newer version on offer (`available`, `installing`).
+    pub version: Option<String>,
+    /// Release notes of that version, if the release has any.
+    pub notes: Option<String>,
+    /// Download progress 0..1 while `installing`; `null` when the size is unknown.
+    pub fraction: Option<f32>,
+    /// One plain sentence when `error`.
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ModelState {
@@ -556,6 +584,7 @@ pub mod ev {
     pub const MODEL_PROGRESS: &str = "model://progress";
     pub const SETTINGS_CHANGED: &str = "settings://changed";
     pub const NAVIGATE: &str = "nav://goto";
+    pub const UPDATE_STATUS: &str = "update://status";
 }
 
 #[cfg(test)]
@@ -950,6 +979,31 @@ mod tests {
             v["transportOrder"],
             serde_json::json!(["codexCli", "ollama", "grokCli"])
         );
+    }
+
+    #[test]
+    fn update_status_shape() {
+        let s = UpdateStatus {
+            phase: UpdatePhase::UpToDate,
+            current_version: "0.4.0".into(),
+            version: None,
+            notes: None,
+            fraction: None,
+            error: None,
+        };
+        assert_keys(
+            &s,
+            &[
+                "phase",
+                "currentVersion",
+                "version",
+                "notes",
+                "fraction",
+                "error",
+            ],
+        );
+        assert_eq!(serde_json::to_value(&s).unwrap()["phase"], "upToDate");
+        assert_eq!(ev::UPDATE_STATUS, "update://status");
     }
 
     #[test]

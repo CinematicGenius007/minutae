@@ -111,6 +111,18 @@ export interface Permissions { microphone: PermissionState; systemAudio: Permiss
 
 export interface PlatformInfo { os: Os; sessionKind: "x11" | "wayland" | null; appVersion: string }
 
+/** "disabled": this build has no updater key (dev builds, forks), so the app never checks. */
+export type UpdatePhase = "disabled" | "idle" | "checking" | "upToDate" | "available" | "installing" | "error";
+export interface UpdateStatus {
+  phase: UpdatePhase; currentVersion: string;
+  /** Newer version on offer (available / installing). */
+  version: string | null; notes: string | null;
+  /** 0..1 download progress while installing; null when the size is unknown. */
+  fraction: number | null;
+  /** One sentence when phase is "error". */
+  error: string | null;
+}
+
 export type ModelState = "missing" | "downloading" | "ready";
 export interface ModelInfo { model: WhisperModel; sizeBytes: number; state: ModelState; fraction: number | null }
 export interface DiarizeModelInfo { state: ModelState; fraction: number | null; sizeBytes: number }

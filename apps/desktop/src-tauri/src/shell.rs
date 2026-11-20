@@ -280,6 +280,15 @@ static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// Quit for real (tray, Cmd+Q, SIGTERM/SIGINT): stop a recording first so its audio is
 /// saved, park the job queue, free the whisper models, then exit. Idempotent.
 pub fn quit(app: &AppHandle) {
+    shutdown(app, false);
+}
+
+/// Same graceful shutdown as [`quit`], then start again (after an update was installed).
+pub fn restart(app: &AppHandle) {
+    shutdown(app, true);
+}
+
+fn shutdown(app: &AppHandle, restart: bool) {
     if QUITTING.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
@@ -305,8 +314,12 @@ pub fn quit(app: &AppHandle) {
         let _ =
             tokio::task::spawn_blocking(move || cache.shutdown(std::time::Duration::from_secs(10)))
                 .await;
-        tracing::info!("models unloaded; exiting");
-        app.exit(0);
+        tracing::info!(restart, "models unloaded; exiting");
+        if restart {
+            app.request_restart();
+        } else {
+            app.exit(0);
+        }
     });
 }
 

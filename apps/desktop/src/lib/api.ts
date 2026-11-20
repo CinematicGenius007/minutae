@@ -6,7 +6,7 @@ import type {
   Answer, AppSettings, ApiProvider, CaptionLine, DayGroup, DiarizeModelInfo, Dictation, DictationStats,
   HudState, InputDevice, LevelFrame, MeetingDetail, Moment, ModelInfo, Permissions, PlatformInfo, Progress,
   ProviderStatus, RecordingState, SearchHit, SearchKind, StorageUsage, UsageMonth, Uuid, WhisperModel, Route,
-  Meeting,
+  Meeting, UpdateStatus,
 } from "./types";
 import { mockInvoke, mockListen } from "./mock";
 
@@ -98,6 +98,13 @@ export const api = {
   pickFolder: () => call<string | null>("pick_folder"),
   exportAll: () => call<string | null>("export_all"),
   eraseAll: () => call<void>("erase_all"),
+
+  // updates
+  updateStatus: () => call<UpdateStatus>("update_status"),
+  /** Starts a check; returns "checking" at once. The result arrives on `events.updateStatus`. */
+  checkForUpdates: () => call<UpdateStatus>("check_for_updates"),
+  /** Downloads + installs the found update, then the app restarts. Rejects while recording. */
+  installUpdate: () => call<UpdateStatus>("install_update"),
 };
 
 /** Backend → UI events. Event names are the strings below. */
@@ -118,4 +125,6 @@ export const events = {
   settingsChanged: (cb: (s: AppSettings) => void) => on("settings://changed", cb),
   /** Tray / menu / shortcut asks the main window to navigate. */
   navigate: (cb: (p: { route: Route }) => void) => on("nav://goto", cb),
+  /** Updater phase / progress changed. */
+  updateStatus: (cb: (s: UpdateStatus) => void) => on("update://status", cb),
 };
