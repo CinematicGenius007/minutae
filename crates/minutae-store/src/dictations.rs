@@ -30,24 +30,26 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dictation> {
     })
 }
 
+pub(crate) fn write_dictation(c: &rusqlite::Connection, d: &Dictation) -> Result<()> {
+    c.execute(
+        &format!("INSERT INTO dictations ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"),
+        params![
+            d.id.to_string(),
+            ms(d.created_at),
+            d.text,
+            d.raw_text,
+            d.target_app,
+            d.word_count,
+            d.duration_ms,
+            d.inserted
+        ],
+    )?;
+    Ok(())
+}
+
 impl Store {
     pub fn insert_dictation(&self, d: &Dictation) -> Result<()> {
-        self.write(|c| {
-            c.execute(
-                &format!("INSERT INTO dictations ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"),
-                params![
-                    d.id.to_string(),
-                    ms(d.created_at),
-                    d.text,
-                    d.raw_text,
-                    d.target_app,
-                    d.word_count,
-                    d.duration_ms,
-                    d.inserted
-                ],
-            )?;
-            Ok(())
-        })
+        self.write(|c| write_dictation(c, d))
     }
 
     pub fn get_dictation(&self, id: DictationId) -> Result<Option<Dictation>> {

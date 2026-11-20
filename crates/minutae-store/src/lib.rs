@@ -26,7 +26,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{Connection, OpenFlags};
 
 pub use dictations::DictationStats;
-pub use import::{ImportReport, Importer};
+pub use import::{ImportedMeeting, LegacyKind};
 pub use jobs::{JobKind, JobRecord, JobState, NewJob};
 pub use meetings::{
     DayGroup, MeetingDetail, MeetingListItem, Track as TrackFile, WeekStats, group_by_local_day,
