@@ -306,4 +306,7 @@ jobs:
           ZIP="Minutae_${VERSION}_x64-portable.zip"
           HASH="$(sha256sum -- "$ZIP" | cut -d' ' -f1)"
           bun "$GITHUB_WORKSPACE/scripts/scoop-manifest.ts" "$VERSION" "$HASH" minutae.json
-          gh release upload "$TAG" SHA256SUMS.txt minutae.json --repo "$GITHUB_REPOSITORY" --clobber
+          # The update-check scripts ride along with every release, pinned to it.
+          cp "$GITHUB_WORKSPACE/scripts/check-update.sh" "$GITHUB_WORKSPACE/scripts/check-update.ps1" "$GITHUB_WORKSPACE/scripts/install.sh" .
+          gh release upload "$TAG" SHA256SUMS.txt minutae.json install.sh check-update.sh check-update.ps1 \
+            --repo "$GITHUB_REPOSITORY" --clobber

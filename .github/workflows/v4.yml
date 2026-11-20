@@ -125,6 +125,23 @@ jobs:
       - name: Desktop typecheck
         run: bun --cwd apps/desktop typecheck
 
+      # install.sh / check-update.sh / check-update.ps1 ship to users; keep them parseable.
+      - name: Install scripts (shellcheck)
+        if: runner.os == 'Linux'
+        run: shellcheck scripts/install.sh scripts/check-update.sh scripts/macos-self-signed-cert.sh
+
+      - name: Install scripts (PowerShell parse + version compare)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/scripts/check-update.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors; exit 1 }
+          # No release may exist yet: 0 / 10 / 1 are all valid answers; anything else is a bug.
+          pwsh -NoProfile -File scripts/check-update.ps1 -Current 0.0.1 -Json
+          if ($LASTEXITCODE -notin 0, 1, 10) { exit 1 }
+          exit 0
+
       - name: Rust format
         if: runner.os == 'Linux'
         run: cargo fmt --all --check

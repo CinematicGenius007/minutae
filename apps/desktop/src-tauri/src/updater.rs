@@ -55,9 +55,7 @@ pub fn detect_channel(exe: Option<&Path>, baked: Option<&str>) -> InstallChannel
 pub fn update_command(channel: InstallChannel, os: &str) -> Option<String> {
     match (channel, os) {
         (InstallChannel::Scoop, _) => Some("scoop update minutae".into()),
-        (InstallChannel::Source, "windows") => {
-            Some("git pull; bun install; bun run tauri build".into())
-        }
+        (InstallChannel::Source, "windows") => Some("git pull; bun install; bun run build".into()),
         (InstallChannel::Source, _) => {
             Some("git pull && ./scripts/install.sh --from-source".into())
         }
