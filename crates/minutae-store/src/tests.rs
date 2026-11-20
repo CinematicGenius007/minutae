@@ -702,7 +702,10 @@ fn v2_migration_backfills_title_key() {
     // Roll the file back to a v1 database.
     s.write(|c| {
         c.execute_batch(
-            "ALTER TABLE meetings DROP COLUMN title_lc; DROP TABLE legacy_imports; PRAGMA user_version = 1;",
+            "ALTER TABLE meetings DROP COLUMN title_lc;
+             ALTER TABLE meetings DROP COLUMN echo_cancel;
+             DROP TABLE legacy_imports;
+             PRAGMA user_version = 1;",
         )?;
         Ok(())
     })
@@ -715,4 +718,32 @@ fn v2_migration_backfills_title_key() {
         hits.iter()
             .any(|h| h.kind == HitKind::Meeting && h.meeting_id == Some(m.id))
     );
+}
+
+#[test]
+fn echo_cancel_report_round_trips_and_shows_in_detail() {
+    let s = Store::open_in_memory().unwrap();
+    let m = meeting("Call", Utc::now());
+    s.create_meeting(&m).unwrap();
+    assert_eq!(s.echo_cancel(m.id).unwrap(), None);
+    assert_eq!(s.meeting_detail(m.id).unwrap().unwrap().echo_cancel, None);
+
+    let r = EchoCancelReport {
+        ran: true,
+        skipped: None,
+        erle_db: Some(31.5),
+        delay_ms: Some(42.0),
+        drift_ppm: Some(-12.0),
+        elapsed_ms: 900,
+    };
+    s.set_echo_cancel(m.id, &r).unwrap();
+    assert_eq!(s.echo_cancel(m.id).unwrap(), Some(r));
+    // A later run (e.g. retry with the setting off) replaces it.
+    let off = EchoCancelReport::skipped(EchoSkip::Off);
+    s.set_echo_cancel(m.id, &off).unwrap();
+    assert_eq!(
+        s.meeting_detail(m.id).unwrap().unwrap().echo_cancel,
+        Some(off)
+    );
+    assert_eq!(s.echo_cancel(Uuid::new_v4()).unwrap(), None);
 }

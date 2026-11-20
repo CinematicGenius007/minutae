@@ -29,6 +29,7 @@ export const api = {
   // app
   platform: () => call<PlatformInfo>("platform"),
   getSettings: () => call<AppSettings>("get_settings"),
+  /** E.g. `{ echoCancellation: "off" }`; applies from the next transcription (and Retry). */
   updateSettings: (patch: Partial<AppSettings>) => call<AppSettings>("update_settings", { patch }),
   permissions: () => call<Permissions>("permissions"),
   requestPermission: (kind: keyof Permissions) => call<Permissions>("request_permission", { kind }),
@@ -49,6 +50,7 @@ export const api = {
   // meetings
   listMeetings: (limit = 200) => call<DayGroup[]>("list_meetings", { limit }),
   weekStats: () => call<{ recordedMs: number; openActions: number }>("week_stats"),
+  /** Includes `echoCancel`, the echo-cancellation report of the last transcription. */
   getMeeting: (id: Uuid) => call<MeetingDetail>("get_meeting", { id }),
   renameMeeting: (id: Uuid, title: string) => call<void>("rename_meeting", { id, title }),
   deleteMeeting: (id: Uuid) => call<void>("delete_meeting", { id }),

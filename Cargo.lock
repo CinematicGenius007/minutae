@@ -3158,6 +3158,7 @@ dependencies = [
  "block2",
  "chrono",
  "hound",
+ "minutae-aec",
  "minutae-asr",
  "minutae-audio",
  "minutae-core",

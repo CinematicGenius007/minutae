@@ -57,6 +57,21 @@ export interface MeetingDetail {
   /** Absolute file paths; play through `audioUrl()` (convertFileSrc). */
   audio: { mic: string | null; system: string | null } | null;
   progress: Progress | null;
+  /** What echo cancellation did before transcription; null for meetings transcribed before it existed. */
+  echoCancel: EchoCancelReport | null;
+}
+
+/** Why the mic track was transcribed without echo cancellation. */
+export type EchoSkip = "off" | "noSystemTrack" | "systemSilent" | "noEcho" | "ineffective";
+export interface EchoCancelReport {
+  /** True when transcription used the cleaned mic track (`mic.clean.wav`). */
+  ran: boolean;
+  skipped: EchoSkip | null;
+  /** How much quieter the speaker echo got, dB. */
+  erleDb: number | null;
+  delayMs: number | null;
+  driftPpm: number | null;
+  elapsedMs: number;
 }
 
 export type RecordingPhase = "idle" | "recording" | "paused" | "stopping";
@@ -93,11 +108,14 @@ export interface Answer { text: string; sources: SearchHit[]; provider: string }
 export type Appearance = "system" | "light" | "dark";
 export type WhisperModel = "tiny" | "base" | "small" | "medium";
 export type Transport = "codexCli" | "grokCli" | "ollama" | "api";
+/** "auto": clean the mic track when the speakers can be heard in it (skipped with headphones). */
+export type EchoCancelMode = "auto" | "off";
 
 export interface AppSettings {
   appearance: Appearance; launchAtLogin: boolean; autoDetectMeetings: boolean; promptDelaySeconds: number;
   stopWhenCallEnds: boolean; includeSystemAudio: boolean; microphone: string | null; recordShortcut: string;
   transcribeWhere: "local" | "cloud"; whisperModel: WhisperModel; language: string | null; labelSpeakers: boolean;
+  echoCancellation: EchoCancelMode;
   transportOrder: Transport[]; apiFallbackEnabled: boolean; summaryLength: "brief" | "detailed";
   summariesPath: string | null; codexModel: string | null; ollamaModel: string;
   dictationHotkey: string; dictationMode: "hold" | "toggle"; tidyDictation: boolean; keepDictationAudio: boolean;

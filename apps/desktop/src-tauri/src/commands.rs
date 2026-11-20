@@ -384,6 +384,7 @@ pub async fn get_meeting(state: State<'_, AppState>, id: String) -> R<dto::Meeti
         moments: d.moments.iter().map(dto::MomentDto::from).collect(),
         audio,
         progress: d.progress,
+        echo_cancel: d.echo_cancel,
     })
 }
 
@@ -442,6 +443,9 @@ pub async fn delete_meeting(app: AppHandle, id: String) -> R<()> {
         for t in &tracks {
             let p = PathBuf::from(&t.path);
             let _ = std::fs::remove_file(&p);
+            if t.track == minutae_core::Track::Mic {
+                let _ = std::fs::remove_file(p.with_file_name(minutae_aec::CLEAN_MIC_FILE));
+            }
             if let Some(parent) = p.parent() {
                 dirs.push(parent.to_path_buf());
             }

@@ -50,7 +50,7 @@ const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")
 let settings: AppSettings = {
   appearance: "system", launchAtLogin: true, autoDetectMeetings: true, promptDelaySeconds: 5, stopWhenCallEnds: true,
   includeSystemAudio: true, microphone: null, recordShortcut: "CommandOrControl+Alt+R", transcribeWhere: "local",
-  whisperModel: "small", language: null, labelSpeakers: true, transportOrder: ["codexCli", "ollama", "grokCli"],
+  whisperModel: "small", language: null, labelSpeakers: true, echoCancellation: "auto", transportOrder: ["codexCli", "ollama", "grokCli"],
   apiFallbackEnabled: false, summaryLength: "brief", summariesPath: null, codexModel: null, ollamaModel: "llama3.1:8b",
   dictationHotkey: "Alt+Space", dictationMode: "hold", tidyDictation: true, keepDictationAudio: false,
   vocabulary: ["Minutae", "whisper.cpp", "Priya Raman", "SwiftUI"], deleteAudioAfterDays: 30, recordingsPath: null,
@@ -119,6 +119,7 @@ const baseDetail = (meetingId: string): MeetingDetail => ({
   ],
   audio: params.get("audio") === "1" ? { mic: silentWav(), system: silentWav() } : { mic: null, system: null },
   progress: null,
+  echoCancel: { ran: true, skipped: null, erleDb: 27.4, delayMs: 38, driftPpm: -4.1, elapsedMs: 410 },
 });
 
 /** 2 s of 8 kHz 8-bit mono silence as a data: URL (the browser mock's "file path"). */
