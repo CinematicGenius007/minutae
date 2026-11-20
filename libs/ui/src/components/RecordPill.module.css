@@ -22,9 +22,9 @@
 .pill:disabled { background: var(--surface); color: var(--faint); cursor: default; }
 .pill:disabled .dot { background: var(--faint); }
 
-.live { background: var(--onair); color: var(--on-onair); }
-.live:hover, .live[data-force="hover"] { background: color-mix(in srgb, var(--onair) 90%, black); }
-.live:active, .live[data-force="pressed"] { background: color-mix(in srgb, var(--onair) 80%, black); }
+.live { background: var(--onair-fill); color: var(--on-onair); }
+.live:hover, .live[data-force="hover"] { background: color-mix(in srgb, var(--onair-fill) 90%, black); }
+.live:active, .live[data-force="pressed"] { background: color-mix(in srgb, var(--onair-fill) 80%, black); }
 
 .lead { display: flex; align-items: center; gap: 10px; }
 .dot { width: var(--s-4); height: var(--s-4); border-radius: var(--radius-full); background: var(--onair); flex-shrink: 0; }
