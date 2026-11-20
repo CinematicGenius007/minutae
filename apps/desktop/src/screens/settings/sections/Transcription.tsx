@@ -103,6 +103,15 @@ export function TranscriptionSection({ settings, update }: SectionProps) {
     };
   }, [refresh, toast]);
 
+  // Events can be missed (screen opened mid-download, listener still attaching), so while
+  // anything downloads, also ask the backend every 2 s. Stops as soon as nothing is downloading.
+  const anyDownloading = models?.some((m) => m.state === "downloading") || diarize?.state === "downloading";
+  useEffect(() => {
+    if (!anyDownloading) return;
+    const t = window.setInterval(refresh, 2000);
+    return () => window.clearInterval(t);
+  }, [anyDownloading, refresh]);
+
   const download = (model: WhisperModel) => {
     setModels((ms) => ms?.map((m) => (m.model === model ? { ...m, state: "downloading", fraction: 0 } : m)) ?? ms);
     api.downloadModel(model).catch((e) => {
@@ -255,10 +264,16 @@ export function TranscriptionSection({ settings, update }: SectionProps) {
                       <>
                         <Progress value={m.fraction ?? 0} width={96} label={`${copy.name} model download, ${pct}%`} />
                         <span className={s.progressCaption}>
-                          {pct}% ·{" "}
-                          <button type="button" onClick={() => cancel(m.model)}>
-                            Cancel
-                          </button>
+                          {pct >= 100 ? (
+                            "Checking…"
+                          ) : (
+                            <>
+                              {pct}% ·{" "}
+                              <button type="button" onClick={() => cancel(m.model)}>
+                                Cancel
+                              </button>
+                            </>
+                          )}
                         </span>
                       </>
                     ) : (

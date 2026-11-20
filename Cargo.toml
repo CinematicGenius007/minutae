@@ -33,6 +33,10 @@ chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 dirs = "6"
 
+# Hashing a 0.5–1.6 GB model in an unoptimized dev build takes long enough to look stuck.
+[profile.dev.package.sha2]
+opt-level = 3
+
 [profile.release]
 codegen-units = 1
 lto = true
