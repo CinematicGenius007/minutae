@@ -1,5 +1,6 @@
 import {
   GroupLabel,
+  KeyCap,
   Segmented,
   Select,
   type SelectEntry,
@@ -13,7 +14,7 @@ import {
 import { api } from "../../../lib/api";
 import type { Appearance } from "../../../lib/types";
 import { toKitShortcut } from "../shared/format";
-import { useLoad } from "../../../hooks";
+import { useLoad, useShortcutStatus } from "../../../hooks";
 import s from "../settings.module.css";
 import type { SectionProps } from "./types";
 
@@ -23,6 +24,7 @@ export function GeneralSection({ settings, update }: SectionProps) {
   const platform = usePlatform();
   const theme = useTheme();
   const [devices] = useLoad(() => api.listInputDevices());
+  const shortcuts = useShortcutStatus();
 
   const micOptions: SelectEntry[] = [
     ...(devices.data ?? []).map((d) => ({ value: d.id, label: d.name })),
@@ -98,11 +100,28 @@ export function GeneralSection({ settings, update }: SectionProps) {
             <Toggle id="s-stopend" checked={settings.stopWhenCallEnds} onCheckedChange={(v) => update({ stopWhenCallEnds: v })} />
           }
         />
-        <SettingRow
-          title="Record shortcut"
-          description="Starts or stops a recording from any app."
-          control={<Shortcut keys={toKitShortcut(settings.recordShortcut)} variant="caps" platform={platform} />}
-        />
+        {shortcuts?.backend === "portal" ? (
+          <SettingRow
+            title="Record shortcut"
+            description={
+              shortcuts.recordTrigger
+                ? "Set by your desktop. Starts or stops a recording from any app."
+                : "Not set. Your desktop asks for a key when Minutae starts."
+            }
+            control={shortcuts.recordTrigger ? <KeyCap size="lg">{shortcuts.recordTrigger}</KeyCap> : null}
+          />
+        ) : shortcuts?.backend === "unavailable" ? (
+          <SettingRow
+            title="Record shortcut"
+            description="Your desktop doesn’t let apps set global shortcuts. Settings → Dictation shows a command to bind instead."
+          />
+        ) : (
+          <SettingRow
+            title="Record shortcut"
+            description="Starts or stops a recording from any app."
+            control={<Shortcut keys={toKitShortcut(settings.recordShortcut)} variant="caps" platform={platform} />}
+          />
+        )}
       </section>
 
       <section className={s.group} aria-labelledby="g-app">

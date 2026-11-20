@@ -85,12 +85,18 @@ This is the part that decides whether the design is "honestly implementable".
 | Detect a call (mic used by another app) | `kAudioDevicePropertyDeviceIsRunningSomewhere` (exists in legacy) | Capability Access Manager consent store (mic in-use entries) | PipeWire / Pulse source-outputs | own code |
 | Transcription | whisper.cpp + Metal | whisper.cpp + Vulkan/CUDA, CPU fallback | same as Windows | `whisper-rs` |
 | Who said what (diarization) | sherpa-onnx (pyannote segmentation + speaker embedding), CPU / CoreML | sherpa-onnx CPU / CUDA | sherpa-onnx CPU | official `sherpa-onnx` crate |
-| Global hold-to-talk hotkey | Yes (needs Accessibility) | Yes | X11 yes; Wayland through the GlobalShortcuts portal (desktop-dependent) | `tauri-plugin-global-shortcut` (pressed/released) |
+| Global hold-to-talk hotkey | Yes (needs Accessibility) | Yes | X11 yes; Wayland through the GlobalShortcuts portal (desktop-dependent, see below) | `tauri-plugin-global-shortcut` (pressed/released); Wayland: `ashpd` (zbus, pure Rust) |
 | Type text into other apps | Paste via clipboard + simulated ⌘V, then restore the clipboard | Same with Ctrl+V | X11 yes; Wayland: copy plus a toast fallback | `enigo`, `arboard` |
 | HUD / prompt that never steals focus | NSPanel | Non-activating, always-on-top window | Best effort | `tauri-nspanel` (macOS), window flags |
 | Tray / menu bar | Menu bar extra | Tray | AppIndicator | Tauri tray |
 | Secrets (API keys) | Keychain | Credential Manager | Secret Service | `keyring` |
 | Open at login, updater, notifications | Yes | Yes | Yes | Tauri plugins |
+
+**Wayland shortcuts.** X11 key grabs don't work on Wayland, so on a Wayland session (`XDG_SESSION_TYPE` / `WAYLAND_DISPLAY`; `MINUTAE_SHORTCUTS=portal|native` overrides) the app binds "dictate" and "record" through `org.freedesktop.portal.GlobalShortcuts` (`minutae-dictation::shortcuts`, `platform/portal.rs`) instead of the plugin:
+
+- The user's accelerators go to `BindShortcuts` as preferred triggers only; the desktop shows its own dialog and owns the keys. Settings shows the trigger it returned and, when the portal is version 2+, a "Change in system settings" button (`ConfigureShortcuts`).
+- `Activated` → press, `Deactivated` → release, so hold-to-talk works where the compositor sends both. If a second `Activated` arrives with no `Deactivated` in between, or `Deactivated` arrives under 20 ms after `Activated`, releases are treated as missing: dictation switches to press-to-toggle for the session and Settings says so.
+- No portal (older GNOME, some compositors): Settings explains it and offers `minutae --toggle-dictation` / `--toggle-recording` to bind as custom desktop shortcuts. tauri-plugin-single-instance forwards the flags to the running app.
 
 **Prior art:** Meetily (open source, Tauri + Rust) records mic + system audio and transcribes locally on all three OSes using the same APIs (WASAPI loopback, ScreenCaptureKit/CoreAudio, Pulse monitor sources). So the approach is proven, not hypothetical.
 
@@ -152,7 +158,7 @@ This is the part that decides whether the design is "honestly implementable".
 | Risk | Handling |
 |---|---|
 | Linux WebKitGTK renders CSS differently or slower | Bundled fonts; no exotic CSS (no `backdrop-filter`); screenshot test run on Linux in CI |
-| Wayland limits global hotkeys and typing into apps | Detect Wayland; use the portal shortcut; fall back to "copied, press Ctrl+V" with a toast. X11 works fully |
+| Wayland limits global hotkeys and typing into apps | Detect Wayland; use the GlobalShortcuts portal (toggle when the compositor sends no releases; CLI flags when there is no portal); fall back to "copied, press Ctrl+V" with a toast. X11 works fully |
 | macOS < 14.4 has no process taps | ScreenCaptureKit audio fallback (needs the Screen Recording permission). Document 13+ as the minimum |
 | Diarization quality varies | Two-track recording removes most of the problem; spike measures accuracy on real recordings first |
 | GPU acceleration differs per machine | whisper.cpp CPU path always works; GPU is detected and optional; model size suggested by hardware |
