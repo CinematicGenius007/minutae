@@ -412,6 +412,49 @@ pub struct PlatformInfo {
     pub app_version: String,
 }
 
+/// How global shortcuts reach the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ShortcutBackend {
+    /// tauri-plugin-global-shortcut (macOS, Windows, X11). Keys come from settings.
+    Native,
+    /// XDG GlobalShortcuts portal (Wayland). The desktop owns the keys.
+    Portal,
+    /// Wayland without a usable portal: no global shortcuts; use the CLI flags.
+    Unavailable,
+}
+
+/// Settings → Dictation shows this. Pushed again on `shortcuts://changed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutStatus {
+    pub backend: ShortcutBackend,
+    /// Portal only: the trigger the desktop assigned, as it describes it. `null` when
+    /// unassigned or not yet bound.
+    pub dictate_trigger: Option<String>,
+    pub record_trigger: Option<String>,
+    /// The portal can open its own shortcut settings (`configure_shortcuts`).
+    pub can_configure: bool,
+    /// `false` once the desktop is known not to report key releases (hold-to-talk then
+    /// works as press-to-toggle); `null` until known. Always `true` for `native`.
+    pub hold_supported: Option<bool>,
+    /// Why the portal is unavailable, or what went wrong binding (one sentence).
+    pub detail: Option<String>,
+}
+
+impl ShortcutStatus {
+    pub fn native() -> Self {
+        Self {
+            backend: ShortcutBackend::Native,
+            dictate_trigger: None,
+            record_trigger: None,
+            can_configure: false,
+            hold_supported: Some(true),
+            detail: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ModelState {
@@ -556,6 +599,7 @@ pub mod ev {
     pub const MODEL_PROGRESS: &str = "model://progress";
     pub const SETTINGS_CHANGED: &str = "settings://changed";
     pub const NAVIGATE: &str = "nav://goto";
+    pub const SHORTCUTS_CHANGED: &str = "shortcuts://changed";
 }
 
 #[cfg(test)]
@@ -983,6 +1027,30 @@ mod tests {
         let v = serde_json::to_value(&info).unwrap();
         assert_eq!(v["os"], "macos");
         assert_eq!(v["sessionKind"], "x11");
+        let st = ShortcutStatus {
+            backend: ShortcutBackend::Portal,
+            dictate_trigger: Some("Alt+Space".into()),
+            record_trigger: None,
+            can_configure: true,
+            hold_supported: None,
+            detail: None,
+        };
+        assert_keys(
+            &st,
+            &[
+                "backend",
+                "dictateTrigger",
+                "recordTrigger",
+                "canConfigure",
+                "holdSupported",
+                "detail",
+            ],
+        );
+        assert_eq!(serde_json::to_value(&st).unwrap()["backend"], "portal");
+        assert_eq!(
+            serde_json::to_value(ShortcutStatus::native()).unwrap()["holdSupported"],
+            true
+        );
     }
 
     #[test]

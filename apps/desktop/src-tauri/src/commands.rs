@@ -36,6 +36,16 @@ pub fn platform(app: AppHandle) -> dto::PlatformInfo {
 }
 
 #[tauri::command]
+pub fn shortcut_status(state: State<'_, AppState>) -> dto::ShortcutStatus {
+    state.shortcut_status()
+}
+
+#[tauri::command]
+pub async fn configure_shortcuts(app: AppHandle) -> R<()> {
+    crate::portal::configure(&app).await
+}
+
+#[tauri::command]
 pub fn get_settings(state: State<'_, AppState>) -> AppSettings {
     state.settings()
 }

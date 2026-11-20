@@ -194,18 +194,38 @@ pub fn init(app: &AppHandle, rt: tokio::runtime::Handle) {
     });
 }
 
-/// Hotkey presses (`true`) and releases (`false`) are applied in order on one worker
-/// thread: `key_down`/`key_up` start/stop the mic (and stitch + read the clip), which
-/// must not block the main thread that delivers global-shortcut events.
+/// A dictation key event from a global shortcut (plugin or portal) or the CLI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictationKey {
+    Down,
+    Up,
+    /// `--toggle-dictation`: start or stop whatever the hotkey mode.
+    Toggle,
+}
+
+/// Queue a key event for the dictation worker.
+pub fn send_key(app: &AppHandle, key: DictationKey) {
+    if let Some(tx) = app.state::<AppState>().dictation_keys.get() {
+        let _ = tx.send(key);
+    }
+}
+
+/// Hotkey presses and releases are applied in order on one worker thread:
+/// `key_down`/`key_up` start/stop the mic (and stitch + read the clip), which must not
+/// block the main thread that delivers global-shortcut events.
 fn spawn_key_worker(app: &AppHandle) {
-    let (tx, rx) = std::sync::mpsc::channel::<bool>();
+    let (tx, rx) = std::sync::mpsc::channel::<DictationKey>();
     let a = app.clone();
     let spawned = std::thread::Builder::new()
         .name("minutae-dictation-keys".into())
         .spawn(move || {
-            while let Ok(down) = rx.recv() {
+            while let Ok(key) = rx.recv() {
                 if let Some(c) = a.state::<AppState>().dictation.get() {
-                    if down { c.key_down() } else { c.key_up() }
+                    match key {
+                        DictationKey::Down => c.key_down(),
+                        DictationKey::Up => c.key_up(),
+                        DictationKey::Toggle => c.toggle(),
+                    }
                 }
             }
         });
@@ -269,14 +289,37 @@ fn on_hud(app: &AppHandle, h: &HudState) {
 }
 
 pub fn apply_settings(app: &AppHandle, settings: &AppSettings) {
-    if let Some(c) = app.state::<AppState>().dictation.get() {
-        c.set_config(DictationConfig::from_settings(settings));
+    let st = app.state::<AppState>();
+    if let Some(c) = st.dictation.get() {
+        c.set_config(config_for(settings, st.hold_supported()));
     }
+}
+
+/// The controller config: the user's settings, except hold becomes toggle when the
+/// shortcut backend never reports key releases (some Wayland portals).
+pub fn config_for(settings: &AppSettings, hold_supported: Option<bool>) -> DictationConfig {
+    let mut c = DictationConfig::from_settings(settings);
+    if hold_supported == Some(false) {
+        c.mode = minutae_core::HotkeyMode::Toggle;
+    }
+    c
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hold_becomes_toggle_without_releases() {
+        use minutae_core::HotkeyMode;
+        let s = AppSettings {
+            dictation_mode: HotkeyMode::Hold,
+            ..AppSettings::default()
+        };
+        assert_eq!(config_for(&s, Some(true)).mode, HotkeyMode::Hold);
+        assert_eq!(config_for(&s, None).mode, HotkeyMode::Hold);
+        assert_eq!(config_for(&s, Some(false)).mode, HotkeyMode::Toggle);
+    }
 
     #[test]
     fn dictation_audio_is_16k_mono_pcm() {

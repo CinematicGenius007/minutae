@@ -145,7 +145,11 @@ pub struct AppState {
     /// Last export archive, so the UI may reveal it (it lives outside the data folder).
     pub last_export: Mutex<Option<PathBuf>>,
     /// Dictation hotkey presses/releases, handled in order off the main thread.
-    pub dictation_keys: OnceLock<std::sync::mpsc::Sender<bool>>,
+    pub dictation_keys: OnceLock<std::sync::mpsc::Sender<crate::dictation::DictationKey>>,
+    /// Which global shortcut backend is live and what it bound (Settings → Dictation).
+    pub shortcut_status: Mutex<crate::dto::ShortcutStatus>,
+    /// The portal backend once bound (Wayland), for `configure_shortcuts`.
+    pub shortcut_portal: OnceLock<Arc<dyn minutae_dictation::ShortcutPortal>>,
 }
 
 impl AppState {
@@ -177,7 +181,23 @@ impl AppState {
             picked_folders: Mutex::new(Default::default()),
             last_export: Mutex::new(None),
             dictation_keys: OnceLock::new(),
+            shortcut_status: Mutex::new(crate::dto::ShortcutStatus::native()),
+            shortcut_portal: OnceLock::new(),
         }
+    }
+
+    pub fn shortcut_status(&self) -> crate::dto::ShortcutStatus {
+        self.shortcut_status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn hold_supported(&self) -> Option<bool> {
+        self.shortcut_status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .hold_supported
     }
 
     pub fn settings(&self) -> AppSettings {
