@@ -159,6 +159,12 @@ unsafe extern "C" fn progress_trampoline(
     cb((pct.clamp(0, 100) as f32) / 100.0);
 }
 
+/// Encoder context for a clip of `samples` (16 kHz): whisper's encoder emits 50 positions
+/// per second (1500 = the full 30 s window). A margin keeps the clip's end intact.
+fn short_clip_audio_ctx(samples: usize) -> i32 {
+    (samples.div_ceil(320) + 64).clamp(256, 1500) as i32
+}
+
 /// whisper.cpp emits bracketed non-speech markers like `[BLANK_AUDIO]` or `(music)`.
 fn is_non_speech(text: &str) -> bool {
     let t = text.trim();
@@ -221,6 +227,9 @@ impl Transcriber for WhisperTranscriber {
         }
         params.set_translate(false);
         params.set_no_context(true);
+        if opts.short_clip {
+            params.set_audio_ctx(short_clip_audio_ctx(audio.len()));
+        }
         params.set_suppress_nst(true);
         params.set_print_special(false);
         params.set_print_progress(false);
@@ -292,6 +301,13 @@ impl Transcriber for WhisperTranscriber {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_clip_context_scales_with_length() {
+        assert_eq!(short_clip_audio_ctx(16_000), 256); // floor
+        assert_eq!(short_clip_audio_ctx(64_000), 264); // 4 s = 200 + margin
+        assert_eq!(short_clip_audio_ctx(16_000 * 60), 1500); // capped at the full window
+    }
 
     #[test]
     fn non_speech_markers() {

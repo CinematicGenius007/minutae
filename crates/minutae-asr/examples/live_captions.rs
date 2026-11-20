@@ -7,7 +7,9 @@
 //! cargo run --release -p minutae-asr --example live_captions -- \
 //!     --model ~/Library/Minutae/models/ggml-base.bin --mic /tmp/you.wav [--system them.wav] [--speed 1]
 //! ```
-//! `--speed 4` feeds 4x faster than real time (to see the drop policy at work).
+//! `--speed 4` feeds 4x faster than real time (to see the drop policy at work);
+//! `--full-context` turns off `short_clip`; `--bench` first times one 4 s clip both ways.
+//! Reads files only; never opens an audio device.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -56,7 +58,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let whisper = Arc::new(WhisperTranscriber::new(&model));
     let t0 = Instant::now();
     whisper.preload()?;
-    println!("model {} loaded in {:?}", whisper.model_name(), t0.elapsed());
+    println!(
+        "model {} loaded in {:?}",
+        whisper.model_name(),
+        t0.elapsed()
+    );
 
     let started = Instant::now();
     let log: Arc<Mutex<Vec<(Duration, Caption)>>> = Arc::default();
@@ -83,11 +89,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         threads: Some(threads),
         ..Default::default()
     };
+    // One 4 s clip of the input, timed with and without `short_clip`.
+    let clip: Vec<f32> = mic
+        .iter()
+        .chain(system.iter())
+        .copied()
+        .take(64_000)
+        .collect();
+    let bench = if args.iter().any(|a| a == "--bench") {
+        2
+    } else {
+        0
+    };
+    for short_clip in [false, true].repeat(bench) {
+        let o = TranscribeOptions {
+            short_clip,
+            ..opts.clone()
+        };
+        let t = Instant::now();
+        let text = whisper.transcribe_text(&clip, &o)?;
+        println!("bench short_clip={short_clip}: {:?} {text:?}", t.elapsed());
+    }
+    let short_clip = !args.iter().any(|a| a == "--full-context");
     let cpu0 = cpu_time();
     let (engine, mut mic_feed, mut sys_feed) = CaptionEngine::start(
         whisper.clone() as Arc<dyn Transcriber>,
         opts,
-        CaptionConfig::default(),
+        CaptionConfig {
+            short_clip,
+            ..Default::default()
+        },
         sink,
     )?;
 
@@ -141,4 +172,3 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(whisper.unload_and_wait(Duration::from_secs(5)));
     Ok(())
 }
-

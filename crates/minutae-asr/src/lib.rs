@@ -93,6 +93,10 @@ pub struct TranscribeOptions {
     pub beam_size: Option<u32>,
     /// Set to `true` from another thread to abort a running transcription.
     pub cancel: Option<Arc<AtomicBool>>,
+    /// Size whisper's audio context to the clip instead of a full 30 s window. Several
+    /// times faster for clips of a few seconds, slightly less accurate. For live captions;
+    /// leave off for full transcripts.
+    pub short_clip: bool,
 }
 
 impl std::fmt::Debug for TranscribeOptions {
@@ -103,6 +107,7 @@ impl std::fmt::Debug for TranscribeOptions {
             .field("threads", &self.threads)
             .field("beam_size", &self.beam_size)
             .field("cancellable", &self.cancel.is_some())
+            .field("short_clip", &self.short_clip)
             .finish()
     }
 }

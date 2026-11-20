@@ -54,6 +54,8 @@ pub struct CaptionConfig {
     pub speech_rms: f32,
     /// Capacity of each track's feed ring (absorbs pump stalls).
     pub ring_ms: u32,
+    /// Transcribe with [`TranscribeOptions::short_clip`].
+    pub short_clip: bool,
 }
 
 impl Default for CaptionConfig {
@@ -66,6 +68,7 @@ impl Default for CaptionConfig {
             queue_capacity: 3,
             speech_rms: 0.008,
             ring_ms: 30_000,
+            short_clip: true,
         }
     }
 }
@@ -131,6 +134,9 @@ pub struct Job {
     pub samples: Vec<f32>,
     /// Partial text currently on screen for this line (finals only).
     shown: Option<String>,
+    /// The audio before this window wasn't transcribed (silence, a drop, a gap, a pause),
+    /// so there is no overlap to remove.
+    fresh: bool,
 }
 
 struct Line {
@@ -144,6 +150,8 @@ struct Line {
     partial_len: usize,
     /// Raw text of the previous final window, for overlap de-duplication.
     last_final: String,
+    /// The next window follows audio that wasn't transcribed (see [`Job::fresh`]).
+    fresh_next: bool,
 }
 
 /// Synchronous caption state machine. See the module docs.
@@ -173,6 +181,7 @@ impl CaptionCore {
             shown: None,
             partial_len: 0,
             last_final: String::new(),
+            fresh_next: true,
         };
         Self {
             cfg,
@@ -264,6 +273,7 @@ impl CaptionCore {
         let line = &mut self.lines[i];
         line.buf.clear();
         line.partial_len = 0;
+        line.fresh_next = true;
     }
 
     /// The current line ends without a window: keep its partial text as final.
@@ -297,11 +307,13 @@ impl CaptionCore {
             start: line.buf_start,
             samples,
             shown,
+            fresh: std::mem::take(&mut line.fresh_next),
         };
         if !speech {
             self.stats.silent += 1;
-            // Silence after speech: the next window starts fresh (no overlap to remove).
-            line.last_final.clear();
+            // The next window starts fresh. Not clearing `last_final` here: windows still
+            // queued need it, and they complete in order.
+            line.fresh_next = true;
             if let Some(c) = finalize_shown(&job) {
                 out.push(c);
             }
@@ -314,6 +326,15 @@ impl CaptionCore {
             tracing::debug!(target: "minutae_asr::captions", id = old.id, "caption window dropped (behind)");
             if let Some(c) = finalize_shown(&old) {
                 out.push(c);
+            }
+            // Its successor has no transcribed predecessor to de-duplicate against.
+            match self.queue.iter_mut().find(|q| q.track == old.track) {
+                Some(next) => next.fresh = true,
+                None if old.track == job.track => {
+                    self.queue.push_back(Job { fresh: true, ..job });
+                    return;
+                }
+                None => self.lines[idx(old.track)].fresh_next = true,
             }
         }
         self.queue.push_back(job);
@@ -345,6 +366,7 @@ impl CaptionCore {
             start: line.buf_start,
             samples: line.buf.clone(),
             shown: None,
+            fresh: line.fresh_next,
         })
     }
 
@@ -359,7 +381,12 @@ impl CaptionCore {
             JobKind::Final => {
                 self.stats.finals += 1;
                 let text = text.trim();
-                let new = dedupe_overlap(&line.last_final, text);
+                let prev = if job.fresh {
+                    ""
+                } else {
+                    line.last_final.as_str()
+                };
+                let new = dedupe_overlap(prev, text);
                 line.last_final = text.to_string();
                 if new.is_empty() && job.shown.is_none() {
                     return None;
@@ -374,17 +401,22 @@ impl CaptionCore {
                 })
             }
             JobKind::Partial => {
-                let new = dedupe_overlap(&line.last_final, text.trim());
+                let prev = if job.fresh {
+                    ""
+                } else {
+                    line.last_final.as_str()
+                };
+                let new = dedupe_overlap(prev, text.trim());
                 if new.is_empty() {
                     return None;
                 }
                 if line.id == job.id {
                     line.shown = Some(new.clone());
-                } else if let Some(q) = self.queue.iter_mut().find(|q| q.id == job.id) {
-                    // The window was cut while this partial ran; it still shows until then.
-                    q.shown = Some(new.clone());
                 } else {
-                    return None; // line already closed (pause, drop): don't resurrect it
+                    // The window was cut while this partial ran; it still shows until then.
+                    // No queued window = the line is closed (pause, drop): don't resurrect it.
+                    let q = self.queue.iter_mut().find(|q| q.id == job.id)?;
+                    q.shown = Some(new.clone());
                 }
                 self.stats.partials += 1;
                 Some(Caption {
@@ -425,6 +457,7 @@ impl CaptionCore {
                 let line = &mut self.lines[i];
                 line.buf.clear();
                 line.last_final.clear();
+                line.fresh_next = true;
             }
         }
         out
@@ -580,6 +613,7 @@ impl CaptionEngine {
         let ring = CaptionConfig::samples(cfg.ring_ms).max(RATE as usize);
         let stop = Arc::new(AtomicBool::new(false));
         opts.cancel = Some(stop.clone());
+        opts.short_clip = cfg.short_clip;
         let shared = Arc::new(Shared {
             core: Mutex::new(CaptionCore::new(cfg)),
             wake: Condvar::new(),
@@ -764,11 +798,13 @@ fn worker_loop(shared: &Shared, t: &dyn Transcriber, opts: &TranscribeOptions, s
 }
 
 /// Run captions below normal priority so recording, the UI and the final pipeline win.
+/// macOS: the default QoS class at its lowest relative priority. (`UTILITY` was tried: on a
+/// busy machine it starved the worker until no caption came out at all.)
 fn lower_thread_priority() {
     #[cfg(target_os = "macos")]
     // SAFETY: sets the calling thread's QoS class; no pointers involved.
     unsafe {
-        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0);
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_DEFAULT, -15);
     }
     #[cfg(target_os = "linux")]
     // SAFETY: on Linux, PRIO_PROCESS with who = 0 changes the calling thread's nice value.
@@ -871,6 +907,47 @@ mod tests {
         assert_eq!((a.start_ms, a.end_ms), (0, 4_000));
         assert_eq!((b.start_ms, b.end_ms), (3_500, 7_500));
         assert_eq!(b.track, Track::System);
+    }
+
+    #[test]
+    fn dedupe_uses_window_order_not_cut_order() {
+        let mut c = core();
+        let mut at = 0;
+        // Two speech windows queue up, then a silent one is cut before either completes.
+        feed(&mut c, Track::System, &mut at, &tone(7.5));
+        feed(&mut c, Track::System, &mut at, &silence(8.0));
+        assert_eq!((c.stats().windows, c.stats().silent), (4, 1));
+        let w1 = c.next_job().unwrap();
+        let w2 = c.next_job().unwrap();
+        let w3 = c.next_job().unwrap(); // 7–11 s: the last 0.5 s of speech
+        c.complete(w1, "so Bob is looking", Duration::ZERO);
+        let b = c
+            .complete(w2, "is looking at the budget", Duration::ZERO)
+            .unwrap();
+        assert_eq!(b.text, "at the budget");
+        assert!(c.complete(w3, "", Duration::ZERO).is_none());
+        // After the silence the next window is not de-duplicated against old text.
+        feed(&mut c, Track::System, &mut at, &tone(4.0));
+        let w = c.next_job().unwrap();
+        let fresh = c.complete(w, "the budget is fine", Duration::ZERO).unwrap();
+        assert_eq!(fresh.text, "the budget is fine");
+    }
+
+    #[test]
+    fn window_after_a_dropped_one_is_not_deduplicated() {
+        let mut c = CaptionCore::new(CaptionConfig {
+            queue_capacity: 1,
+            ..Default::default()
+        });
+        let mut at = 0;
+        feed(&mut c, Track::Mic, &mut at, &tone(4.0));
+        let w1 = c.next_job().unwrap();
+        c.complete(w1, "we will ship in May", Duration::ZERO);
+        feed(&mut c, Track::Mic, &mut at, &tone(7.0)); // windows 2 and 3; 2 is dropped
+        assert_eq!(c.stats().dropped, 1);
+        let w3 = c.next_job().unwrap();
+        let t = c.complete(w3, "in May we review", Duration::ZERO).unwrap();
+        assert_eq!(t.text, "in May we review", "no overlap with window 1");
     }
 
     #[test]
