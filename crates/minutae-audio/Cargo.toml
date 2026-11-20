@@ -12,12 +12,17 @@ thiserror.workspace = true
 tracing.workspace = true
 cpal = "0.18"
 hound = "3.5"
+# Lock-free SPSC ring between the realtime callback and the writer (no allocation on the audio thread).
+rtrb = "0.4"
 tokio = { workspace = true }
 
 # Linux: PulseAudio host (pure Rust client; works on PipeWire via pipewire-pulse)
 # so the default sink's `.monitor` source can be recorded.
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "0.18", features = ["pulseaudio"] }
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [features]
 # Native PipeWire host on Linux (needs libpipewire-0.3 headers + clang to build).

@@ -368,10 +368,74 @@ fn job_state_transitions() {
     );
     assert_eq!(s.recover_running_jobs().unwrap(), 1);
     let j2 = s.get_job(j.id).unwrap().unwrap();
-    assert_eq!((j2.state, j2.attempts), (JobState::Queued, 0));
+    // The interrupted attempt counts.
+    assert_eq!((j2.state, j2.attempts), (JobState::Queued, 1));
     assert!(s.cancel_job(j.id).unwrap());
     assert!(!s.cancel_job(j.id).unwrap());
     assert!(s.requeue_job(j.id).unwrap());
+}
+
+#[test]
+fn crash_looping_job_stops_after_max_attempts() {
+    let s = Store::open_in_memory().unwrap();
+    let j = s
+        .insert_job(&NewJob::new(
+            JobKind::Transcribe,
+            serde_json::json!({}),
+            None,
+        ))
+        .unwrap();
+    assert_eq!(j.max_attempts, 2);
+    // Each launch claims the job and the process dies mid-run.
+    s.claim_job(j.id).unwrap().unwrap();
+    assert_eq!(s.recover_running_jobs().unwrap(), 1);
+    s.claim_job(j.id).unwrap().unwrap();
+    assert_eq!(s.recover_running_jobs().unwrap(), 0);
+    let j2 = s.get_job(j.id).unwrap().unwrap();
+    assert_eq!((j2.state, j2.attempts), (JobState::Failed, 2));
+    assert!(j2.last_error.is_some());
+    assert!(s.claim_job(j.id).unwrap().is_none());
+}
+
+#[test]
+fn graceful_release_refunds_attempt() {
+    let s = Store::open_in_memory().unwrap();
+    let j = s
+        .insert_job(&NewJob::new(
+            JobKind::Summarize,
+            serde_json::json!({}),
+            None,
+        ))
+        .unwrap();
+    s.claim_job(j.id).unwrap().unwrap();
+    assert!(s.release_job(j.id).unwrap());
+    let j2 = s.get_job(j.id).unwrap().unwrap();
+    assert_eq!((j2.state, j2.attempts), (JobState::Queued, 0));
+}
+
+#[test]
+fn progress_is_ignored_once_job_finished() {
+    let s = Store::open_in_memory().unwrap();
+    let j = s
+        .insert_job(&NewJob::new(
+            JobKind::Summarize,
+            serde_json::json!({}),
+            None,
+        ))
+        .unwrap();
+    s.claim_job(j.id).unwrap().unwrap();
+    assert!(s.complete_job(j.id).unwrap());
+    s.set_job_progress(
+        j.id,
+        &Progress {
+            meeting_id: None,
+            stage: Stage::Summarizing,
+            fraction: 0.4,
+            eta_seconds: None,
+        },
+    )
+    .unwrap();
+    assert!(s.get_job(j.id).unwrap().unwrap().progress.is_none());
 }
 
 #[test]
@@ -537,4 +601,52 @@ fn search_10k_segments_under_100ms() {
             "{q}: {el:?}"
         );
     }
+}
+
+#[test]
+fn title_search_folds_non_ascii_case() {
+    let s = Store::open_in_memory().unwrap();
+    let m = meeting("Über Sync", Utc::now());
+    s.create_meeting(&m).unwrap();
+    let titles = |q: &str| -> Vec<String> {
+        s.search(q, &SearchFilters::default())
+            .unwrap()
+            .into_iter()
+            .filter(|h| h.kind == HitKind::Meeting)
+            .map(|h| h.title)
+            .collect()
+    };
+    assert_eq!(titles("über"), vec!["Über Sync".to_string()]);
+    assert_eq!(titles("ÜBER sy"), vec!["Über Sync".to_string()]);
+    // Renames keep the search key in step.
+    s.rename_meeting(m.id, "Ärger Review").unwrap();
+    assert!(titles("über").is_empty());
+    assert_eq!(titles("ärger"), vec!["Ärger Review".to_string()]);
+    let mut m2 = s.get_meeting(m.id).unwrap().unwrap();
+    m2.title = "ÉTÉ Planning".into();
+    s.update_meeting(&m2).unwrap();
+    assert_eq!(titles("été"), vec!["ÉTÉ Planning".to_string()]);
+}
+
+#[test]
+fn v2_migration_backfills_title_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("m.db");
+    let s = Store::open(&path).unwrap();
+    let m = meeting("Über Sync", Utc::now());
+    s.create_meeting(&m).unwrap();
+    // Roll the file back to a v1 database.
+    s.write(|c| {
+        c.execute_batch("ALTER TABLE meetings DROP COLUMN title_lc; PRAGMA user_version = 1;")?;
+        Ok(())
+    })
+    .unwrap();
+    drop(s);
+    let s = Store::open(&path).unwrap();
+    assert_eq!(s.schema_version().unwrap(), schema::SCHEMA_VERSION);
+    let hits = s.search("über", &SearchFilters::default()).unwrap();
+    assert!(
+        hits.iter()
+            .any(|h| h.kind == HitKind::Meeting && h.meeting_id == Some(m.id))
+    );
 }

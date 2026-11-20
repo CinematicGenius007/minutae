@@ -1,6 +1,6 @@
 //! RMS level metering and the recording clock.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Accumulates sum of squares between reads.
@@ -41,8 +41,12 @@ pub fn rms(samples: &[f32]) -> f32 {
     (sq / samples.len() as f64).sqrt() as f32
 }
 
+/// Source of "now"; injectable so tests don't depend on scheduler timing.
+pub type TimeSource = Arc<dyn Fn() -> Instant + Send + Sync>;
+
 /// Wall clock that excludes paused time.
 pub struct Clock {
+    now: TimeSource,
     inner: Mutex<ClockInner>,
 }
 
@@ -55,9 +59,15 @@ struct ClockInner {
 
 impl Clock {
     pub fn new() -> Self {
+        Self::with_source(Arc::new(Instant::now))
+    }
+
+    pub fn with_source(now: TimeSource) -> Self {
+        let start = now();
         Self {
+            now,
             inner: Mutex::new(ClockInner {
-                start: Instant::now(),
+                start,
                 paused_total: Duration::ZERO,
                 paused_since: None,
                 frozen: None,
@@ -70,9 +80,13 @@ impl Clock {
         if let Some(f) = c.frozen {
             return f;
         }
-        let now = Instant::now();
-        let paused_now = c.paused_since.map(|p| now - p).unwrap_or_default();
-        (now - c.start).saturating_sub(c.paused_total + paused_now)
+        let now = (self.now)();
+        let paused_now = c
+            .paused_since
+            .map(|p| now.saturating_duration_since(p))
+            .unwrap_or_default();
+        now.saturating_duration_since(c.start)
+            .saturating_sub(c.paused_total + paused_now)
     }
 
     pub fn active_samples(&self, rate: u32) -> u64 {
@@ -82,21 +96,21 @@ impl Clock {
     pub fn pause(&self) {
         let mut c = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if c.paused_since.is_none() {
-            c.paused_since = Some(Instant::now());
+            c.paused_since = Some((self.now)());
         }
     }
 
     pub fn resume(&self) {
         let mut c = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(p) = c.paused_since.take() {
-            c.paused_total += p.elapsed();
+            c.paused_total += (self.now)().saturating_duration_since(p);
         }
     }
 
     /// Reset time zero to now (clears pauses).
     pub fn restart(&self) {
         let mut c = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        c.start = Instant::now();
+        c.start = (self.now)();
         c.paused_total = Duration::ZERO;
         c.paused_since = None;
         c.frozen = None;
@@ -116,7 +130,7 @@ impl Default for Clock {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -138,24 +152,36 @@ mod tests {
         assert_eq!(m.take(), 0.0);
     }
 
+    /// Manually advanced time source.
+    pub(crate) fn manual_time() -> (TimeSource, Arc<Mutex<Instant>>) {
+        let t = Arc::new(Mutex::new(Instant::now()));
+        let t2 = t.clone();
+        (Arc::new(move || *t2.lock().unwrap()), t)
+    }
+
+    pub(crate) fn advance(t: &Mutex<Instant>, ms: u64) {
+        *t.lock().unwrap() += Duration::from_millis(ms);
+    }
+
     #[test]
     fn clock_excludes_pause() {
-        let c = Clock::new();
-        std::thread::sleep(Duration::from_millis(30));
+        let (src, t) = manual_time();
+        let c = Clock::with_source(src);
+        advance(&t, 30);
         c.pause();
         let at_pause = c.active();
-        std::thread::sleep(Duration::from_millis(50));
-        assert!(c.active() - at_pause < Duration::from_millis(5));
+        assert_eq!(at_pause, Duration::from_millis(30));
+        advance(&t, 50);
+        assert_eq!(c.active(), at_pause);
+        c.pause(); // idempotent
         c.resume();
-        std::thread::sleep(Duration::from_millis(20));
-        let a = c.active();
-        assert!(
-            a >= Duration::from_millis(50) && a < Duration::from_millis(90),
-            "{a:?}"
-        );
+        advance(&t, 20);
+        assert_eq!(c.active(), Duration::from_millis(50));
+        assert_eq!(c.active_samples(16_000), 800);
         c.freeze();
-        let f = c.active();
-        std::thread::sleep(Duration::from_millis(10));
-        assert_eq!(c.active(), f);
+        advance(&t, 10);
+        assert_eq!(c.active(), Duration::from_millis(50));
+        c.restart();
+        assert_eq!(c.active(), Duration::ZERO);
     }
 }

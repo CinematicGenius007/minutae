@@ -144,6 +144,21 @@ unsafe extern "C" fn abort_trampoline(data: *mut c_void) -> bool {
     unsafe { (*(data as *const AtomicBool)).load(Ordering::Relaxed) }
 }
 
+/// whisper.cpp progress callback: `data` points at the caller's [`ProgressFn`].
+unsafe extern "C" fn progress_trampoline(
+    _ctx: *mut whisper_rs_sys::whisper_context,
+    _state: *mut whisper_rs_sys::whisper_state,
+    pct: std::os::raw::c_int,
+    data: *mut c_void,
+) {
+    if data.is_null() {
+        return;
+    }
+    // SAFETY: set from `&ProgressFn`, alive for the whole `full()` call.
+    let cb = unsafe { &*(data as *const ProgressFn) };
+    cb((pct.clamp(0, 100) as f32) / 100.0);
+}
+
 /// whisper.cpp emits bracketed non-speech markers like `[BLANK_AUDIO]` or `(music)`.
 fn is_non_speech(text: &str) -> bool {
     let t = text.trim();
@@ -211,9 +226,16 @@ impl Transcriber for WhisperTranscriber {
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
-        if let Some(cb) = progress.clone() {
-            params
-                .set_progress_callback_safe(move |pct: i32| cb((pct.clamp(0, 100) as f32) / 100.0));
+        // `set_progress_callback_safe` leaks its boxed closure on every call (whisper-rs
+        // never frees it), so use the raw API like the abort callback below: user data
+        // points at `progress`, which lives on this stack frame until after `state.full`.
+        if let Some(cb) = progress.as_ref() {
+            // SAFETY: `progress_trampoline` only calls the `ProgressFn` behind the pointer,
+            // and `progress` outlives `state.full` (it is used again after it returns).
+            unsafe {
+                params.set_progress_callback(Some(progress_trampoline));
+                params.set_progress_callback_user_data(cb as *const ProgressFn as *mut c_void);
+            }
         }
         // whisper-rs 0.16's `set_abort_callback_safe` casts its user data to the wrong
         // type (it boxes a `Box<dyn FnMut>` but the trampoline reads it as `F`), so the
@@ -278,6 +300,28 @@ mod tests {
         assert!(is_non_speech("   "));
         assert!(!is_non_speech("Hello (world)"));
         assert!(!is_non_speech("[a] and [b]"));
+    }
+
+    #[test]
+    fn progress_trampoline_calls_closure_without_leaking() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s2 = seen.clone();
+        let cb: ProgressFn = Arc::new(move |f| s2.lock().unwrap().push(f));
+        let ptr = &cb as *const ProgressFn as *mut c_void;
+        for pct in [0, 50, 150] {
+            unsafe { progress_trampoline(std::ptr::null_mut(), std::ptr::null_mut(), pct, ptr) };
+        }
+        unsafe {
+            progress_trampoline(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                5,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(*seen.lock().unwrap(), vec![0.0, 0.5, 1.0]);
+        // Nothing else holds the closure (the old `_safe` API kept a leaked Box of it).
+        assert_eq!(Arc::strong_count(&cb), 1);
     }
 
     #[test]
@@ -346,15 +390,22 @@ mod tests {
             return;
         };
         let t = WhisperTranscriber::new(path);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s2 = seen.clone();
+        let progress: ProgressFn = Arc::new(move |f| s2.lock().unwrap().push(f));
         let segs = t
             .transcribe_samples(
                 &vec![0.0; 16_000 * 2],
                 Track::Mic,
                 &TranscribeOptions::default(),
-                None,
+                Some(progress.clone()),
             )
             .unwrap();
         assert!(segs.iter().all(|s| !s.text.is_empty()));
         assert!(t.is_loaded());
+        // Progress arrives through the raw callback and ends at 1.0; nothing leaked a
+        // reference to the closure.
+        assert_eq!(seen.lock().unwrap().last(), Some(&1.0));
+        assert_eq!(Arc::strong_count(&progress), 1);
     }
 }

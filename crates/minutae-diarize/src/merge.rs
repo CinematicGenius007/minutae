@@ -18,9 +18,17 @@ pub const YOU_LABEL: &str = "You";
 /// hundred ms). Further away it stays unattributed (`speaker_id: None`).
 pub const MAX_GAP_MS: u64 = 2_000;
 
+/// A mic segment that overlaps system speech by more than this fraction of its length…
+pub const BLEED_MIN_OVERLAP: f64 = 0.5;
+/// …and whose words match that system speech at least this much (token Jaccard) is
+/// the remote audio picked up by the mic (laptop speakers), not the user, and is dropped.
+pub const BLEED_MIN_SIMILARITY: f64 = 0.6;
+
 /// Two-track merge.
 ///
-/// - every `mic` segment → speaker **"You"** (track `Mic`);
+/// - `mic` segments that are just the remote side leaking into the mic (see
+///   [`BLEED_MIN_OVERLAP`] / [`BLEED_MIN_SIMILARITY`]) are dropped;
+/// - every other `mic` segment → speaker **"You"** (track `Mic`);
 /// - every `system` segment → the diarized speaker with the most time overlap,
 ///   labelled "Speaker 1", "Speaker 2"… in order of first appearance;
 /// - if `system_turns` is empty (diarization off/failed) all system segments go to
@@ -41,6 +49,7 @@ pub fn merge(
     out.extend(
         mic_segments
             .iter()
+            .filter(|s| !is_bleed(s, system_segments))
             .map(|s| (with_track(s, Track::Mic), Slot::You)),
     );
     let raw = assign(system_segments, system_turns);
@@ -111,6 +120,47 @@ enum Slot {
     /// Raw diarizer speaker index (not yet relabelled).
     Diarized(u32),
     Unknown,
+}
+
+/// True if `mic` is mostly a copy of what the system track was saying at the same time.
+fn is_bleed(mic: &Segment, system: &[Segment]) -> bool {
+    let dur = mic.end_ms.saturating_sub(mic.start_ms);
+    let mut overlapping = 0u64;
+    let mut text = String::new();
+    for s in system {
+        let o = overlap(mic.start_ms, mic.end_ms, s.start_ms, s.end_ms);
+        // A zero-length mic segment "overlaps" a system segment that contains it.
+        let touches = o > 0 || (dur == 0 && s.start_ms <= mic.start_ms && mic.start_ms < s.end_ms);
+        if touches {
+            overlapping += o;
+            text.push(' ');
+            text.push_str(&s.text);
+        }
+    }
+    let overlap_ok = if dur == 0 {
+        !text.is_empty()
+    } else {
+        overlapping as f64 > BLEED_MIN_OVERLAP * dur as f64
+    };
+    overlap_ok && jaccard(&mic.text, &text) >= BLEED_MIN_SIMILARITY
+}
+
+/// Lower-cased alphanumeric word set.
+fn tokens(text: &str) -> std::collections::HashSet<String> {
+    text.split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .map(|w| w.trim_matches('\'').to_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// Token-set Jaccard similarity, 0.0 when either side has no words.
+fn jaccard(a: &str, b: &str) -> f64 {
+    let (a, b) = (tokens(a), tokens(b));
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let inter = a.intersection(&b).count();
+    inter as f64 / (a.len() + b.len() - inter) as f64
 }
 
 fn with_track(s: &Segment, track: Track) -> Segment {
@@ -433,6 +483,68 @@ mod tests {
             Uuid::new_v4(),
         );
         assert_eq!(label_of(&out[0], &sp), Some("Speaker 1"));
+    }
+
+    #[test]
+    fn jaccard_similarity() {
+        assert_eq!(jaccard("Hello, world!", "hello WORLD"), 1.0);
+        assert_eq!(jaccard("a b c d", "a b"), 0.5);
+        assert_eq!(jaccard("", "x"), 0.0);
+        assert_eq!(jaccard("don't stop", "Don't stop."), 1.0);
+    }
+
+    #[test]
+    fn mic_bleed_of_remote_speech_is_dropped() {
+        let sys = [
+            seg(
+                1_000,
+                4_000,
+                "Let's ship the beta on Friday.",
+                Track::System,
+            ),
+            seg(4_000, 6_000, "Any objections?", Track::System),
+        ];
+        let mic = [
+            // Speakers leaking into the mic: same words, same time (slightly off).
+            seg(1_200, 4_100, "let's ship the beta on friday", Track::Mic),
+            // The user really answering while overlapping: different words.
+            seg(4_500, 5_500, "No, sounds good to me", Track::Mic),
+            // Similar words but at a different time: a genuine echo by the user.
+            seg(8_000, 9_000, "ship the beta on Friday", Track::Mic),
+            // Spans both system segments: compared against their joined text.
+            seg(
+                1_000,
+                6_000,
+                "let's ship the beta on friday any objections",
+                Track::Mic,
+            ),
+        ];
+        let (out, sp) = merge(&mic, &sys, &[], Uuid::new_v4());
+        assert_eq!(
+            out.iter()
+                .map(|s| (s.text.as_str(), label_of(s, &sp).unwrap()))
+                .collect::<Vec<_>>(),
+            [
+                ("Let's ship the beta on Friday.", "Speaker 1"),
+                ("Any objections?", "Speaker 1"),
+                ("No, sounds good to me", "You"),
+                ("ship the beta on Friday", "You"),
+            ]
+        );
+    }
+
+    #[test]
+    fn mic_with_little_overlap_is_kept_even_if_similar() {
+        // Same words, but only 1 s of the 3 s mic segment overlaps (33% < 50%).
+        let sys = [seg(0, 1_000, "okay thanks everyone", Track::System)];
+        let mic = [seg(0, 3_000, "okay thanks everyone", Track::Mic)];
+        let (out, _) = merge(&mic, &sys, &[], Uuid::new_v4());
+        assert_eq!(out.len(), 2);
+        // Zero-length mic segment inside a matching system segment: bleed.
+        let mic = [seg(500, 500, "okay thanks everyone", Track::Mic)];
+        let (out, _) = merge(&mic, &sys, &[], Uuid::new_v4());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].track, Track::System);
     }
 
     #[test]

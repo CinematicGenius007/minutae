@@ -26,6 +26,10 @@ async fn main() {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     let inserter = SystemInserter::default();
+    println!(
+        "paste keycode (main thread lookup): {:?}",
+        minutae_dictation::refresh_paste_keycode()
+    );
     println!("frontmost app: {:?}", inserter.target_app());
     let outcome = inserter.insert(&text).await;
     println!("outcome: {outcome:?}");

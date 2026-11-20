@@ -10,11 +10,15 @@
 //! # Ok::<(), minutae_audio::AudioError>(())
 //! ```
 //!
-//! Pipeline per track: cpal callback (downmix to mono, never blocks) ->
-//! bounded queue -> writer thread (resample to 16 kHz, meter, gap-fill with
-//! silence against the wall clock, write 10 s WAV chunks) -> on stop, chunks
-//! are stitched into `mic.wav` / `system.wav`. [`recover`] stitches chunks left
-//! behind by a crash.
+//! Pipeline per track: cpal callback (downmix to mono into a preallocated lock-free
+//! ring; never allocates or blocks) -> writer thread (resample to 16 kHz, meter, keep
+//! the track aligned with the wall clock by padding real gaps with silence or dropping
+//! samples when it runs ahead, write 10 s WAV chunks) -> on stop, chunks are stitched
+//! into `mic.wav` / `system.wav`. [`recover`] stitches chunks left behind by a crash.
+//!
+//! Problems during a recording (device unplugged, disk full) are reported live on
+//! [`RecordingHandle::events`]. A track whose device disappears is reopened on the
+//! current default device when possible.
 
 mod capture;
 mod level;
@@ -23,14 +27,14 @@ mod wav;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use minutae_core::Track;
 use serde::{Deserialize, Serialize};
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 
 pub use capture::{InputDevice, list_input_devices};
 pub use level::rms;
@@ -101,16 +105,54 @@ pub struct RecordedTracks {
     pub duration_ms: u64,
 }
 
+/// Something went wrong (or changed) while recording. Sent on [`RecordingHandle::events`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CaptureEvent {
+    /// The OS reported a stream error for `track`. If the device is gone, a reopen is
+    /// attempted and followed by `DeviceSwitched` or `TrackLost`.
+    #[serde(rename_all = "camelCase")]
+    StreamError { track: Track, message: String },
+    /// `track` is now captured from `device` (after the previous device disappeared,
+    /// or the OS rerouted the default device; `None` = name unknown).
+    #[serde(rename_all = "camelCase")]
+    DeviceSwitched {
+        track: Track,
+        device: Option<String>,
+    },
+    /// `track`'s device is gone and no replacement could be opened. The track is padded
+    /// with silence; reopening is retried every second.
+    #[serde(rename_all = "camelCase")]
+    TrackLost { track: Track, message: String },
+    /// Writing `track` to disk failed (disk full, permissions). That track has stopped
+    /// recording; [`RecordingHandle::stop`] still stitches what was written and returns
+    /// the error if it was the mic.
+    #[serde(rename_all = "camelCase")]
+    WriteFailed { track: Track, message: String },
+}
+
 /// Starts recordings. Stateless; one [`RecordingHandle`] per meeting.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Recorder;
 
 const LEVEL_INTERVAL: Duration = Duration::from_millis(33);
-/// Queue depth between the audio callback and the writer (~10 ms blocks -> ~5 s).
-const QUEUE_BLOCKS: usize = 512;
-/// Pad with silence when a track falls this far behind the wall clock
-/// (WASAPI loopback delivers nothing while nothing plays; taps can start late).
-const GAP_FILL_SAMPLES: u64 = SAMPLE_RATE as u64 / 5; // 200 ms
+/// Re-align a track with the wall clock once it is this far off (WASAPI loopback
+/// delivers nothing while nothing plays; taps start late; device clocks drift).
+const ALIGN_SLACK_SAMPLES: u64 = SAMPLE_RATE as u64 / 5; // 200 ms
+/// How often the capture thread retries opening a lost device.
+const REOPEN_RETRY: Duration = Duration::from_secs(1);
+const EVENT_CAPACITY: usize = 64;
+
+/// One capture stream's output as seen by its writer.
+struct Source {
+    consumer: rtrb::Consumer<f32>,
+    rate: u32,
+}
+
+enum Cmd {
+    Stop,
+    Reopen { track: Track, generation: u64 },
+}
 
 impl Recorder {
     pub fn new() -> Self {
@@ -122,68 +164,44 @@ impl Recorder {
     /// [`RecordingHandle::system_error`] says why.
     pub fn start(&self, config: CaptureConfig) -> Result<RecordingHandle> {
         std::fs::create_dir_all(&config.out_dir)?;
-        let shared = Arc::new(Shared {
-            clock: level::Clock::new(),
-            paused: Arc::new(AtomicBool::new(false)),
-            stopped: AtomicBool::new(false),
-            mic_meter: level::Meter::default(),
-            sys_meter: level::Meter::default(),
-            last_error: Arc::new(Mutex::new(None)),
-        });
+        let shared = Arc::new(Shared::new(level::Clock::new()));
 
-        let (mic_tx, mic_rx) = mpsc::sync_channel(QUEUE_BLOCKS);
-        let (sys_tx, sys_rx) = mpsc::sync_channel(QUEUE_BLOCKS);
+        let (mic_src_tx, mic_src_rx) = mpsc::channel::<Source>();
+        let (sys_src_tx, sys_src_rx) = mpsc::channel::<Source>();
         let (ready_tx, ready_rx) = mpsc::channel();
-        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
 
         // cpal streams are not `Send` on every backend, so one thread owns them.
         let cfg = config.clone();
         let sh = shared.clone();
+        let reopen_tx = cmd_tx.clone();
         let capture_thread = std::thread::Builder::new()
             .name("minutae-capture".into())
             .spawn(move || {
-                let ctx = |tx, label| capture::CallbackCtx {
-                    tx,
-                    paused: sh.paused.clone(),
-                    last_error: sh.last_error.clone(),
-                    label,
+                let mut cap = CaptureLoop {
+                    cfg,
+                    shared: sh.clone(),
+                    on_error: stream_error_handler(sh, reopen_tx),
+                    mic: TrackStream::new(mic_src_tx),
+                    system: TrackStream::new(sys_src_tx),
                 };
-                let mic = capture::open_mic(cfg.mic_device.as_deref()).and_then(|(d, c)| {
-                    let rate = c.sample_rate();
-                    capture::build_stream(&d, &c, ctx(mic_tx, "mic")).map(|s| (s, rate))
-                });
-                let (mic_stream, mic_rate) = match mic {
-                    Ok(v) => v,
+                let mic_rate = match cap.open(Track::Mic, false) {
+                    Ok(rate) => rate,
                     Err(e) => {
                         let _ = ready_tx.send(Err(e));
                         return;
                     }
                 };
-                let system = if cfg.include_system {
-                    capture::open_system().and_then(|(d, c)| {
-                        let rate = c.sample_rate();
-                        capture::build_stream(&d, &c, ctx(sys_tx, "system")).map(|s| (s, rate))
-                    })
+                let sys_info = if cap.cfg.include_system {
+                    cap.open(Track::System, false).map_err(|e| e.to_string())
                 } else {
-                    drop(sys_tx);
-                    Err(AudioError::Unsupported("disabled".into()))
+                    Err("disabled".to_string())
                 };
-                use cpal::traits::StreamTrait;
-                if let Err(e) = mic_stream.play() {
-                    let _ = ready_tx.send(Err(capture::dev_err(e)));
-                    return;
+                if sys_info.is_err() {
+                    cap.system.sources = None; // no system writer will run
                 }
-                let (sys_stream, sys_info) = match system {
-                    Ok((s, rate)) => match s.play() {
-                        Ok(()) => (Some(s), Ok(rate)),
-                        Err(e) => (None, Err(capture::dev_err(e).to_string())),
-                    },
-                    Err(e) => (None, Err(e.to_string())),
-                };
                 let _ = ready_tx.send(Ok((mic_rate, sys_info)));
-                let _ = stop_rx.recv();
-                drop(sys_stream);
-                drop(mic_stream);
+                cap.run(cmd_rx);
             })?;
 
         let (mic_rate, sys_info) = match ready_rx.recv() {
@@ -205,12 +223,11 @@ impl Recorder {
             None
         };
 
-        let mic_writer = spawn_writer(Track::Mic, mic_rx, mic_rate, &config, shared.clone())?;
+        let mic_writer = spawn_writer(Track::Mic, mic_src_rx, &config, shared.clone())?;
         let sys_writer = match sys_info {
-            Ok(rate) => Some(spawn_writer(
+            Ok(_) => Some(spawn_writer(
                 Track::System,
-                sys_rx,
-                rate,
+                sys_src_rx,
                 &config,
                 shared.clone(),
             )?),
@@ -244,7 +261,7 @@ impl Recorder {
             levels: level_rx,
             system_error,
             inner: Mutex::new(Some(Running {
-                stop_tx,
+                cmd_tx,
                 capture_thread,
                 level_thread,
                 mic_writer,
@@ -254,17 +271,191 @@ impl Recorder {
     }
 }
 
+/// The cpal error callback: log, remember, broadcast, and ask the capture thread to
+/// reopen the track when the stream is dead.
+fn stream_error_handler(
+    shared: Arc<Shared>,
+    reopen: mpsc::Sender<Cmd>,
+) -> Arc<dyn Fn(Track, u64, cpal::Error) + Send + Sync> {
+    Arc::new(move |track, generation, e: cpal::Error| {
+        let kind = e.kind();
+        if matches!(
+            kind,
+            cpal::ErrorKind::Xrun | cpal::ErrorKind::RealtimeDenied
+        ) {
+            tracing::debug!(track = wav::track_name(track), error = %e, "audio stream glitch");
+            return;
+        }
+        tracing::warn!(track = wav::track_name(track), error = %e, "audio stream error");
+        let message = format!("{}: {e}", wav::track_name(track));
+        *shared.last_error.lock().unwrap_or_else(|p| p.into_inner()) = Some(message.clone());
+        if kind == cpal::ErrorKind::DeviceChanged {
+            shared.emit(CaptureEvent::DeviceSwitched {
+                track,
+                device: None,
+            });
+            return;
+        }
+        shared.emit(CaptureEvent::StreamError { track, message });
+        if capture::needs_reopen(kind) {
+            let _ = reopen.send(Cmd::Reopen { track, generation });
+        }
+    })
+}
+
+/// One track's live stream, owned by the capture thread.
+struct TrackStream {
+    stream: Option<cpal::Stream>,
+    generation: u64,
+    /// Hands each newly opened stream's ring to the writer. `None` = no writer.
+    sources: Option<mpsc::Sender<Source>>,
+    /// Device lost and not yet reopened.
+    lost: bool,
+}
+
+impl TrackStream {
+    fn new(sources: mpsc::Sender<Source>) -> Self {
+        Self {
+            stream: None,
+            generation: 0,
+            sources: Some(sources),
+            lost: false,
+        }
+    }
+}
+
+struct CaptureLoop {
+    cfg: CaptureConfig,
+    shared: Arc<Shared>,
+    on_error: Arc<dyn Fn(Track, u64, cpal::Error) + Send + Sync>,
+    mic: TrackStream,
+    system: TrackStream,
+}
+
+impl CaptureLoop {
+    fn slot(&mut self, track: Track) -> &mut TrackStream {
+        match track {
+            Track::Mic => &mut self.mic,
+            Track::System => &mut self.system,
+        }
+    }
+
+    /// Open (or reopen) `track` and hand its ring to the writer. Returns the device rate.
+    fn open(&mut self, track: Track, reopen: bool) -> Result<u32> {
+        use cpal::traits::StreamTrait;
+        let (device, config) = match track {
+            Track::Mic => match capture::open_mic(self.cfg.mic_device.as_deref()) {
+                // The chosen mic vanished: fall back to the default input.
+                Err(_) if reopen && self.cfg.mic_device.is_some() => capture::open_mic(None)?,
+                other => other?,
+            },
+            Track::System => capture::open_system()?,
+        };
+        let rate = config.sample_rate();
+        let (producer, consumer) = rtrb::RingBuffer::new(capture::ring_capacity(rate));
+        let on_error = self.on_error.clone();
+        let paused = self.shared.paused.clone();
+        let slot = self.slot(track);
+        slot.generation += 1;
+        let sink = capture::StreamSink {
+            producer,
+            paused,
+            track,
+            generation: slot.generation,
+            on_error,
+        };
+        let stream = capture::build_stream(&device, &config, sink)?;
+        stream.play().map_err(capture::dev_err)?;
+        if let Some(tx) = &slot.sources {
+            let _ = tx.send(Source { consumer, rate });
+        }
+        slot.stream = Some(stream);
+        slot.lost = false;
+        if reopen {
+            let name = capture::device_name(&device);
+            tracing::info!(track = wav::track_name(track), device = %name, "audio device reopened");
+            self.shared.emit(CaptureEvent::DeviceSwitched {
+                track,
+                device: Some(name),
+            });
+        }
+        Ok(rate)
+    }
+
+    fn reopen(&mut self, track: Track) {
+        let first_failure = {
+            let slot = self.slot(track);
+            if slot.sources.is_none() {
+                return; // track not being recorded
+            }
+            slot.stream = None; // stop the dead stream before opening a new one
+            !slot.lost
+        };
+        if let Err(e) = self.open(track, true) {
+            self.slot(track).lost = true;
+            if first_failure {
+                tracing::warn!(track = wav::track_name(track), error = %e, "audio device lost");
+                self.shared.emit(CaptureEvent::TrackLost {
+                    track,
+                    message: e.to_string(),
+                });
+            }
+        }
+    }
+
+    fn run(mut self, cmds: Receiver<Cmd>) {
+        loop {
+            match cmds.recv_timeout(REOPEN_RETRY) {
+                Ok(Cmd::Stop) | Err(RecvTimeoutError::Disconnected) => break,
+                Ok(Cmd::Reopen { track, generation }) => {
+                    if self.slot(track).generation == generation {
+                        self.reopen(track);
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    for track in [Track::Mic, Track::System] {
+                        if self.slot(track).lost {
+                            self.reopen(track);
+                        }
+                    }
+                }
+            }
+        }
+        // Dropping the streams abandons the rings; dropping the senders tells the
+        // writers no further sources will come, so they drain and finish.
+    }
+}
+
 struct Shared {
     clock: level::Clock,
     paused: Arc<AtomicBool>,
     stopped: AtomicBool,
     mic_meter: level::Meter,
     sys_meter: level::Meter,
-    last_error: Arc<Mutex<Option<String>>>,
+    last_error: Mutex<Option<String>>,
+    events: broadcast::Sender<CaptureEvent>,
+}
+
+impl Shared {
+    fn new(clock: level::Clock) -> Self {
+        Self {
+            clock,
+            paused: Arc::new(AtomicBool::new(false)),
+            stopped: AtomicBool::new(false),
+            mic_meter: level::Meter::default(),
+            sys_meter: level::Meter::default(),
+            last_error: Mutex::new(None),
+            events: broadcast::channel(EVENT_CAPACITY).0,
+        }
+    }
+
+    fn emit(&self, event: CaptureEvent) {
+        let _ = self.events.send(event); // no receivers is fine
+    }
 }
 
 struct Running {
-    stop_tx: mpsc::Sender<()>,
+    cmd_tx: mpsc::Sender<Cmd>,
     capture_thread: JoinHandle<()>,
     level_thread: JoinHandle<()>,
     mic_writer: JoinHandle<Result<u64>>,
@@ -283,6 +474,13 @@ impl RecordingHandle {
     /// Level meter at ~30 Hz. `borrow()` from sync code or `changed().await`.
     pub fn levels(&self) -> watch::Receiver<LevelFrame> {
         self.levels.clone()
+    }
+
+    /// Live problems during the recording (device lost/switched, disk full).
+    /// Subscribe right after [`Recorder::start`]; events sent before subscribing are not
+    /// replayed ([`Self::last_stream_error`] keeps the latest stream error).
+    pub fn events(&self) -> broadcast::Receiver<CaptureEvent> {
+        self.shared.events.subscribe()
     }
 
     /// Why system audio isn't being recorded (`None` = it is, or it wasn't requested).
@@ -322,6 +520,8 @@ impl RecordingHandle {
     }
 
     /// Stop capture, close chunks and stitch them into `mic.wav` / `system.wav`.
+    /// If a writer failed (e.g. disk full), whatever was written is still stitched before
+    /// the mic writer's error is returned (so [`recover`] finds `mic.wav` later).
     pub fn stop(&self) -> Result<RecordedTracks> {
         let running = self
             .inner
@@ -331,8 +531,8 @@ impl RecordingHandle {
             .ok_or(AudioError::Stopped)?;
         self.shared.clock.freeze();
         self.shared.stopped.store(true, Ordering::SeqCst);
-        let _ = running.stop_tx.send(());
-        let _ = running.capture_thread.join(); // drops streams -> writers see disconnect
+        let _ = running.cmd_tx.send(Cmd::Stop);
+        let _ = running.capture_thread.join(); // drops streams -> writers drain and finish
         let _ = running.level_thread.join();
         let join = |h: JoinHandle<Result<u64>>| {
             h.join()
@@ -340,19 +540,20 @@ impl RecordingHandle {
         };
         let mic_res = join(running.mic_writer);
         let sys_res = running.sys_writer.map(join);
-        mic_res?;
         if let Some(Err(e)) = &sys_res {
             tracing::warn!(error = %e, "system track writer failed");
         }
-        let (mic, mic_samples) = wav::stitch(&self.out_dir, Track::Mic)?
-            .ok_or_else(|| AudioError::Device("no microphone audio was captured".into()))?;
-        let system = match sys_res {
-            Some(_) => wav::stitch(&self.out_dir, Track::System)?.map(|(p, _)| p),
-            None => None,
+        let mic_stitched = wav::stitch(&self.out_dir, Track::Mic);
+        let sys_stitched = match sys_res {
+            Some(_) => wav::stitch(&self.out_dir, Track::System),
+            None => Ok(None),
         };
+        mic_res?;
+        let (mic, mic_samples) = mic_stitched?
+            .ok_or_else(|| AudioError::Device("no microphone audio was captured".into()))?;
         Ok(RecordedTracks {
             mic,
-            system,
+            system: sys_stitched?.map(|(p, _)| p),
             duration_ms: mic_samples * 1000 / SAMPLE_RATE as u64,
         })
     }
@@ -370,98 +571,234 @@ impl Drop for RecordingHandle {
 
 fn spawn_writer(
     track: Track,
-    rx: Receiver<capture::Block>,
-    in_rate: u32,
+    sources: Receiver<Source>,
     config: &CaptureConfig,
     shared: Arc<Shared>,
 ) -> Result<JoinHandle<Result<u64>>> {
     let mut writer = wav::ChunkWriter::new(&config.out_dir, track, config.chunk_secs)?;
     let name = format!("minutae-writer-{}", wav::track_name(track));
     Ok(std::thread::Builder::new().name(name).spawn(move || {
-        let meter = match track {
-            Track::Mic => &shared.mic_meter,
-            Track::System => &shared.sys_meter,
-        };
-        let mut resampler = Resampler::new(in_rate, SAMPLE_RATE);
-        let mut out = Vec::with_capacity(4096);
-        loop {
-            match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(block) => {
-                    out.clear();
-                    resampler.process(&block, &mut out);
-                    meter.add(&out);
-                    writer.write(&out)?;
-                }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => break,
+        match run_writer(track, &mut writer, &sources, &shared) {
+            Ok(()) => writer.finish(),
+            Err(e) => {
+                tracing::error!(track = wav::track_name(track), error = %e, "writing audio failed");
+                shared.emit(CaptureEvent::WriteFailed {
+                    track,
+                    message: e.to_string(),
+                });
+                // Close the open chunk if possible so stitching gets everything written.
+                let _ = writer.finish();
+                Err(e)
             }
-            fill_gap(&mut writer, &shared, GAP_FILL_SAMPLES)?;
         }
-        out.clear();
-        resampler.flush(&mut out);
-        writer.write(&out)?;
-        // Align the track's end with the wall clock (frozen at stop).
-        fill_gap(&mut writer, &shared, 0)?;
-        writer.finish()
     })?)
 }
 
-/// If the track is more than `slack` samples behind the recording clock, pad
-/// with silence so the two tracks stay time-aligned.
-fn fill_gap(writer: &mut wav::ChunkWriter, shared: &Shared, slack: u64) -> Result<()> {
-    if shared.paused.load(Ordering::Relaxed) {
+/// Writer loop: drain the current ring (switching to new ones as devices are reopened),
+/// resample to 16 kHz, meter, keep the track aligned with the clock, write chunks.
+/// Returns when no further source can arrive and the last ring is drained.
+fn run_writer(
+    track: Track,
+    writer: &mut wav::ChunkWriter,
+    sources: &Receiver<Source>,
+    shared: &Shared,
+) -> Result<()> {
+    let meter = match track {
+        Track::Mic => &shared.mic_meter,
+        Track::System => &shared.sys_meter,
+    };
+    let Ok(mut src) = sources.recv() else {
         return Ok(());
+    };
+    let mut resampler = Resampler::new(src.rate, SAMPLE_RATE);
+    let mut out = Vec::with_capacity(8192);
+    let mut to_drop = 0u64;
+    let mut more_sources = true;
+    loop {
+        // Decide before writing, counting what is still queued, so a writer that merely
+        // fell behind is never padded (which would offset the track for good).
+        if !shared.paused.load(Ordering::Relaxed) {
+            let queued = src.consumer.slots() as u64 * SAMPLE_RATE as u64 / src.rate.max(1) as u64;
+            match align(
+                writer.total_samples(),
+                queued,
+                to_drop,
+                shared.clock.active_samples(SAMPLE_RATE),
+                ALIGN_SLACK_SAMPLES,
+            ) {
+                Align::Keep => {}
+                Align::Pad(n) => writer.write_silence(n)?,
+                Align::Drop(n) => to_drop += n,
+            }
+        }
+        let got = drain(&mut src.consumer, &mut resampler, &mut out);
+        write_block(writer, meter, &out, &mut to_drop)?;
+        if more_sources {
+            match sources.try_recv() {
+                Ok(next) => {
+                    // The old stream is gone; finish its ring, then continue on the new one.
+                    drain(&mut src.consumer, &mut resampler, &mut out);
+                    write_block(writer, meter, &out, &mut to_drop)?;
+                    out.clear();
+                    resampler.flush(&mut out);
+                    write_block(writer, meter, &out, &mut to_drop)?;
+                    resampler = Resampler::new(next.rate, SAMPLE_RATE);
+                    src = next;
+                    continue;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => more_sources = false,
+            }
+        }
+        if !more_sources && src.consumer.is_abandoned() && src.consumer.is_empty() {
+            break;
+        }
+        if got == 0 {
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
+    out.clear();
+    resampler.flush(&mut out);
+    write_block(writer, meter, &out, &mut to_drop)?;
+    // Align the track's end with the wall clock (frozen at stop).
     let expected = shared.clock.active_samples(SAMPLE_RATE);
     let written = writer.total_samples();
-    if written + slack < expected {
-        // Leave half the slack so normal jitter doesn't trigger padding.
-        let target = expected - slack / 2;
-        writer.write_silence(target - written)?;
+    if written < expected {
+        writer.write_silence(expected - written)?;
     }
     Ok(())
 }
 
-/// Stitch chunks left in `out_dir` by a crash into `mic.wav` / `system.wav`.
-/// Returns `None` if there was nothing to recover.
+/// Move everything readable from `ring` through the resampler into `out` (cleared first).
+/// Returns the number of input samples consumed.
+fn drain(ring: &mut rtrb::Consumer<f32>, resampler: &mut Resampler, out: &mut Vec<f32>) -> usize {
+    out.clear();
+    let n = ring.slots();
+    if n == 0 {
+        return 0;
+    }
+    let Ok(chunk) = ring.read_chunk(n) else {
+        return 0;
+    };
+    let (a, b) = chunk.as_slices();
+    resampler.process(a, out);
+    resampler.process(b, out);
+    chunk.commit_all();
+    n
+}
+
+/// Meter `block` and write it, skipping up to `to_drop` leading samples.
+fn write_block(
+    writer: &mut wav::ChunkWriter,
+    meter: &level::Meter,
+    block: &[f32],
+    to_drop: &mut u64,
+) -> Result<()> {
+    if block.is_empty() {
+        return Ok(());
+    }
+    meter.add(block);
+    let skip = (*to_drop).min(block.len() as u64);
+    *to_drop -= skip;
+    writer.write(&block[skip as usize..])
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Align {
+    Keep,
+    /// Insert this much silence now (a real gap: nothing was captured).
+    Pad(u64),
+    /// Discard this many upcoming samples (the track runs ahead of the clock).
+    Drop(u64),
+}
+
+/// Decide how to keep a track aligned with the recording clock. `written` samples are on
+/// disk, `queued` are captured but not yet written, `pending_drop` are already scheduled
+/// to be discarded, and `expected` is where the clock says the track should be. Only a
+/// difference beyond `slack` is corrected, back to within `slack / 2`, so normal jitter
+/// (and samples merely waiting in the queue after a writer stall) cause no change.
+fn align(written: u64, queued: u64, pending_drop: u64, expected: u64, slack: u64) -> Align {
+    let have = (written + queued).saturating_sub(pending_drop);
+    if have + slack < expected {
+        Align::Pad(expected - slack / 2 - have)
+    } else if have > expected + slack {
+        Align::Drop(have - expected - slack / 2)
+    } else {
+        Align::Keep
+    }
+}
+
+/// Recover a meeting directory after a crash: stitch leftover chunks into `mic.wav` /
+/// `system.wav` (finishing an interrupted stitch), or, if there are no chunks, report the
+/// final files that already exist. Duration comes from the WAV data. Returns `None` if
+/// there is no audio at all.
 pub fn recover(out_dir: &Path) -> Result<Option<RecordedTracks>> {
-    let mic = wav::stitch(out_dir, Track::Mic)?;
-    let system = wav::stitch(out_dir, Track::System)?;
-    match (mic, system) {
-        (None, None) => Ok(None),
-        (mic, system) => {
-            let (mic_path, samples) = match mic {
-                Some(v) => v,
-                // System-only leftovers: still report, with mic.wav if it exists.
-                None => (wav::final_path(out_dir, Track::Mic), 0),
-            };
-            let samples = if samples == 0 {
-                system.as_ref().map(|(_, n)| *n).unwrap_or(0)
-            } else {
-                samples
-            };
-            Ok(Some(RecordedTracks {
-                mic: mic_path,
-                system: system.map(|(p, _)| p),
-                duration_ms: samples * 1000 / SAMPLE_RATE as u64,
-            }))
+    let mic = recover_track(out_dir, Track::Mic)?;
+    let system = recover_track(out_dir, Track::System)?;
+    if mic.is_none() && system.is_none() {
+        return Ok(None);
+    }
+    let mic_samples = mic.as_ref().map(|(_, n)| *n).unwrap_or(0);
+    let samples = if mic_samples > 0 {
+        mic_samples
+    } else {
+        system.as_ref().map(|(_, n)| *n).unwrap_or(0)
+    };
+    Ok(Some(RecordedTracks {
+        // System-only leftovers: still report, with the (missing) mic path.
+        mic: mic
+            .map(|(p, _)| p)
+            .unwrap_or_else(|| wav::final_path(out_dir, Track::Mic)),
+        system: system.map(|(p, _)| p),
+        duration_ms: samples * 1000 / SAMPLE_RATE as u64,
+    }))
+}
+
+fn recover_track(out_dir: &Path, track: Track) -> Result<Option<(PathBuf, u64)>> {
+    if let Some(v) = wav::stitch(out_dir, track)? {
+        return Ok(Some(v));
+    }
+    let path = wav::final_path(out_dir, track);
+    if !path.exists() {
+        return Ok(None);
+    }
+    match wav::wav_samples(&path) {
+        Ok(n) => Ok(Some((path, n))),
+        Err(e) => {
+            tracing::warn!(?path, error = %e, "ignoring unreadable recording");
+            Ok(None)
         }
     }
 }
 
-/// True if `out_dir` holds chunks from an unfinished recording.
+/// True if `out_dir` holds chunks from an unfinished recording (or an interrupted stitch).
 pub fn needs_recovery(out_dir: &Path) -> bool {
     let dir = out_dir.join(wav::CHUNKS_DIR);
     [Track::Mic, Track::System].iter().any(|&t| {
-        wav::list_chunks(&dir, t)
-            .map(|c| !c.is_empty())
-            .unwrap_or(false)
+        wav::has_stitch_marker(out_dir, t)
+            || wav::list_chunks(&dir, t)
+                .map(|c| !c.is_empty())
+                .unwrap_or(false)
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use level::tests::{advance, manual_time};
+
+    fn tmpdir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "minutae-lib-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
 
     #[test]
     fn handle_is_send_sync() {
@@ -471,34 +808,294 @@ mod tests {
     }
 
     #[test]
-    fn gap_fill_pads_to_clock() {
-        let d = std::env::temp_dir().join(format!("minutae-gap-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        let shared = Shared {
-            clock: level::Clock::new(),
-            paused: Arc::new(AtomicBool::new(false)),
-            stopped: AtomicBool::new(false),
-            mic_meter: Default::default(),
-            sys_meter: Default::default(),
-            last_error: Default::default(),
-        };
-        let mut w = wav::ChunkWriter::new(&d, Track::System, 10).unwrap();
-        std::thread::sleep(Duration::from_millis(400));
-        fill_gap(&mut w, &shared, GAP_FILL_SAMPLES).unwrap();
-        let n = w.total_samples();
-        // ~400 ms elapsed minus 100 ms half-slack => ~300 ms of silence.
-        assert!((4_000..=6_000).contains(&n), "padded {n}");
-        // Within slack: nothing added.
-        fill_gap(&mut w, &shared, GAP_FILL_SAMPLES).unwrap();
-        assert_eq!(w.total_samples(), n);
+    fn align_pads_only_real_gaps_and_drops_when_ahead() {
+        let slack = ALIGN_SLACK_SAMPLES; // 3200
+        // Within slack either way: nothing.
+        assert_eq!(align(10_000, 0, 0, 12_000, slack), Align::Keep);
+        assert_eq!(align(14_000, 0, 0, 12_000, slack), Align::Keep);
+        // Real gap: pad back to within slack/2.
+        assert_eq!(align(4_000, 0, 0, 12_000, slack), Align::Pad(6_400));
+        // Writer stalled but the samples are queued: no padding (this used to
+        // offset the track permanently).
+        assert_eq!(align(4_000, 8_000, 0, 12_000, slack), Align::Keep);
+        // Running ahead (e.g. padded earlier, or a fast device clock): drop.
+        assert_eq!(align(12_000, 8_000, 0, 12_000, slack), Align::Drop(6_400));
+        // Already-scheduled drops are accounted for.
+        assert_eq!(align(12_000, 8_000, 6_400, 12_000, slack), Align::Keep);
+    }
+
+    fn feed(samples: &[f32], rate: u32) -> (Source, rtrb::Producer<f32>) {
+        let (mut p, c) = rtrb::RingBuffer::new(samples.len().max(1) + 16);
+        for &s in samples {
+            p.push(s).unwrap();
+        }
+        (Source { consumer: c, rate }, p)
+    }
+
+    #[test]
+    fn writer_switches_sources_and_pads_to_frozen_clock() {
+        let d = tmpdir("writer");
+        let (src, t) = manual_time();
+        let shared = Shared::new(level::Clock::with_source(src));
+        let mut events = shared.events.subscribe();
+        let mut w = wav::ChunkWriter::new(&d, Track::Mic, 10).unwrap();
+        // Paused: no mid-stream alignment, only the final pad to the clock.
+        shared.paused.store(true, Ordering::SeqCst);
+        let (tx, rx) = mpsc::channel();
+        // 0.5 s at 16 kHz, then (device reopened) 0.5 s at 48 kHz.
+        let (a, pa) = feed(&vec![0.25; 8_000], 16_000);
+        let (b, pb) = feed(&vec![0.5; 24_000], 48_000);
+        tx.send(a).unwrap();
+        tx.send(b).unwrap();
+        drop((tx, pa, pb)); // capture finished
+        advance(&t, 1_500); // 1.5 s of active time: the last 0.5 s is a real gap
         shared.clock.freeze();
-        fill_gap(&mut w, &shared, 0).unwrap();
-        assert!(w.total_samples() >= shared.clock.active_samples(SAMPLE_RATE));
+        run_writer(Track::Mic, &mut w, &rx, &shared).unwrap();
+        let total = w.finish().unwrap();
+        assert_eq!(total, 24_000, "padded to the frozen clock");
+        let (path, n) = wav::stitch(&d, Track::Mic).unwrap().unwrap();
+        assert_eq!(n, 24_000);
+        let got: Vec<i16> = hound::WavReader::open(&path)
+            .unwrap()
+            .samples::<i16>()
+            .map(|s| s.unwrap())
+            .collect();
+        // Audio from both sources is present, in order, followed by silence.
+        assert!((got[4_000] as f32 / i16::MAX as f32 - 0.25).abs() < 0.01);
+        assert!((got[12_000] as f32 / i16::MAX as f32 - 0.5).abs() < 0.02);
+        assert_eq!(got[23_000], 0);
+        assert!(events.try_recv().is_err(), "no problems reported");
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// Count sign changes (a sine of `f` Hz has `2 f` per second).
+    fn zero_crossings(x: &[i16]) -> usize {
+        x.windows(2).filter(|w| (w[0] < 0) != (w[1] < 0)).count()
+    }
+
+    /// Full capture path without a device: interleaved stereo 48 kHz frames delivered in
+    /// realtime-sized callbacks -> downmix into the ring -> writer -> 16 kHz resampler ->
+    /// chunks -> stitch. Checks length, level and frequency (zero crossings) per channel
+    /// layout and a chirp, so channel handling / rate / dropped-or-duplicated blocks show up.
+    #[test]
+    fn stereo_48k_through_capture_ring_writer_resampler() {
+        let rate = 48_000u32;
+        let secs = 2usize;
+        // (left Hz, right Hz or None for silence, expected output Hz, expected RMS)
+        let cases: [(f32, Option<f32>, f32, f32); 3] = [
+            (
+                440.0,
+                Some(440.0),
+                440.0,
+                0.5 * std::f32::consts::FRAC_1_SQRT_2,
+            ),
+            (
+                1_000.0,
+                None,
+                1_000.0,
+                0.25 * std::f32::consts::FRAC_1_SQRT_2,
+            ),
+            (
+                3_000.0,
+                Some(3_000.0),
+                3_000.0,
+                0.5 * std::f32::consts::FRAC_1_SQRT_2,
+            ),
+        ];
+        for (fl, fr, want_hz, want_rms) in cases {
+            let d = tmpdir("stereo48k");
+            let (src, t) = manual_time();
+            let shared = Shared::new(level::Clock::with_source(src));
+            let n = rate as usize * secs;
+            let mut interleaved = Vec::with_capacity(n * 2);
+            for i in 0..n {
+                let ph = 2.0 * std::f32::consts::PI * i as f32 / rate as f32;
+                interleaved.push(0.5 * (fl * ph).sin());
+                interleaved.push(fr.map(|f| 0.5 * (f * ph).sin()).unwrap_or(0.0));
+            }
+            let (mut producer, consumer) = rtrb::RingBuffer::new(capture::ring_capacity(rate));
+            let (tx, rx) = mpsc::channel();
+            tx.send(Source { consumer, rate }).unwrap();
+            drop(tx);
+            // Realtime-sized callbacks (512 frames), then the writer drains the ring.
+            for block in interleaved.chunks(512 * 2) {
+                capture::push_downmixed(&mut producer, block, 2);
+            }
+            drop(producer);
+            advance(&t, (secs * 1000) as u64);
+            shared.clock.freeze();
+            let mut w = wav::ChunkWriter::new(&d, Track::System, 1).unwrap();
+            run_writer(Track::System, &mut w, &rx, &shared).unwrap();
+            w.finish().unwrap();
+            let (path, total) = wav::stitch(&d, Track::System).unwrap().unwrap();
+            assert_eq!(total, 16_000 * secs as u64, "{fl} Hz: duration");
+            let got: Vec<i16> = hound::WavReader::open(&path)
+                .unwrap()
+                .samples::<i16>()
+                .map(|s| s.unwrap())
+                .collect();
+            // Skip the resampler's start-up; measure one full second.
+            let mid = &got[8_000..24_000];
+            let hz = zero_crossings(mid) as f32 / 2.0;
+            assert!((hz - want_hz).abs() <= 2.0, "{fl} Hz in, {hz} Hz out");
+            let rms = level::rms(
+                &mid.iter()
+                    .map(|&s| s as f32 / i16::MAX as f32)
+                    .collect::<Vec<_>>(),
+            );
+            assert!(
+                (rms - want_rms).abs() < 0.01,
+                "{fl} Hz: rms {rms}, want {want_rms}"
+            );
+            std::fs::remove_dir_all(d).unwrap();
+        }
+
+        // A 200 Hz -> 6 kHz chirp keeps its shape: early and late windows differ as expected.
+        let d = tmpdir("chirp");
+        let (src, t) = manual_time();
+        let shared = Shared::new(level::Clock::with_source(src));
+        let n = rate as usize * secs;
+        let (f0, f1) = (200.0f32, 6_000.0f32);
+        let k = (f1 - f0) / secs as f32;
+        let mut interleaved = Vec::with_capacity(n * 2);
+        for i in 0..n {
+            let tt = i as f32 / rate as f32;
+            let v = 0.5 * (2.0 * std::f32::consts::PI * (f0 * tt + 0.5 * k * tt * tt)).sin();
+            interleaved.extend([v, v]);
+        }
+        let (mut producer, consumer) = rtrb::RingBuffer::new(capture::ring_capacity(rate));
+        let (tx, rx) = mpsc::channel();
+        tx.send(Source { consumer, rate }).unwrap();
+        drop(tx);
+        for block in interleaved.chunks(480 * 2) {
+            capture::push_downmixed(&mut producer, block, 2);
+        }
+        drop(producer);
+        advance(&t, (secs * 1000) as u64);
+        shared.clock.freeze();
+        let mut w = wav::ChunkWriter::new(&d, Track::System, 10).unwrap();
+        run_writer(Track::System, &mut w, &rx, &shared).unwrap();
+        assert_eq!(w.finish().unwrap(), 16_000 * secs as u64);
+        let (path, _) = wav::stitch(&d, Track::System).unwrap().unwrap();
+        let got: Vec<i16> = hound::WavReader::open(&path)
+            .unwrap()
+            .samples::<i16>()
+            .map(|s| s.unwrap())
+            .collect();
+        // Instantaneous frequency at window centre t: f0 + k t. 100 ms windows.
+        for centre_ms in [250u64, 1_000, 1_750] {
+            let c = (centre_ms * 16) as usize;
+            let win = &got[c - 800..c + 800];
+            let hz = zero_crossings(win) as f32 / 2.0 / 0.1;
+            let want = f0 + k * centre_ms as f32 / 1000.0;
+            assert!(
+                (hz - want).abs() < want * 0.03 + 20.0,
+                "chirp at {centre_ms} ms: {hz} Hz, want {want}"
+            );
+        }
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn writer_drops_samples_when_ahead_of_clock() {
+        let d = tmpdir("ahead");
+        let (src, _t) = manual_time();
+        let shared = Shared::new(level::Clock::with_source(src));
+        shared.clock.freeze(); // the clock says 0 s have elapsed
+        let mut w = wav::ChunkWriter::new(&d, Track::System, 10).unwrap();
+        // 1 s of audio is waiting: everything beyond slack/2 is dropped instead of
+        // shifting the track for the rest of the meeting.
+        let (tx, rx) = mpsc::channel();
+        let (a, pa) = feed(&vec![0.1; 16_000], 16_000);
+        tx.send(a).unwrap();
+        drop((tx, pa));
+        run_writer(Track::System, &mut w, &rx, &shared).unwrap();
+        assert_eq!(w.total_samples(), ALIGN_SLACK_SAMPLES / 2);
+        w.finish().unwrap();
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn writer_failure_is_reported() {
+        let d = tmpdir("diskfull");
+        let shared = Arc::new(Shared::new(level::Clock::new()));
+        let mut events = shared.events.subscribe();
+        let cfg = CaptureConfig::new(d.clone());
+        // Make chunk creation fail: replace the chunks dir with a file after the writer
+        // was constructed (stands in for disk full / permissions).
+        let (tx, rx) = mpsc::channel();
+        let h = spawn_writer(Track::Mic, rx, &cfg, shared.clone()).unwrap();
+        std::fs::remove_dir_all(d.join(wav::CHUNKS_DIR)).unwrap();
+        std::fs::write(d.join(wav::CHUNKS_DIR), b"not a dir").unwrap();
+        let (a, pa) = feed(&vec![0.1; 1_600], 16_000);
+        tx.send(a).unwrap();
+        drop((tx, pa));
+        assert!(h.join().unwrap().is_err());
+        match events.try_recv().unwrap() {
+            CaptureEvent::WriteFailed { track, .. } => assert_eq!(track, Track::Mic),
+            other => panic!("unexpected {other:?}"),
+        }
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn recover_reports_existing_final_files() {
+        let d = tmpdir("finals");
+        assert!(recover(&d).unwrap().is_none());
+        for (track, n) in [(Track::Mic, 32_000usize), (Track::System, 16_000)] {
+            let mut w = hound::WavWriter::create(wav::final_path(&d, track), wav::spec()).unwrap();
+            for _ in 0..n {
+                w.write_sample(0i16).unwrap();
+            }
+            w.finalize().unwrap();
+        }
+        let rec = recover(&d).unwrap().expect("final files are reported");
+        assert_eq!(rec.mic, d.join("mic.wav"));
+        assert_eq!(rec.system, Some(d.join("system.wav")));
+        assert_eq!(rec.duration_ms, 2_000);
+        assert!(!needs_recovery(&d));
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn recover_stitches_leftover_chunks() {
+        let d = tmpdir("leftover");
+        let mut w = wav::ChunkWriter::new(&d, Track::System, 10).unwrap();
+        w.write_silence(4_000).unwrap();
         w.finish().unwrap();
         assert!(needs_recovery(&d));
         let rec = recover(&d).unwrap().unwrap();
         assert!(rec.system.is_some());
+        assert_eq!(rec.duration_ms, 250);
         assert!(!needs_recovery(&d));
-        std::fs::remove_dir_all(&d).unwrap();
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn capture_event_json_shape() {
+        let e = CaptureEvent::DeviceSwitched {
+            track: Track::Mic,
+            device: Some("USB Mic".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            serde_json::json!({"kind": "deviceSwitched", "track": "mic", "device": "USB Mic"})
+        );
+    }
+
+    /// Records ~1 s from the real default devices. `cargo test -p minutae-audio -- --ignored`
+    #[test]
+    #[ignore]
+    fn real_device_smoke() {
+        let d = tmpdir("real");
+        let h = Recorder::new()
+            .start(CaptureConfig::new(d.clone()))
+            .unwrap();
+        let _events = h.events();
+        std::thread::sleep(Duration::from_millis(1_200));
+        let tracks = h.stop().unwrap();
+        assert!(tracks.duration_ms >= 1_000, "{tracks:?}");
+        assert!(!needs_recovery(&d));
+        std::fs::remove_dir_all(d).unwrap();
     }
 }

@@ -1,17 +1,30 @@
 # Minutae v4 (Tauri 2 + Rust workspace + Bun). The Swift app and `legacy/` keep their own
 # workflows (ci.yml / release.yml); this one only covers crates/*, apps/desktop and libs/ui.
 #
-# Windows C runtime: sherpa-onnx's prebuilt static archive (minutae-diarize, feature `static`)
-# is built with /MT (static CRT). whisper.cpp (whisper-rs-sys, via the `cmake` crate) and every
-# `cc`-built C dependency follow Rust's `crt-static` target feature, so the whole workspace is
-# linked with the static CRT: `.cargo/config.toml` sets `-C target-feature=+crt-static` for
-# the MSVC targets (no VC++ redistributable needed at install time). RUSTFLAGS is not set here
-# because it would override that file.
+# Windows C runtime: everything is linked with the static CRT (/MT, no VC++ redistributable
+# needed at install time). sherpa-onnx's prebuilt static archive (minutae-diarize, feature
+# `static`, the only feature set built here) is /MT, so `.cargo/config.toml` sets
+# `-C target-feature=+crt-static` for the MSVC targets, which `cc`-built C code follows.
+# whisper.cpp (whisper-rs-sys, CMake) does not follow it in debug builds, so the same file's
+# `[env]` section pins CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded (+ CMP0091=NEW); whisper-rs-sys
+# forwards CMAKE_* env vars to CMake as defines. RUSTFLAGS is not set here because it would
+# override the config file's rustflags.
 name: v4
 
 on:
+  # Branch pushes are covered by pull_request; push only runs for main (after merge).
   push:
-    branches: [v4-tauri]
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "apps/desktop/**"
+      - "libs/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "package.json"
+      - "bun.lock"
+      - ".cargo/**"
+      - ".github/workflows/v4.yml"
   pull_request:
     paths:
       - "crates/**"
@@ -26,7 +39,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # One run per branch/PR: a newer push cancels the older run.
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -89,13 +103,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           # Also keeps sherpa-onnx's downloaded prebuilt archive (it lives under target/).
-          key: v4
+          # Bumped when build-script env changes (e.g. the CRT settings) to drop stale native builds.
+          key: v4-crt-static
           cache-on-failure: true
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: "1.4.0"
 
       - name: Install JS dependencies
         run: bun install --frozen-lockfile

@@ -163,3 +163,101 @@ pub(crate) fn preflight() -> Preflight {
     }
     Preflight::Paste
 }
+
+// ---------------------------------------------------------------------------
+// Paste keycode for the current keyboard layout
+// ---------------------------------------------------------------------------
+
+/// `kVK_ANSI_V`: the "v" key on a QWERTY layout.
+pub(crate) const ANSI_V: u16 = 9;
+
+type TISInputSourceRef = *const c_void;
+
+#[link(name = "Carbon", kind = "framework")]
+unsafe extern "C" {
+    fn TISCopyCurrentKeyboardLayoutInputSource() -> TISInputSourceRef;
+    fn TISGetInputSourceProperty(source: TISInputSourceRef, key: CFStringRef) -> *const c_void;
+    static kTISPropertyUnicodeKeyLayoutData: CFStringRef;
+    fn LMGetKbdType() -> u8;
+    fn UCKeyTranslate(
+        key_layout: *const c_void,
+        virtual_key_code: u16,
+        key_action: u16,
+        modifier_key_state: u32,
+        keyboard_type: u32,
+        key_translate_options: u32,
+        dead_key_state: *mut u32,
+        max_string_length: usize,
+        actual_string_length: *mut usize,
+        unicode_string: *mut u16,
+    ) -> i32;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFDataGetBytePtr(data: *const c_void) -> *const u8;
+}
+
+unsafe extern "C" {
+    fn pthread_main_np() -> i32;
+}
+
+/// Whether the caller runs on the process's main thread.
+pub(crate) fn is_main_thread() -> bool {
+    // SAFETY: no arguments, no side effects.
+    unsafe { pthread_main_np() != 0 }
+}
+
+/// The virtual keycode that produces "v" together with ⌘ in the current keyboard layout
+/// (e.g. 47 on Dvorak, 9 on QWERTY and "Dvorak – QWERTY ⌘"). `None` when the layout has no
+/// Unicode layout data or no key maps to "v".
+///
+/// **Main thread only**: Text Input Source Services assert the main queue on recent macOS
+/// and abort the process otherwise. Callers check [`is_main_thread`] first.
+pub(crate) fn lookup_v_keycode() -> Option<u16> {
+    const KUC_KEY_ACTION_DISPLAY: u16 = 3;
+    const NO_DEAD_KEYS: u32 = 1; // 1 << kUCKeyTranslateNoDeadKeysBit
+    const CMD_KEY_STATE: u32 = (0x0100 >> 8) & 0xFF; // (cmdKey >> 8) & 0xFF
+    // SAFETY: TIS returns a +1 input source we release; the layout data is a CFData owned by
+    // that source and only read while it is alive; UCKeyTranslate writes at most 4 UTF-16
+    // units into `buf`.
+    unsafe {
+        let source = TISCopyCurrentKeyboardLayoutInputSource();
+        if source.is_null() {
+            return None;
+        }
+        let data = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData);
+        let found = if data.is_null() {
+            None
+        } else {
+            let layout = CFDataGetBytePtr(data) as *const c_void;
+            let kbd_type = u32::from(LMGetKbdType());
+            let translate = |code: u16, modifiers: u32| -> Option<String> {
+                let mut dead = 0u32;
+                let mut len = 0usize;
+                let mut buf = [0u16; 4];
+                let status = UCKeyTranslate(
+                    layout,
+                    code,
+                    KUC_KEY_ACTION_DISPLAY,
+                    modifiers,
+                    kbd_type,
+                    NO_DEAD_KEYS,
+                    &mut dead,
+                    buf.len(),
+                    &mut len,
+                    buf.as_mut_ptr(),
+                );
+                (status == 0 && len > 0).then(|| String::from_utf16_lossy(&buf[..len.min(4)]))
+            };
+            // With ⌘ held first (honours "… – QWERTY ⌘" layouts), then the plain layer.
+            [CMD_KEY_STATE, 0].into_iter().find_map(|mods| {
+                (0u16..128).find(|&code| {
+                    translate(code, mods).is_some_and(|s| s.eq_ignore_ascii_case("v"))
+                })
+            })
+        };
+        CFRelease(source);
+        found
+    }
+}

@@ -20,6 +20,9 @@ tokio.workspace = true
 hound = "3.5"
 whisper-rs = { version = "0.16", features = ["tracing_backend"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
+sha2 = "0.10"
+# Same version whisper-rs 0.16 uses; for the raw progress-callback signature.
+whisper-rs-sys = "0.15"
 
 # Metal is always on for macOS builds (Apple Silicon + Intel with Metal GPUs).
 [target.'cfg(target_os = "macos")'.dependencies]

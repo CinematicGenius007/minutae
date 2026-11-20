@@ -129,7 +129,14 @@ impl SubprocessRunner {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
 
+        #[cfg(unix)]
+        cmd.process_group(0);
+
+        let started = tokio::time::Instant::now();
+        let deadline = started + timeout;
         let mut child = cmd.spawn().map_err(|e| spawn_error(&e, program))?;
+        // The whole tree (npm launchers spawn a native grandchild) dies with this guard.
+        let tree = ProcessTree::attach(&child);
         let mut stdin_pipe = child.stdin.take();
         let input = stdin.as_bytes().to_vec();
         let writer = tokio::spawn(async move {
@@ -138,23 +145,37 @@ impl SubprocessRunner {
                 let _ = pipe.shutdown().await;
             }
         });
-        let out = tokio::spawn(read_capped(child.stdout.take(), self.output_limit));
-        let err = tokio::spawn(read_capped(child.stderr.take(), self.output_limit));
+        let out_buf = SharedBuf::default();
+        let err_buf = SharedBuf::default();
+        let mut out = tokio::spawn(read_capped(
+            child.stdout.take(),
+            self.output_limit,
+            out_buf.clone(),
+        ));
+        let mut err = tokio::spawn(read_capped(
+            child.stderr.take(),
+            self.output_limit,
+            err_buf.clone(),
+        ));
 
         let outcome = tokio::select! {
             status = child.wait() => Ok(status),
-            _ = tokio::time::sleep(timeout) => Err(LlmError::timeout()),
+            _ = tokio::time::sleep_until(deadline) => Err(LlmError::timeout()),
             _ = cancel.cancelled() => Err(LlmError::cancelled()),
         };
         let status = match outcome {
             Ok(Ok(status)) => status,
             Ok(Err(e)) => {
+                tree.kill();
                 writer.abort();
+                out.abort();
+                err.abort();
                 return Err(LlmError::unavailable(format!(
                     "could not wait for subprocess: {e}"
                 )));
             }
             Err(stop) => {
+                tree.kill();
                 let _ = child.start_kill();
                 let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
                 writer.abort();
@@ -163,14 +184,156 @@ impl SubprocessRunner {
                 return Err(stop);
             }
         };
-        let _ = writer.await;
-        let stdout = out.await.unwrap_or_default();
-        let stderr = err.await.unwrap_or_default();
+
+        // The direct child exited, but a grandchild may still hold stdout/stderr open.
+        // Drain only until the original deadline, then kill the tree and keep what was read.
+        let drained = tokio::select! {
+            _ = async { let _ = (&mut out).await; let _ = (&mut err).await; } => Ok(()),
+            _ = tokio::time::sleep_until(deadline) => Err(None),
+            _ = cancel.cancelled() => Err(Some(LlmError::cancelled())),
+        };
+        if let Err(stop) = drained {
+            tree.kill();
+            let grace = Duration::from_millis(500);
+            if tokio::time::timeout(grace, &mut out).await.is_err() {
+                out.abort();
+            }
+            if tokio::time::timeout(grace, &mut err).await.is_err() {
+                err.abort();
+            }
+            if let Some(stop) = stop {
+                writer.abort();
+                return Err(stop);
+            }
+        }
+        writer.abort();
+        // Leftover background processes from the CLI do not outlive the call.
+        tree.kill();
         Ok(SubprocessOutput {
             exit_code: status.code(),
-            stdout,
-            stderr,
+            stdout: out_buf.take(),
+            stderr: err_buf.take(),
         })
+    }
+}
+
+/// Bytes read so far from a pipe; survives aborting the reader task.
+#[derive(Debug, Clone, Default)]
+struct SharedBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl SharedBuf {
+    fn take(&self) -> String {
+        let bytes = std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()));
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+/// Handle on the child's whole process tree: a process group on Unix, a Job Object on Windows.
+/// Killing it (or dropping it) kills grandchildren too.
+struct ProcessTree {
+    #[cfg(unix)]
+    pgid: Option<i32>,
+    #[cfg(windows)]
+    job: Option<win_job::Job>,
+}
+
+impl ProcessTree {
+    fn attach(child: &tokio::process::Child) -> Self {
+        #[cfg(unix)]
+        {
+            // `process_group(0)` made the child the leader of a group whose id is its pid.
+            Self {
+                pgid: child.id().and_then(|id| i32::try_from(id).ok()),
+            }
+        }
+        #[cfg(windows)]
+        {
+            Self {
+                job: child.raw_handle().and_then(win_job::Job::assign),
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = child;
+            Self {}
+        }
+    }
+
+    fn kill(&self) {
+        #[cfg(unix)]
+        if let Some(pgid) = self.pgid {
+            // SAFETY: plain syscall; ESRCH (group already gone) is ignored.
+            unsafe {
+                libc::killpg(pgid, libc::SIGKILL);
+            }
+        }
+        #[cfg(windows)]
+        if let Some(job) = &self.job {
+            job.terminate();
+        }
+    }
+}
+
+impl Drop for ProcessTree {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+#[cfg(windows)]
+mod win_job {
+    use std::ffi::c_void;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject,
+    };
+
+    /// A Job Object with KILL_ON_JOB_CLOSE. Stored as an integer so the guard stays `Send`.
+    pub(super) struct Job(isize);
+
+    impl Job {
+        /// Creates a job and puts `process` in it. Children the process starts afterwards
+        /// join the job automatically.
+        pub(super) fn assign(process: std::os::windows::io::RawHandle) -> Option<Self> {
+            // SAFETY: Win32 calls with valid pointers; the handle is closed on drop.
+            unsafe {
+                let job: HANDLE = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if job.is_null() {
+                    return None;
+                }
+                let guard = Job(job as isize);
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let ok = SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                if ok == 0 || AssignProcessToJobObject(job, process as HANDLE) == 0 {
+                    return None;
+                }
+                Some(guard)
+            }
+        }
+
+        pub(super) fn terminate(&self) {
+            // SAFETY: the handle is owned and open.
+            unsafe {
+                TerminateJobObject(self.0 as HANDLE, 1);
+            }
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: closing our own handle; KILL_ON_JOB_CLOSE ends any survivors.
+            unsafe {
+                CloseHandle(self.0 as HANDLE);
+            }
+        }
     }
 }
 
@@ -189,23 +352,23 @@ fn spawn_error(e: &std::io::Error, program: &Path) -> LlmError {
     }
 }
 
-/// Reads everything, keeping at most `limit` bytes (the rest is drained so the child never blocks).
-async fn read_capped<R: AsyncRead + Unpin>(pipe: Option<R>, limit: usize) -> String {
+/// Reads everything into `kept`, keeping at most `limit` bytes (the rest is drained so the
+/// child never blocks).
+async fn read_capped<R: AsyncRead + Unpin>(pipe: Option<R>, limit: usize, kept: SharedBuf) {
     let Some(mut pipe) = pipe else {
-        return String::new();
+        return;
     };
-    let mut kept = Vec::new();
     let mut buf = [0u8; 16_384];
     loop {
         match pipe.read(&mut buf).await {
             Ok(0) | Err(_) => break,
             Ok(n) => {
+                let mut kept = kept.0.lock().unwrap_or_else(|e| e.into_inner());
                 let room = limit.saturating_sub(kept.len());
                 kept.extend_from_slice(&buf[..n.min(room)]);
             }
         }
     }
-    String::from_utf8_lossy(&kept).into_owned()
 }
 
 /// Puts the binary's own directory on PATH so `#!/usr/bin/env node` scripts (codex) find
@@ -582,6 +745,82 @@ pub(crate) mod tests {
             .unwrap_err();
         assert_eq!(err.kind, FailureKind::Timeout);
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    async fn wait_gone(pid_file: &Path) -> bool {
+        let pid: i32 = std::fs::read_to_string(pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        for _ in 0..40 {
+            // SAFETY: signal 0 only probes for existence.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_kills_grandchildren() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let bin = script(
+            dir.path(),
+            "launcher",
+            &format!("sleep 30 & echo $! > '{}'; wait", pid_file.display()),
+        );
+        let started = std::time::Instant::now();
+        let err = SubprocessRunner::default()
+            .run(
+                &bin,
+                &[],
+                "",
+                dir.path(),
+                Duration::from_millis(1000),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, FailureKind::Timeout);
+        assert!(started.elapsed() < Duration::from_secs(4));
+        assert!(
+            wait_gone(&pid_file).await,
+            "grandchild survived the timeout"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn grandchild_holding_pipe_cannot_outlast_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        // The direct child exits at once; its background child keeps stdout open.
+        let bin = script(
+            dir.path(),
+            "leaky",
+            &format!("sleep 30 & echo $! > '{}'; echo done", pid_file.display()),
+        );
+        let started = std::time::Instant::now();
+        let out = SubprocessRunner::default()
+            .run(
+                &bin,
+                &[],
+                "",
+                dir.path(),
+                Duration::from_millis(500),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(out.stdout.trim(), "done");
+        assert!(out.success());
+        assert!(wait_gone(&pid_file).await, "grandchild survived");
     }
 
     #[cfg(unix)]

@@ -15,13 +15,13 @@ anyhow.workspace = true
 async-trait.workspace = true
 uuid.workspace = true
 chrono.workspace = true
-# Text only: images on the clipboard are not preserved (see insert.rs).
-arboard = { version = "3.7", default-features = false }
+# `image-data`: images on the clipboard are saved and restored around a paste (see insert.rs).
+arboard = { version = "3.7", default-features = false, features = ["image-data"] }
 # Default feature `x11rb` is pure Rust, so Linux builds need no libxdo.
 enigo = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-arboard = { version = "3.7", default-features = false, features = ["wayland-data-control"] }
+arboard = { version = "3.7", default-features = false, features = ["image-data", "wayland-data-control"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

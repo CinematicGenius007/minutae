@@ -301,7 +301,7 @@ mod tests {
         let bin = script(
             dir.path(),
             "grok",
-            r#"cat >/dev/null; f="$2"; m=$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f"); printf '{"text":"%s|%s","stopReason":"end_turn"}' "$(cat "$f")" "$m""#,
+            r#"cat >/dev/null; f="$2"; m=$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f"); printf '{"text":"%s|%s","stopReason":"end_turn"}' "$(cat "$f")" "$m""#,
         );
         let t = GrokTransport::with_binary(None, Some(bin));
         let r = t.complete(&Request::new("hello")).await.unwrap();

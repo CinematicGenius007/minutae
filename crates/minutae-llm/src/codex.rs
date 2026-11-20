@@ -11,23 +11,34 @@ use serde_json::Value;
 
 use crate::LlmTransport;
 use crate::subprocess::{
-    COMMON_PATTERNS, ErrorClassifier, SubprocessRunner, known_locations, resolve_binary,
-    resolve_with_fallbacks, scratch_dir,
+    COMMON_PATTERNS, ErrorClassifier, SubprocessOutput, SubprocessRunner, known_locations,
+    resolve_binary, resolve_with_fallbacks, scratch_dir,
 };
 use crate::types::{Availability, LlmError, Request, Response, transport_id};
 use tokio_util::sync::CancellationToken;
 
+/// Matched only against stderr and the messages of JSON `error` / `turn.failed` events,
+/// never against model output on stdout. Phrases are narrow on purpose.
 const PATTERNS: &[(&str, FailureKind)] = &[
     ("not logged in", FailureKind::NotLoggedIn),
-    ("sign in", FailureKind::NotLoggedIn),
+    ("please sign in", FailureKind::NotLoggedIn),
+    ("sign in again", FailureKind::NotLoggedIn),
     ("login required", FailureKind::NotLoggedIn),
-    ("codex login", FailureKind::NotLoggedIn),
+    ("run codex login", FailureKind::NotLoggedIn),
     ("rate limit", FailureKind::RateLimited),
     ("too many requests", FailureKind::RateLimited),
     ("usage limit", FailureKind::RateLimited),
-    ("not supported", FailureKind::ModelRejected),
+    ("model is not supported", FailureKind::ModelRejected),
+    (
+        "is not supported when using codex",
+        FailureKind::ModelRejected,
+    ),
     ("model not found", FailureKind::ModelRejected),
-    ("does not exist", FailureKind::ModelRejected),
+    ("model_not_found", FailureKind::ModelRejected),
+    (
+        "does not exist or you do not have access",
+        FailureKind::ModelRejected,
+    ),
 ];
 
 pub struct CodexTransport {
@@ -393,7 +404,14 @@ impl CodexTransport {
             )
             .await?;
         let parsed = Self::parse(&result.stdout);
-        if let Some(mut e) = self.classifier.classify(&result) {
+        // Classify from stderr and Codex's own error events only: stdout also carries the
+        // model's text, which may legitimately say "sign in" or "rate limit".
+        let diagnostics = SubprocessOutput {
+            exit_code: result.exit_code,
+            stdout: parsed.error.clone().unwrap_or_default(),
+            stderr: result.stderr.clone(),
+        };
+        if let Some(mut e) = self.classifier.classify(&diagnostics) {
             if let Some(msg) = &parsed.error {
                 e.detail = crate::types::clip(msg, 240);
                 if e.kind == FailureKind::Unavailable
@@ -536,9 +554,36 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn model_text_on_stdout_is_not_classified() {
+            // Failure for an unrelated reason; the agent message mentions signing in.
+            let (_d, t) = fake(
+                r#"cat >/dev/null; echo '{"type":"item.completed","item":{"type":"agent_message","text":"Action: please sign in to the portal; rate limit is 5/s"}}'; echo 'error: unexpected argument' >&2; exit 2"#,
+            );
+            let e = t.complete(&Request::new("x")).await.unwrap_err();
+            assert_eq!(e.kind, FailureKind::Unavailable);
+            assert_eq!(e.detail, "error: unexpected argument");
+
+            // Success: the same text is just the answer.
+            let (_d, t) = fake(
+                r#"cat >/dev/null; echo '{"type":"item.completed","item":{"type":"agent_message","text":"Bob will sign in again tomorrow"}}'"#,
+            );
+            let r = t.complete(&Request::new("x")).await.unwrap();
+            assert_eq!(r.text, "Bob will sign in again tomorrow");
+
+            // A real turn.failed event is still classified.
+            let (_d, t) = fake(
+                r#"cat >/dev/null; echo '{"type":"turn.failed","error":{"message":"stream error: 429 Too Many Requests"}}'; exit 1"#,
+            );
+            assert_eq!(
+                t.complete(&Request::new("x")).await.unwrap_err().kind,
+                FailureKind::RateLimited
+            );
+        }
+
+        #[tokio::test]
         async fn runs_in_empty_private_temp_dir() {
             let (_d, t) = fake(
-                r#"cat >/dev/null; n=$(ls -A | wc -l | tr -d ' '); m=$(stat -f %Lp . 2>/dev/null || stat -c %a .); printf '{"item":{"type":"agent_message","text":"%s %s"}}\n' "$n" "$m""#,
+                r#"cat >/dev/null; n=$(ls -A | wc -l | tr -d ' '); m=$(stat -c %a . 2>/dev/null || stat -f %Lp .); printf '{"item":{"type":"agent_message","text":"%s %s"}}\n' "$n" "$m""#,
             );
             let r = t.complete(&Request::new("x")).await.unwrap();
             assert_eq!(r.text, "0 700");

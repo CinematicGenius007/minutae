@@ -217,9 +217,11 @@ impl Store {
 
             if meetings {
                 // Titles: every token must appear (last as prefix — `instr` covers both).
+                // `title_lc` is lowercased in Rust, so "Über" matches "über" (SQLite's
+                // `lower()` only folds ASCII).
                 let mut sql = String::from("SELECT id, title, started_at FROM meetings WHERE started_at >= ?1");
                 for i in 0..tokens.len().min(8) {
-                    sql.push_str(&format!(" AND instr(lower(title), ?{}) > 0", i + 2));
+                    sql.push_str(&format!(" AND instr(title_lc, ?{}) > 0", i + 2));
                 }
                 sql.push_str(&format!(" ORDER BY started_at DESC LIMIT {limit}"));
                 let mut args: Vec<rusqlite::types::Value> = vec![since.into()];

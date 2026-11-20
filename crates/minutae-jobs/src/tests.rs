@@ -170,7 +170,10 @@ async fn recovers_running_jobs_after_crash() {
     );
     assert_eq!(runner.start().await.unwrap(), 1);
     let j = wait_state(&store, rec.id, JobState::Succeeded).await;
-    assert_eq!(j.attempts, 1, "interrupted attempt is not counted");
+    assert_eq!(
+        j.attempts, 2,
+        "the interrupted attempt counts toward max_attempts"
+    );
 }
 
 struct Slow {
@@ -378,6 +381,105 @@ async fn handlers_chain_follow_up_jobs() {
         assert!(Instant::now() < deadline, "follow-up job never ran");
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+}
+
+#[tokio::test]
+async fn cancel_between_claim_and_spawn_never_runs_the_job() {
+    let store = Store::open_in_memory().unwrap();
+    let h = flaky(0, FailureKind::Io);
+    let runner = JobRunner::with_config(
+        store.clone(),
+        [(JobKind::Index, h.clone() as Arc<dyn JobHandler>)],
+        fast_config(),
+    );
+    let mut events = runner.subscribe();
+    let rec = store
+        .insert_job(&NewJob::new(JobKind::Index, json!(null), None))
+        .unwrap();
+    // Replay the scheduler's steps by hand with a cancel landing after the claim.
+    let cancel_rx = reserve(&runner.inner, &rec).unwrap();
+    let claimed = store.claim_job(rec.id).unwrap().unwrap();
+    assert!(runner.cancel(rec.id).await.unwrap());
+    spawn_job(&runner.inner, claimed, h.clone(), cancel_rx);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(h.calls.load(Ordering::SeqCst), 0, "handler must not run");
+    assert_eq!(runner.running_count(), 0);
+    assert_eq!(
+        store.get_job(rec.id).unwrap().unwrap().state,
+        JobState::Cancelled
+    );
+    let u = events.try_recv().unwrap();
+    assert_eq!((u.job_id, u.state), (rec.id, JobState::Cancelled));
+}
+
+#[tokio::test]
+async fn cancel_before_claim_releases_reservation_and_reports() {
+    let store = Store::open_in_memory().unwrap();
+    let runner = JobRunner::with_config(
+        store.clone(),
+        [(
+            JobKind::Index,
+            flaky(0, FailureKind::Io) as Arc<dyn JobHandler>,
+        )],
+        fast_config(),
+    );
+    let mut events = runner.subscribe();
+    let rec = store
+        .insert_job(&NewJob::new(JobKind::Index, json!(null), None))
+        .unwrap();
+    let _rx = reserve(&runner.inner, &rec).unwrap();
+    assert!(runner.cancel(rec.id).await.unwrap());
+    assert!(store.claim_job(rec.id).unwrap().is_none());
+    unreserve(&runner.inner, &rec);
+    assert_eq!(runner.running_count(), 0);
+    let u = events.try_recv().unwrap();
+    assert_eq!((u.job_id, u.state), (rec.id, JobState::Cancelled));
+}
+
+/// Enqueues a follow-up, then the job is cancelled before success is recorded.
+struct ChainThenCancelled;
+
+#[async_trait]
+impl JobHandler for ChainThenCancelled {
+    async fn run(&self, job: JobRecord, ctx: JobContext) -> Result<(), Failure> {
+        ctx.enqueue(NewJob::new(JobKind::Export, json!(null), None))
+            .await
+            .unwrap();
+        // The user's cancel reaches the store after the handler's work is done.
+        ctx.store().cancel_job(job.id).unwrap();
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn cancel_after_handler_finished_cancels_follow_ups() {
+    let store = Store::open_in_memory().unwrap();
+    // No Export handler: the follow-up stays queued unless it is cancelled.
+    let runner = JobRunner::with_config(
+        store.clone(),
+        [(
+            JobKind::Summarize,
+            Arc::new(ChainThenCancelled) as Arc<dyn JobHandler>,
+        )],
+        fast_config(),
+    );
+    runner.start().await.unwrap();
+    let id = runner
+        .enqueue(JobKind::Summarize, json!(null), None)
+        .await
+        .unwrap();
+    wait_state(&store, id, JobState::Cancelled).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let follow = store.list_jobs(&[], 10).unwrap();
+        let f = follow.iter().find(|j| j.kind == JobKind::Export).unwrap();
+        if f.state == JobState::Cancelled {
+            break;
+        }
+        assert!(Instant::now() < deadline, "follow-up still {:?}", f.state);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    runner.shutdown().await;
 }
 
 struct Panics;

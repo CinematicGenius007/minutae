@@ -316,18 +316,32 @@ impl Store {
         })
     }
 
-    /// Crash recovery: every `running` job goes back to `queued`; the interrupted
-    /// attempt is not counted. Returns the number of recovered jobs.
+    /// Crash recovery: every `running` job was interrupted by the app quitting or crashing.
+    /// The interrupted attempt **is counted** (a job that crashes the process must not rerun
+    /// forever): jobs with attempts left go back to `queued`, the rest become `failed`.
+    /// Returns the number of re-queued jobs.
     pub fn recover_running_jobs(&self) -> Result<usize> {
-        self.write(|c| {
-            Ok(c.execute(
-                "UPDATE jobs SET state = 'queued', attempts = MAX(attempts - 1, 0), updated_at = ?1 WHERE state = 'running'",
-                [now_ms()],
+        let failure = serde_json::to_string(&Failure {
+            kind: minutae_core::FailureKind::Internal,
+            message: "The app stopped while this job was running.".into(),
+            fix: Some("Retry".into()),
+        })?;
+        self.transaction(|tx| {
+            let now = now_ms();
+            tx.execute(
+                "UPDATE jobs SET state = 'failed', last_error = ?2, updated_at = ?1
+                 WHERE state = 'running' AND attempts >= max_attempts",
+                params![now, failure],
+            )?;
+            Ok(tx.execute(
+                "UPDATE jobs SET state = 'queued', updated_at = ?1 WHERE state = 'running'",
+                [now],
             )?)
         })
     }
 
-    /// Same as [`Store::recover_running_jobs`] for one job (used on graceful shutdown).
+    /// Graceful shutdown: one running job goes back to `queued` and the interrupted attempt
+    /// is refunded (unlike [`Store::recover_running_jobs`], the job did not crash anything).
     pub fn release_job(&self, id: JobId) -> Result<bool> {
         self.write(|c| {
             Ok(c.execute(
@@ -338,11 +352,20 @@ impl Store {
         })
     }
 
+    /// Progress is only recorded while the job is running; a late write after the job
+    /// finished (throttled progress persists off-thread) is ignored.
     pub fn set_job_progress(&self, id: JobId, p: &Progress) -> Result<()> {
         self.write(|c| {
             c.execute(
-                "UPDATE jobs SET stage = ?2, fraction = ?3, eta_seconds = ?4, updated_at = ?5 WHERE id = ?1",
-                params![id.to_string(), enum_str(&p.stage), p.fraction as f64, p.eta_seconds, now_ms()],
+                "UPDATE jobs SET stage = ?2, fraction = ?3, eta_seconds = ?4, updated_at = ?5
+                 WHERE id = ?1 AND state = 'running'",
+                params![
+                    id.to_string(),
+                    enum_str(&p.stage),
+                    p.fraction as f64,
+                    p.eta_seconds,
+                    now_ms()
+                ],
             )?;
             Ok(())
         })

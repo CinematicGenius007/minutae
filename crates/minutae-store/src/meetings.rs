@@ -8,6 +8,7 @@ use minutae_core::{
 use rusqlite::{OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 
+use crate::schema::title_key;
 use crate::summaries::ActionItemRow;
 use crate::{
     Result, Store, StoreError, enum_from, enum_str, from_ms, json_col, ms, now_ms, parse_uuid,
@@ -146,8 +147,8 @@ impl Store {
         let now = now_ms();
         self.write(|c| {
             c.execute(
-                "INSERT INTO meetings (id, title, started_at, ended_at, status, source_app, failure, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                "INSERT INTO meetings (id, title, started_at, ended_at, status, source_app, failure, created_at, updated_at, title_lc)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9)",
                 params![
                     m.id.to_string(),
                     m.title,
@@ -156,7 +157,8 @@ impl Store {
                     enum_str(&m.status),
                     m.source_app,
                     m.failure.as_ref().map(serde_json::to_string).transpose()?,
-                    now
+                    now,
+                    title_key(&m.title)
                 ],
             )?;
             Ok(())
@@ -168,7 +170,7 @@ impl Store {
         self.write(|c| {
             let n = c.execute(
                 "UPDATE meetings SET title = ?2, started_at = ?3, ended_at = ?4, status = ?5, source_app = ?6,
-                 failure = ?7, updated_at = ?8 WHERE id = ?1",
+                 failure = ?7, updated_at = ?8, title_lc = ?9 WHERE id = ?1",
                 params![
                     m.id.to_string(),
                     m.title,
@@ -177,7 +179,8 @@ impl Store {
                     enum_str(&m.status),
                     m.source_app,
                     m.failure.as_ref().map(serde_json::to_string).transpose()?,
-                    now_ms()
+                    now_ms(),
+                    title_key(&m.title)
                 ],
             )?;
             expect_one(n, m.id)
@@ -198,8 +201,8 @@ impl Store {
     pub fn rename_meeting(&self, id: MeetingId, title: &str) -> Result<()> {
         self.write(|c| {
             let n = c.execute(
-                "UPDATE meetings SET title = ?2, updated_at = ?3 WHERE id = ?1",
-                params![id.to_string(), title, now_ms()],
+                "UPDATE meetings SET title = ?2, updated_at = ?3, title_lc = ?4 WHERE id = ?1",
+                params![id.to_string(), title, now_ms(), title_key(title)],
             )?;
             expect_one(n, id)
         })

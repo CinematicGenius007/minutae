@@ -106,6 +106,41 @@ pub(crate) fn preflight() -> Preflight {
     }
 }
 
+/// macOS: cached keycode for the "v" of ⌘V in the current keyboard layout (QWERTY's 9 until
+/// a lookup succeeds).
+#[cfg(target_os = "macos")]
+static PASTE_KEYCODE: std::sync::atomic::AtomicU16 =
+    std::sync::atomic::AtomicU16::new(macos::ANSI_V);
+
+/// Re-reads which key types "v" in the current keyboard layout (Dvorak, AZERTY, …) so the
+/// simulated ⌘V works there. Returns the cached keycode (macOS) or `None` elsewhere.
+///
+/// The lookup uses Text Input Source Services, which must run on the **main thread**; off the
+/// main thread this does nothing and keeps the cached value. [`crate::SystemInserter::default`]
+/// calls it, so constructing the inserter on the main thread is enough; call it again (on the
+/// main thread) when the input source changes. Insertion itself runs on a worker and only
+/// reads the cache.
+pub fn refresh_paste_keycode() -> Option<u16> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::sync::atomic::Ordering;
+        if macos::is_main_thread()
+            && let Some(code) = macos::lookup_v_keycode()
+        {
+            PASTE_KEYCODE.store(code, Ordering::Relaxed);
+        }
+        Some(PASTE_KEYCODE.load(Ordering::Relaxed))
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
+/// The cached keycode used for ⌘V (see [`refresh_paste_keycode`]).
+#[cfg(target_os = "macos")]
+pub(crate) fn paste_keycode() -> u16 {
+    PASTE_KEYCODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// On X11/Wayland the clipboard is served by the owning process, so the
 /// `Clipboard` must outlive the paste. Elsewhere dropping it is fine.
 pub(crate) fn keep_clipboard_alive(clipboard: arboard::Clipboard) {
@@ -123,6 +158,14 @@ pub(crate) fn keep_clipboard_alive(clipboard: arboard::Clipboard) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn paste_keycode_off_main_thread_keeps_cache() {
+        // Test threads are not the main thread: no TIS call, the cached value is returned.
+        assert!(!macos::is_main_thread());
+        assert_eq!(refresh_paste_keycode(), Some(paste_keycode()));
+    }
 
     #[test]
     fn linux_session_detection() {

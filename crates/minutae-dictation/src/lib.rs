@@ -27,6 +27,6 @@ pub use controller::{
 pub use insert::{CopyReason, InsertOutcome, Inserter, SystemInserter};
 pub use platform::{
     InsertionSupport, SessionKind, accessibility_trusted, frontmost_app_name, insertion_support,
-    prompt_accessibility, session_kind,
+    prompt_accessibility, refresh_paste_keycode, session_kind,
 };
 pub use source::{AudioSource, SAMPLE_RATE, SpeechToText};

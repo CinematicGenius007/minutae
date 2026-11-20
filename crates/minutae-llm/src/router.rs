@@ -4,6 +4,8 @@
 //! - Falls through on NotInstalled, NotLoggedIn, RateLimited, Timeout, ModelRejected, ModelMissing.
 //! - Stops immediately on Cancelled; other errors (Unavailable, Io, …) stop and are returned,
 //!   as the Swift router did.
+//! - When every transport fails, the error carries the last real call's kind and transport;
+//!   `NoProviderReady` means no transport was ready to call at all.
 //! - JSON mode: invalid JSON gets one repair attempt on the same transport; a failed repair
 //!   counts as InvalidOutput and the router moves on.
 //! - Every call (success or failure) emits a [`UsageRecord`].
@@ -66,7 +68,9 @@ pub struct Attempt {
     pub detail: String,
 }
 
-/// Why routing failed. `kind` is `NoProviderReady` when every transport was skipped.
+/// Why routing failed. `kind` is `NoProviderReady` only when every transport was skipped as
+/// not ready; otherwise it is the kind of the last transport that was actually called
+/// (e.g. `Timeout`, `RateLimited`, `InvalidOutput`), so callers can retry transient failures.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[error("{kind:?} after {} attempt(s)", attempts.len())]
 pub struct RouteError {
@@ -80,6 +84,23 @@ impl RouteError {
     pub fn failure(&self) -> Failure {
         failure_for(self.kind, self.transport)
     }
+    /// Every transport was tried or skipped. `last_real` indexes the last attempt that
+    /// reached a transport call (as opposed to an availability skip).
+    fn exhausted(attempts: Vec<Attempt>, last_real: Option<usize>) -> Self {
+        match last_real.and_then(|i| attempts.get(i)) {
+            Some(a) => Self {
+                kind: a.kind,
+                transport: Some(a.transport),
+                attempts,
+            },
+            None => Self {
+                kind: FailureKind::NoProviderReady,
+                transport: None,
+                attempts,
+            },
+        }
+    }
+
     fn stop(t: Transport, e: LlmError, mut attempts: Vec<Attempt>) -> Self {
         attempts.push(Attempt {
             transport: t,
@@ -201,6 +222,7 @@ impl Router {
     /// Plain text completion.
     pub async fn complete(&self, req: &Request) -> Result<Routed, RouteError> {
         let mut attempts = vec![];
+        let mut last_real = None;
         for id in self.order.clone() {
             let Some(t) = self.ready(id, req, &mut attempts).await? else {
                 continue;
@@ -213,14 +235,13 @@ impl Router {
                         skipped: attempts,
                     });
                 }
-                Err(e) => self.dispose(id, e, &mut attempts)?,
+                Err(e) => {
+                    self.dispose(id, e, &mut attempts)?;
+                    last_real = Some(attempts.len() - 1);
+                }
             }
         }
-        Err(RouteError {
-            kind: FailureKind::NoProviderReady,
-            transport: None,
-            attempts,
-        })
+        Err(RouteError::exhausted(attempts, last_real))
     }
 
     /// JSON completion decoded into `T`, with one repair attempt per transport.
@@ -229,6 +250,7 @@ impl Router {
         req: &Request,
     ) -> Result<(T, Routed), RouteError> {
         let mut attempts = vec![];
+        let mut last_real = None;
         for id in self.order.clone() {
             let Some(t) = self.ready(id, req, &mut attempts).await? else {
                 continue;
@@ -237,6 +259,7 @@ impl Router {
                 Ok(r) => r,
                 Err(e) => {
                     self.dispose(id, e, &mut attempts)?;
+                    last_real = Some(attempts.len() - 1);
                     continue;
                 }
             };
@@ -278,12 +301,9 @@ impl Router {
                 },
                 Err(e) => self.dispose(id, e, &mut attempts)?,
             }
+            last_real = Some(attempts.len() - 1);
         }
-        Err(RouteError {
-            kind: FailureKind::NoProviderReady,
-            transport: None,
-            attempts,
-        })
+        Err(RouteError::exhausted(attempts, last_real))
     }
 
     async fn ready(
@@ -555,6 +575,45 @@ mod tests {
         assert_eq!(
             e.failure().message,
             "No summary provider is ready. Transcript is saved."
+        );
+    }
+
+    #[tokio::test]
+    async fn exhausted_reports_last_real_attempt_not_no_provider() {
+        // Grok times out, Ollama is skipped as not ready: the job should see a retryable Timeout.
+        let a = FakeTransport::new(Transport::GrokCli, vec![Err(LlmError::timeout())]);
+        let b = FakeTransport::unavailable(Transport::Ollama, Availability::NotInstalled);
+        let e = router(vec![a, b])
+            .complete(&Request::new("x"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (e.kind, e.transport),
+            (FailureKind::Timeout, Some(Transport::GrokCli))
+        );
+        assert_eq!(e.attempts.len(), 2);
+
+        let a = FakeTransport::new(Transport::CodexCli, vec![Err(LlmError::timeout())]);
+        let b = FakeTransport::new(Transport::Ollama, vec![Err(LlmError::rate_limited("x"))]);
+        let e = router(vec![a, b])
+            .complete(&Request::new("x"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (e.kind, e.transport),
+            (FailureKind::RateLimited, Some(Transport::Ollama))
+        );
+
+        // JSON: invalid output twice, nothing else ready.
+        let a = FakeTransport::new(Transport::CodexCli, vec![Ok("nope"), Ok("still nope")]);
+        let b = FakeTransport::unavailable(Transport::Ollama, Availability::NotInstalled);
+        let e = router(vec![a, b])
+            .complete_json::<J>(&Request::new("x"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (e.kind, e.transport),
+            (FailureKind::InvalidOutput, Some(Transport::CodexCli))
         );
     }
 

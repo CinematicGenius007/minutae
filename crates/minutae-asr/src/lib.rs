@@ -19,7 +19,7 @@ use std::sync::atomic::AtomicBool;
 pub use audio::{TARGET_SAMPLE_RATE, read_wav_16k_mono};
 pub use fake::FakeTranscriber;
 use minutae_core::{Failure, FailureKind, Segment, Track};
-pub use models::{DownloadProgress, ModelInfo, ModelManager, ModelStatus, model_info};
+pub use models::{DownloadProgress, Integrity, ModelInfo, ModelManager, ModelStatus, model_info};
 pub use whisper::WhisperTranscriber;
 
 /// Progress callback: fraction in `0.0..=1.0`.

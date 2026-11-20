@@ -197,21 +197,117 @@ pub fn read_pcm16_tolerant(path: &Path) -> Result<Vec<i16>> {
     Ok(Vec::new())
 }
 
+/// Number of samples in a finished (or crash-truncated) mono 16-bit WAV.
+pub fn wav_samples(path: &Path) -> Result<u64> {
+    match hound::WavReader::open(path) {
+        Ok(r) if r.len() > 0 => Ok(r.len() as u64),
+        // Header sizes never written (or unreadable): count what is actually there.
+        _ => Ok(read_pcm16_tolerant(path)?.len() as u64),
+    }
+}
+
+/// `chunks/{track}.stitched`: written (atomically) after `{track}.wav.tmp` is complete and
+/// before it replaces `{track}.wav`; holds the last chunk sequence number it contains. While it
+/// exists, chunks up to that number are already in the final file (or in the tmp file about
+/// to become it) and must not be stitched again.
+fn marker_path(out_dir: &Path, track: Track) -> PathBuf {
+    out_dir
+        .join(CHUNKS_DIR)
+        .join(format!("{}.stitched", track_name(track)))
+}
+
+fn read_marker(path: &Path) -> Result<Option<u32>> {
+    match fs::read_to_string(path) {
+        Ok(s) => match s.trim().parse::<u32>() {
+            Ok(n) => Ok(Some(n)),
+            Err(_) => {
+                // Written via tmp + rename, so this should be impossible; ignore it.
+                tracing::warn!(?path, "ignoring unreadable stitch marker");
+                fs::remove_file(path)?;
+                Ok(None)
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn write_marker(path: &Path, last_seq: u32) -> Result<()> {
+    let tmp = path.with_extension("stitched.tmp");
+    {
+        let mut f = File::create(&tmp)?;
+        std::io::Write::write_all(&mut f, last_seq.to_string().as_bytes())?;
+        f.sync_all()?;
+    }
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+fn remove_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Test hook: stop `stitch` at a given point to simulate a crash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CrashAt {
+    AfterMarker,
+    AfterRename,
+}
+
 /// Concatenate all chunks of `track` into `out_dir/{track}.wav`, then delete
 /// the chunks. Returns the final path and sample count, or `None` if there
 /// were no chunks. Unreadable chunks are skipped (logged), not fatal.
+///
+/// If `{track}.wav` already exists, the chunks are appended to it. Crash-safe and
+/// idempotent: a stitch interrupted at any point is completed by the next call without
+/// duplicating audio (see [`marker_path`]).
 pub fn stitch(out_dir: &Path, track: Track) -> Result<Option<(PathBuf, u64)>> {
+    stitch_impl(out_dir, track, None)
+}
+
+fn stitch_impl(
+    out_dir: &Path,
+    track: Track,
+    crash: Option<CrashAt>,
+) -> Result<Option<(PathBuf, u64)>> {
     let dir = out_dir.join(CHUNKS_DIR);
-    let chunks = list_chunks(&dir, track)?;
-    if chunks.is_empty() {
-        return Ok(None);
-    }
     let final_path = final_path(out_dir, track);
     let tmp = final_path.with_extension("wav.tmp");
+    let marker = marker_path(out_dir, track);
+
+    // 1. Finish a stitch that was interrupted after its output was complete.
+    let mut completed_previous = false;
+    if let Some(last) = read_marker(&marker)? {
+        if tmp.exists() {
+            fs::rename(&tmp, &final_path)?; // crashed before the rename
+        }
+        for (seq, path) in list_chunks(&dir, track)? {
+            if seq <= last {
+                remove_if_exists(&path)?;
+            }
+        }
+        fs::remove_file(&marker)?;
+        completed_previous = true;
+    }
+
+    let chunks = list_chunks(&dir, track)?;
+    if chunks.is_empty() {
+        let _ = fs::remove_dir(&dir); // only succeeds when empty
+        return if completed_previous && final_path.exists() {
+            Ok(Some((final_path.clone(), wav_samples(&final_path)?)))
+        } else {
+            Ok(None)
+        };
+    }
+
+    // 2. Build `{track}.wav.tmp` = existing final (if any) + chunks.
     let total;
     {
         let mut w = hound::WavWriter::create(&tmp, spec())?;
-        // If a previous stitch left a final file (e.g. crash during cleanup), keep it first.
         if final_path.exists() {
             for s in read_pcm16_tolerant(&final_path)? {
                 w.write_sample(s)?;
@@ -230,12 +326,29 @@ pub fn stitch(out_dir: &Path, track: Track) -> Result<Option<(PathBuf, u64)>> {
         total = w.len() as u64;
         w.finalize()?;
     }
-    fs::rename(&tmp, &final_path)?;
-    for (_, path) in &chunks {
-        let _ = fs::remove_file(path);
+    File::open(&tmp)?.sync_all()?;
+
+    // 3. Record which chunks the tmp file holds, then swap it in and clean up.
+    let last_seq = chunks.last().map(|(s, _)| *s).unwrap_or(0);
+    write_marker(&marker, last_seq)?;
+    if crash == Some(CrashAt::AfterMarker) {
+        return Ok(None);
     }
+    fs::rename(&tmp, &final_path)?;
+    if crash == Some(CrashAt::AfterRename) {
+        return Ok(None);
+    }
+    for (_, path) in &chunks {
+        remove_if_exists(path)?;
+    }
+    fs::remove_file(&marker)?;
     let _ = fs::remove_dir(&dir); // only succeeds when empty
     Ok(Some((final_path, total)))
+}
+
+/// True if a stitch of `track` was interrupted (see [`marker_path`]).
+pub fn has_stitch_marker(out_dir: &Path, track: Track) -> bool {
+    marker_path(out_dir, track).exists()
 }
 
 #[cfg(test)]
@@ -335,6 +448,88 @@ mod tests {
                 .collect::<Vec<_>>()[..]
         );
         assert!(rec.system.is_none());
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    fn read_all(p: &Path) -> Vec<i16> {
+        hound::WavReader::open(p)
+            .unwrap()
+            .samples::<i16>()
+            .map(|s| s.unwrap())
+            .collect()
+    }
+
+    fn write_chunks(d: &Path, input: &[f32]) {
+        let mut w = ChunkWriter::new(d, Track::Mic, 1).unwrap();
+        w.write(input).unwrap();
+        w.finish().unwrap();
+    }
+
+    #[test]
+    fn stitch_crash_after_rename_does_not_duplicate() {
+        let d = tmpdir("crash-rename");
+        let input = ramp(16_000 * 2 + 50);
+        let want: Vec<i16> = input.iter().map(|&x| f32_to_i16(x)).collect();
+        write_chunks(&d, &input);
+        // Crash after the final file was replaced but before any chunk was deleted.
+        assert!(
+            stitch_impl(&d, Track::Mic, Some(CrashAt::AfterRename))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(read_all(&d.join("mic.wav")), want);
+        assert_eq!(
+            list_chunks(&d.join(CHUNKS_DIR), Track::Mic).unwrap().len(),
+            3
+        );
+        assert!(has_stitch_marker(&d, Track::Mic));
+        assert!(crate::needs_recovery(&d));
+        // Recovery finishes the cleanup without appending the chunks a second time.
+        let rec = crate::recover(&d).unwrap().unwrap();
+        assert_eq!(read_all(&rec.mic), want);
+        assert_eq!(rec.duration_ms, want.len() as u64 * 1000 / 16_000);
+        assert!(!d.join(CHUNKS_DIR).exists());
+        assert!(!crate::needs_recovery(&d));
+        // Running it again is a no-op that still reports the file.
+        let again = crate::recover(&d).unwrap().unwrap();
+        assert_eq!(read_all(&again.mic), want);
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn stitch_crash_before_rename_uses_complete_tmp() {
+        let d = tmpdir("crash-marker");
+        let input = ramp(16_000 + 700);
+        let want: Vec<i16> = input.iter().map(|&x| f32_to_i16(x)).collect();
+        write_chunks(&d, &input);
+        assert!(
+            stitch_impl(&d, Track::Mic, Some(CrashAt::AfterMarker))
+                .unwrap()
+                .is_none()
+        );
+        assert!(!d.join("mic.wav").exists());
+        assert!(d.join("mic.wav.tmp").exists());
+        let (p, n) = stitch(&d, Track::Mic).unwrap().unwrap();
+        assert_eq!(n, want.len() as u64);
+        assert_eq!(read_all(&p), want);
+        assert!(!d.join("mic.wav.tmp").exists());
+        assert!(!d.join(CHUNKS_DIR).exists());
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn stitch_appends_new_chunks_to_existing_final() {
+        let d = tmpdir("append");
+        let a = ramp(1_000);
+        let b: Vec<f32> = ramp(2_000).into_iter().map(|x| x * 0.5).collect();
+        write_chunks(&d, &a);
+        stitch(&d, Track::Mic).unwrap().unwrap();
+        write_chunks(&d, &b);
+        let (p, n) = stitch(&d, Track::Mic).unwrap().unwrap();
+        assert_eq!(n, 3_000);
+        let want: Vec<i16> = a.iter().chain(&b).map(|&x| f32_to_i16(x)).collect();
+        assert_eq!(read_all(&p), want);
+        assert_eq!(wav_samples(&p).unwrap(), 3_000);
         fs::remove_dir_all(d).unwrap();
     }
 

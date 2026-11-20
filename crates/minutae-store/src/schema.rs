@@ -230,7 +230,46 @@ CREATE TRIGGER dictations_au AFTER UPDATE OF text ON dictations BEGIN
 END;
 "#;
 
-const MIGRATIONS: &[&str] = &[V1];
+/// v2: `meetings.title_lc`, the title lowercased by Rust (Unicode-aware, unlike SQLite's
+/// ASCII-only `lower()`), used by title search. Maintained by the meeting write paths.
+const V2: &str = r#"
+ALTER TABLE meetings ADD COLUMN title_lc TEXT NOT NULL DEFAULT '';
+"#;
+
+/// One schema step: SQL, then an optional Rust data step in the same transaction.
+struct Migration {
+    sql: &'static str,
+    data: Option<fn(&rusqlite::Transaction<'_>) -> Result<()>>,
+}
+
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        sql: V1,
+        data: None,
+    },
+    Migration {
+        sql: V2,
+        data: Some(backfill_title_lc),
+    },
+];
+
+/// Lowercased form stored in `meetings.title_lc`; must match how search tokens are lowercased.
+pub(crate) fn title_key(title: &str) -> String {
+    title.to_lowercase()
+}
+
+fn backfill_title_lc(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    let rows: Vec<(String, String)> = {
+        let mut stmt = tx.prepare("SELECT id, title FROM meetings")?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    let mut update = tx.prepare("UPDATE meetings SET title_lc = ?2 WHERE id = ?1")?;
+    for (id, title) in rows {
+        update.execute(rusqlite::params![id, title_key(&title)])?;
+    }
+    Ok(())
+}
 
 /// Latest schema version this build knows.
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -242,10 +281,13 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<u32> {
             "database schema v{current} is newer than this app (v{SCHEMA_VERSION})"
         )));
     }
-    for (i, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
+    for (i, m) in MIGRATIONS.iter().enumerate().skip(current as usize) {
         let version = i as u32 + 1;
         let tx = conn.transaction()?;
-        tx.execute_batch(sql)?;
+        tx.execute_batch(m.sql)?;
+        if let Some(data) = m.data {
+            data(&tx)?;
+        }
         tx.pragma_update(None, "user_version", version)?;
         tx.commit()?;
         tracing::info!(version, "applied migration");
