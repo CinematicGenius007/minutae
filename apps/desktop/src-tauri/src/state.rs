@@ -146,6 +146,8 @@ pub struct AppState {
     pub last_export: Mutex<Option<PathBuf>>,
     /// Dictation hotkey presses/releases, handled in order off the main thread.
     pub dictation_keys: OnceLock<std::sync::mpsc::Sender<bool>>,
+    /// True while `import_legacy_run` works, so a second click can't start another run.
+    pub importing: std::sync::atomic::AtomicBool,
 }
 
 impl AppState {
@@ -177,6 +179,7 @@ impl AppState {
             picked_folders: Mutex::new(Default::default()),
             last_export: Mutex::new(None),
             dictation_keys: OnceLock::new(),
+            importing: Default::default(),
         }
     }
 

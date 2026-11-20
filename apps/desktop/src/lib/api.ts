@@ -6,7 +6,7 @@ import type {
   Answer, AppSettings, ApiProvider, CaptionLine, DayGroup, DiarizeModelInfo, Dictation, DictationStats,
   HudState, InputDevice, LevelFrame, MeetingDetail, Moment, ModelInfo, Permissions, PlatformInfo, Progress,
   ProviderStatus, RecordingState, SearchHit, SearchKind, StorageUsage, UsageMonth, Uuid, WhisperModel, Route,
-  Meeting,
+  Meeting, LegacyScan, ImportProgress, ImportFinished,
 } from "./types";
 import { mockInvoke, mockListen } from "./mock";
 
@@ -98,6 +98,12 @@ export const api = {
   pickFolder: () => call<string | null>("pick_folder"),
   exportAll: () => call<string | null>("export_all"),
   eraseAll: () => call<void>("erase_all"),
+
+  // import from older Minutae apps (MIG-10)
+  /** Older databases found at their default paths, with counts. Reads only. */
+  importLegacyScan: () => call<LegacyScan>("import_legacy_scan"),
+  /** Starts the import and returns at once; follow `events.importProgress` / `events.importFinished`. */
+  importLegacyRun: () => call<void>("import_legacy_run"),
 };
 
 /** Backend → UI events. Event names are the strings below. */
@@ -118,4 +124,7 @@ export const events = {
   settingsChanged: (cb: (s: AppSettings) => void) => on("settings://changed", cb),
   /** Tray / menu / shortcut asks the main window to navigate. */
   navigate: (cb: (p: { route: Route }) => void) => on("nav://goto", cb),
+  importProgress: (cb: (p: ImportProgress) => void) => on("import://progress", cb),
+  /** One per `importLegacyRun`. Meetings/dictations changed events follow. */
+  importFinished: (cb: (p: ImportFinished) => void) => on("import://finished", cb),
 };

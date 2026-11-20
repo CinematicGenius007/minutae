@@ -1188,7 +1188,8 @@ pub async fn erase_all(app: AppHandle) -> R<()> {
             s.write(|c| {
                 Ok(c.execute_batch(
                     "DELETE FROM jobs; DELETE FROM meetings; DELETE FROM dictations; DELETE FROM api_usage;
-                     DELETE FROM speaker_profiles; DELETE FROM settings; DELETE FROM imports;",
+                     DELETE FROM speaker_profiles; DELETE FROM settings; DELETE FROM imports;
+                     DELETE FROM legacy_imports;",
                 )?)
             })?;
             s.write(|c| Ok(c.execute_batch("VACUUM;")?))
@@ -1238,6 +1239,91 @@ pub async fn erase_all(app: AppHandle) -> R<()> {
                 .into(),
         );
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------- import (MIG-10)
+
+/// Older Minutae databases found at their default paths, with counts. Reads only.
+#[tauri::command]
+pub async fn import_legacy_scan(state: State<'_, AppState>) -> R<dto::LegacyScan> {
+    let store = state.store.clone();
+    let sources = tokio::task::spawn_blocking(move || {
+        minutae_import::scan(&store, &minutae_import::detect())
+    })
+    .await
+    .map_err(err)?;
+    Ok(dto::LegacyScan {
+        sources,
+        running: state.importing.load(std::sync::atomic::Ordering::SeqCst),
+    })
+}
+
+/// Start importing every found source. Returns at once; the work runs on the blocking pool
+/// and reports `import://progress` (throttled) and one `import://finished`.
+///
+/// Not a `minutae-jobs` job: those are per-meeting pipeline steps reported as `job://progress`
+/// stages. The import is idempotent (`legacy_imports`), so after a crash the user re-runs it.
+#[tauri::command]
+pub fn import_legacy_run(app: AppHandle) -> R<()> {
+    use std::sync::atomic::Ordering;
+    let st = app.state::<AppState>();
+    if st.importing.swap(true, Ordering::SeqCst) {
+        return Err("An import is already running.".into());
+    }
+    let store = st.store.clone();
+    let root = recordings_root(&st.settings());
+    let a = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let emitter = a.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            let sources = minutae_import::detect();
+            let mut last = std::time::Instant::now();
+            let mut progress = |p: &dto::ImportProgress| {
+                if p.done == p.total || last.elapsed() >= std::time::Duration::from_millis(100) {
+                    last = std::time::Instant::now();
+                    let _ = emitter.emit(ev::IMPORT_PROGRESS, p);
+                }
+            };
+            minutae_import::run(
+                &store,
+                &sources,
+                minutae_import::RunOptions {
+                    recordings_root: root,
+                    progress: &mut progress,
+                },
+            )
+        })
+        .await;
+        a.state::<AppState>()
+            .importing
+            .store(false, Ordering::SeqCst);
+        let finished = match outcome {
+            Ok(result) => {
+                tracing::info!(
+                    imported = result.imported,
+                    dictations = result.dictations,
+                    skipped = result.skipped,
+                    failed = result.failed,
+                    "legacy import finished"
+                );
+                dto::ImportFinished {
+                    result: Some(result),
+                    error: None,
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "legacy import stopped");
+                dto::ImportFinished {
+                    result: None,
+                    error: Some("The import stopped unexpectedly. Try again.".into()),
+                }
+            }
+        };
+        let _ = a.emit(ev::IMPORT_FINISHED, &finished);
+        let _ = a.emit(ev::DICTATIONS_CHANGED, ());
+        emit_meetings_changed(&a, None);
+    });
     Ok(())
 }
 

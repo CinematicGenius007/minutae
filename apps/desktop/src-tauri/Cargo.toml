@@ -32,6 +32,7 @@ minutae-diarize.workspace = true
 minutae-llm.workspace = true
 minutae-dictation.workspace = true
 minutae-search.workspace = true
+minutae-import.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
