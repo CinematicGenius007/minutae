@@ -1,0 +1,71 @@
+.field { display: flex; flex-direction: column; gap: var(--s-3); min-width: 0; }
+
+.label {
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+  font-weight: var(--fw-medium);
+  color: var(--ink);
+}
+
+.help, .error {
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+  margin: 0;
+}
+.help { color: var(--muted); }
+.error { color: var(--destructive); }
+
+/* Shared control box: 40 px field / 36 px search */
+.box {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  height: var(--h-field);
+  padding-inline: calc(var(--s-4) - var(--rule-strong));
+  border: var(--rule-strong) solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  transition: background-color var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
+  cursor: text;
+}
+.box:hover, .box[data-force="hover"] { background: var(--surface-hover); }
+.box:focus-within, .box[data-force="focus"] {
+  background: var(--raised);
+  border-color: var(--ink);
+  box-shadow: var(--halo);
+}
+.invalid, .invalid:hover, .invalid:focus-within {
+  background: var(--raised);
+  border-color: var(--destructive);
+}
+.invalid:focus-within { box-shadow: 0 0 0 4px color-mix(in srgb, var(--destructive) 10%, transparent); }
+.disabled, .disabled:hover { background: var(--surface); color: var(--faint); cursor: not-allowed; }
+
+.input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  caret-color: var(--ink);
+}
+.input:focus-visible { box-shadow: none; }
+.input::placeholder { color: var(--placeholder); opacity: 1; }
+.input:disabled { cursor: not-allowed; color: var(--faint); }
+.input:disabled::placeholder { color: var(--faint); }
+.mono { font-family: var(--font-mono); font-size: var(--fs-body-sm); }
+
+.adornment { display: inline-flex; align-items: center; color: var(--muted); flex-shrink: 0; }
+
+/* Search: 36 px, 14 px text, leading icon, trailing shortcut */
+.search { height: var(--h-search); }
+.search .input { font-size: var(--fs-body-sm); line-height: var(--lh-body-sm); }
+.search .input::-webkit-search-cancel-button { appearance: none; display: none; }
+.search .input::-webkit-search-decoration { appearance: none; }

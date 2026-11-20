@@ -1,0 +1,63 @@
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  flex-shrink: 0;
+  width: var(--sidebar-w);
+  height: 100%;
+  padding: var(--s-8) var(--s-6) var(--s-7);
+  border-right: var(--hairline) solid var(--line);
+  background: var(--bg);
+  overflow-y: auto;
+}
+.top { display: flex; flex-direction: column; gap: 40px; }
+.bottom { display: flex; flex-direction: column; gap: var(--s-5); }
+
+.wordmark { display: flex; align-items: baseline; gap: var(--s-3); padding-inline: 10px; color: var(--ink); }
+.wordmarkText {
+  font-family: var(--font-sans);
+  font-size: var(--fs-wordmark);
+  line-height: var(--lh-wordmark);
+  letter-spacing: var(--tr-wordmark);
+  font-weight: var(--fw-heavy);
+}
+.wordmarkDot { width: 7px; height: 7px; border-radius: var(--radius-full); background: var(--ink); flex-shrink: 0; }
+
+.nav { display: flex; flex-direction: column; gap: var(--s-1); }
+
+.item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-weight: var(--fw-regular);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--t-fast), box-shadow var(--t-fast);
+}
+.item:hover, .item[data-force="hover"] { background: color-mix(in srgb, var(--surface) 60%, transparent); }
+.item:active { background: var(--surface); }
+.item:focus-visible, .item[data-force="focus"] { box-shadow: var(--focus-ring); }
+.active, .active:hover { background: var(--surface); font-weight: var(--fw-semibold); }
+.itemLabel { display: inline-grid; }
+.itemLabel::after {
+  content: attr(data-text);
+  height: 0;
+  visibility: hidden;
+  overflow: hidden;
+  font-weight: var(--fw-semibold);
+  pointer-events: none;
+}
+.itemShortcut { font-family: var(--font-mono); font-size: var(--fs-meta); line-height: var(--lh-meta); color: var(--muted); }
+
+.mic { padding-inline: 10px; }

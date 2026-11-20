@@ -1,0 +1,84 @@
+/* Floating menu shared by Select and DropdownMenu (§7: raised, radius 10, shadow-2, rows 32, check lane 14). */
+.content {
+  z-index: 50;
+  min-width: max(var(--radix-select-trigger-width, 0px), 200px);
+  max-height: var(--radix-select-content-available-height, 480px);
+  padding: 6px;
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--raised);
+  box-shadow: var(--shadow-2);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  overflow: hidden;
+  transform-origin: var(--radix-select-content-transform-origin, var(--radix-dropdown-menu-content-transform-origin));
+}
+.content[data-state="open"] { animation: menu-in var(--t-base); }
+@keyframes menu-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+@media (prefers-reduced-motion: reduce) {
+  @keyframes menu-in { from { opacity: 0; } }
+}
+
+.viewport { display: flex; flex-direction: column; }
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--h-row-menu);
+  padding-inline: 10px;
+  border-radius: calc(var(--radius-sm) - 1px);
+  font-size: var(--fs-body-sm);
+  line-height: var(--lh-body-sm);
+  color: var(--ink);
+  outline: none;
+  cursor: default;
+  user-select: none;
+  white-space: nowrap;
+}
+.item[data-highlighted], .item[data-force="hover"] { background: var(--ink); color: var(--on-ink); }
+.item[data-disabled] { color: var(--faint); }
+.muted { color: var(--muted); }
+.danger { color: var(--destructive); }
+.item.muted[data-highlighted], .item.danger[data-highlighted] { color: var(--on-ink); }
+
+.check { display: inline-flex; width: 14px; flex-shrink: 0; justify-content: flex-start; }
+.itemText { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.itemShortcut { margin-left: auto; padding-left: var(--s-5); font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--muted); }
+.item[data-highlighted] .itemShortcut { color: var(--on-ink-muted); }
+
+.separator { height: var(--hairline); margin-block: var(--s-2); background: var(--line); }
+
+/* Select trigger: 32 px, surface, 10 px chevron */
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  height: var(--h-select);
+  max-width: 100%;
+  padding-inline: var(--s-4);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body-sm);
+  line-height: var(--lh-body-sm);
+  white-space: nowrap;
+  cursor: default;
+  transition: background-color var(--t-fast), box-shadow var(--t-fast);
+}
+.trigger:hover, .trigger[data-force="hover"] { background: var(--surface-hover); }
+.trigger[data-state="open"], .trigger:active { background: var(--surface-pressed); }
+.trigger:focus-visible { box-shadow: var(--focus-ring); }
+.trigger:disabled { color: var(--faint); background: var(--surface); }
+.trigger[data-placeholder] { color: var(--muted); }
+.full { width: 100%; }
+.value { overflow: hidden; text-overflow: ellipsis; }
+.chevron { display: inline-flex; color: var(--muted); transition: transform var(--t-base); }
+.trigger[data-state="open"] .chevron { transform: rotate(180deg); }
+
+/* Highlight is the focus indicator inside menus. */
+.item:focus-visible { box-shadow: none; }
+.content:focus-visible { box-shadow: var(--shadow-2); }

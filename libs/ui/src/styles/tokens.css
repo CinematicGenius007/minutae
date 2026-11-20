@@ -1,0 +1,118 @@
+/*
+ * Minutae "On air" tokens.
+ * Section 1 is DESIGN-LANGUAGE.md §13 verbatim. Section 2 holds the values the
+ * spec states in prose (§3 type scale, §5 dark shadows, §7 focus ring, halo,
+ * hover) so components never carry raw values.
+ */
+
+/* ── 1. Canonical tokens (§13) ─────────────────────────────────────────── */
+
+:root {
+  /* colour, light */
+  --bg: #FFFFFF; --ink: #111111; --muted: #6B6B6B; --faint: #B5B5B0;
+  --surface: #F4F4F2; --raised: #FFFFFF; --line: #E6E6E3; --line-strong: #D9D9D5;
+  --on-ink: #FFFFFF; --onair: #FF3B1F; --on-onair: #FFFFFF;
+  --destructive: #C8321F; --ok: #2BB673; --hud: #111111;
+
+  /* type */
+  --font-sans: "Geist", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, monospace;
+  --font-serif: "Newsreader", Georgia, serif;
+
+  /* space (4 px base) */
+  --s-1: 2px; --s-2: 4px; --s-3: 8px; --s-4: 12px; --s-5: 16px; --s-6: 20px;
+  --s-7: 24px; --s-8: 28px; --s-9: 36px; --s-10: 44px; --s-11: 56px; --s-12: 72px;
+
+  /* shape */
+  --radius-sm: 6px; --radius-md: 10px; --radius-full: 999px;
+  --shadow-1: 0 1px 2px rgb(0 0 0 / .08);
+  --shadow-2: 0 12px 32px rgb(0 0 0 / .10), 0 2px 6px rgb(0 0 0 / .06);
+
+  /* motion */
+  --t-fast: 120ms ease-out;
+  --t-base: 200ms cubic-bezier(.2,.8,.2,1);
+  --t-slow: 320ms cubic-bezier(.2,.8,.2,1);
+
+  /* layout */
+  --sidebar-w: 240px; --rail-w: 320px; --reading-max: 640px; --content-max: 1200px;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0D0D0C; --ink: #EDEDE8; --muted: #8E8E88; --faint: #4A4A47;
+  --surface: #181817; --raised: #2A2A28; --line: #262624; --line-strong: #3A3A38;
+  --on-ink: #0D0D0C; --onair: #FF4A2E; --destructive: #F0624D; --hud: #262624;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0D0D0C; --ink: #EDEDE8; --muted: #8E8E88; --faint: #4A4A47;
+    --surface: #181817; --raised: #2A2A28; --line: #262624; --line-strong: #3A3A38;
+    --on-ink: #0D0D0C; --onair: #FF4A2E; --destructive: #F0624D; --hud: #262624;
+  }
+}
+
+/* ── 2. Derived tokens (from §3, §5, §7) ───────────────────────────────── */
+
+:root {
+  /* type scale (§3): size / line height / tracking */
+  --fs-display: 56px;    --lh-display: 56px;    --tr-display: -0.035em;
+  --fs-display-sm: 40px; --lh-display-sm: 42px;
+  --fs-numeral: 168px;   --lh-numeral: 150px;   --tr-numeral: -0.05em;
+  --fs-stat: 28px;       --lh-stat: 32px;       --tr-stat: -0.02em;
+  --fs-title: 24px;      --lh-title: 30px;      --tr-title: -0.02em;
+  --fs-heading: 17px;    --lh-heading: 22px;    --tr-heading: -0.01em;
+  --fs-body: 15px;       --lh-body: 20px;       --lh-body-loose: 22px;
+  --fs-body-sm: 14px;    --lh-body-sm: 20px;
+  --fs-caption: 13px;    --lh-caption: 18px;    --lh-caption-loose: 19px;
+  --fs-label: 12px;      --lh-label: 16px;      --tr-label: 0.08em;
+  --fs-meta-lg: 13px;    --lh-meta-lg: 22px;
+  --fs-meta: 12px;       --lh-meta: 16px;
+  --fs-meta-sm: 11px;    --lh-meta-sm: 14px;
+  --fs-reading: 17px;    --lh-reading: 26px;
+  --fs-reading-lead: 21px; --lh-reading-lead: 31px;
+  --fs-wordmark: 22px;   --lh-wordmark: 26px;   --tr-wordmark: -0.04em;
+  --fs-meta-xs: 11px;    --tr-caps-sm: 0.06em;
+  --fw-light: 300; --fw-regular: 400; --fw-medium: 500; --fw-semibold: 600; --fw-bold: 700; --fw-heavy: 800;
+
+  /* rules */
+  --hairline: 1px;
+  --rule-strong: 1.5px;
+
+  /* focus (§7) and field halo */
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--ink);
+  --halo: 0 0 0 4px color-mix(in srgb, var(--ink) 6%, transparent);
+
+  /* states */
+  --ink-hover: color-mix(in srgb, var(--ink) 82%, var(--bg));
+  --ink-pressed: color-mix(in srgb, var(--ink) 70%, var(--bg));
+  --surface-hover: color-mix(in srgb, var(--surface) 95%, var(--ink));
+  --surface-pressed: color-mix(in srgb, var(--surface) 90%, var(--ink));
+  --on-ink-muted: color-mix(in srgb, var(--on-ink) 66%, transparent); /* ≥ 4.5:1 on --ink in both modes */
+  --toggle-knob-off: var(--raised);
+  --placeholder: color-mix(in srgb, var(--muted) 55%, var(--faint));
+
+  /* HUD / toast stay dark in both modes (§2) */
+  --on-hud: #FFFFFF;
+  --on-hud-muted: #BDBDBD;
+  --hud-track: #555555;
+
+  /* structural sizes (§7) */
+  --h-button: 36px; --h-button-hero: 52px; --h-record: 48px; --h-field: 40px;
+  --h-search: 36px; --h-select: 32px; --h-segmented: 34px; --h-tabs: 32px;
+  --h-chip: 30px; --h-toast: 44px; --h-hud: 40px; --h-row-menu: 32px;
+  --h-player: 76px; --control-sm: 18px;
+}
+
+:root[data-theme="dark"] {
+  --shadow-1: 0 1px 2px rgb(0 0 0 / .08), 0 0 0 0.5px var(--line-strong);
+  --shadow-2: 0 12px 32px rgb(0 0 0 / .10), 0 2px 6px rgb(0 0 0 / .06), 0 0 0 0.5px var(--line-strong);
+  --toggle-knob-off: var(--muted);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --shadow-1: 0 1px 2px rgb(0 0 0 / .08), 0 0 0 0.5px var(--line-strong);
+    --shadow-2: 0 12px 32px rgb(0 0 0 / .10), 0 2px 6px rgb(0 0 0 / .06), 0 0 0 0.5px var(--line-strong);
+    --toggle-knob-off: var(--muted);
+  }
+}
