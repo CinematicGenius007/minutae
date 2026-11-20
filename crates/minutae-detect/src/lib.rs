@@ -50,10 +50,23 @@ pub type Result<T, E = DetectError> = std::result::Result<T, E>;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum MicEvent {
-    /// Another app is using the microphone. `app` is a display name like "Zoom".
-    Busy { app: Option<String> },
+    /// Another app is using the microphone. `app` is a display name like "Zoom";
+    /// `process` identifies it where the OS says (macOS), so its audio can be recorded.
+    Busy {
+        app: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        process: Option<MicProcess>,
+    },
     /// No other app is using the microphone.
     Free,
+}
+
+/// The process behind a [`MicEvent::Busy`] app.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MicProcess {
+    pub pid: i32,
+    pub bundle_id: Option<String>,
 }
 
 /// One observation from a [`MicMonitor`].
@@ -62,6 +75,8 @@ pub struct MicActivity {
     pub busy: bool,
     /// Display names of the apps using the mic (ours excluded), best first.
     pub apps: Vec<String>,
+    /// The process of `apps[0]` (lowest pid of that app), when known.
+    pub process: Option<MicProcess>,
 }
 
 impl MicActivity {
@@ -70,13 +85,18 @@ impl MicActivity {
     }
 
     pub fn busy(apps: Vec<String>) -> Self {
-        Self { busy: true, apps }
+        Self {
+            busy: true,
+            apps,
+            process: None,
+        }
     }
 
     fn to_event(&self) -> MicEvent {
         if self.busy {
             MicEvent::Busy {
                 app: self.apps.first().cloned(),
+                process: self.process.clone(),
             }
         } else {
             MicEvent::Free
@@ -244,7 +264,25 @@ mod tests {
     fn busy(app: &str) -> MicEvent {
         MicEvent::Busy {
             app: Some(app.into()),
+            process: None,
         }
+    }
+
+    #[test]
+    fn busy_carries_the_process() {
+        let a = MicActivity {
+            busy: true,
+            apps: vec!["Zoom".into()],
+            process: Some(MicProcess {
+                pid: 42,
+                bundle_id: Some("us.zoom.xos".into()),
+            }),
+        };
+        let ev = a.to_event();
+        assert_eq!(
+            serde_json::to_value(&ev).unwrap(),
+            serde_json::json!({"kind": "busy", "app": "Zoom", "process": {"pid": 42, "bundleId": "us.zoom.xos"}})
+        );
     }
 
     #[test]
