@@ -334,10 +334,15 @@ mod tests {
 
     #[test]
     fn folder_choice() {
-        assert!(acceptable_folder(Path::new("/Users/me/Notes")));
-        assert!(!acceptable_folder(Path::new("/")));
+        // Absolute paths need a drive on Windows.
+        #[cfg(windows)]
+        let (good, root, sneaky) = (r"C:\Users\me\Notes", r"C:\", r"C:\Users\me\..\..\Windows");
+        #[cfg(not(windows))]
+        let (good, root, sneaky) = ("/Users/me/Notes", "/", "/Users/me/../../etc");
+        assert!(acceptable_folder(Path::new(good)));
+        assert!(!acceptable_folder(Path::new(root)));
         assert!(!acceptable_folder(Path::new("notes")));
-        assert!(!acceptable_folder(Path::new("/Users/me/../../etc")));
+        assert!(!acceptable_folder(Path::new(sneaky)));
     }
 
     #[test]
