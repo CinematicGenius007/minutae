@@ -170,6 +170,22 @@
 .legendItem { display: inline-flex; align-items: center; gap: var(--s-3); font-size: var(--fs-caption); line-height: var(--lh-caption); color: var(--ink); }
 .swatch { width: var(--s-3); height: var(--s-3); border-radius: 2px; }
 
+/* Import from older Minutae (Storage) */
+.issues { display: flex; flex-direction: column; gap: var(--s-3); padding-block: var(--s-4) var(--s-5); border-bottom: var(--hairline) solid var(--line); }
+.issue { display: flex; align-items: baseline; gap: var(--s-4); }
+.issueKind {
+  flex-shrink: 0;
+  width: 56px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta-sm);
+  line-height: var(--lh-meta);
+  letter-spacing: var(--tr-caps-sm);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.issueText { min-width: 0; font-size: var(--fs-caption); line-height: var(--lh-caption); color: var(--muted); }
+.issueTitle { color: var(--ink); font-weight: var(--fw-medium); }
+
 /* Usage */
 .usageGroups { display: flex; flex-direction: column; gap: 40px; }
 .hero { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--s-9); flex-wrap: wrap; }

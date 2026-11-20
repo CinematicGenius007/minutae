@@ -22,6 +22,13 @@ interface Shot {
   ready?: string;
 }
 
+/** Runs `then`, then scrolls the Import section into view (it sits below the fold on Storage). */
+const showImport = (then?: (page: Page) => Promise<void>) => async (page: Page) => {
+  if (then) await then(page);
+  await page.locator('section[aria-labelledby="g-import"]').evaluate((el) => el.scrollIntoView({ block: "end" }));
+  await page.evaluate(() => document.fonts.ready);
+};
+
 const liveMask = (page: Page) => [page.locator("canvas"), page.locator("[role=timer]"), page.locator("button[aria-pressed='true']")];
 
 const SHOTS: Shot[] = [
@@ -50,6 +57,30 @@ const SHOTS: Shot[] = [
     name: `settings-${s}`,
     route: `/settings/${s}`,
   })),
+  // Settings → Storage → Import from older Minutae: found, empty, scan error, running, done.
+  { name: "settings-import", route: "/settings/storage", ready: "Minutae for Mac", act: showImport() },
+  { name: "settings-import-empty", route: "/settings/storage", query: "import=none", ready: "Nothing to import", act: showImport() },
+  { name: "settings-import-error", route: "/settings/storage", query: "import=error", ready: "Couldn't look for older", act: showImport() },
+  {
+    name: "settings-import-running",
+    route: "/settings/storage",
+    query: "import=running",
+    ready: "Minutae for Mac",
+    act: showImport(async (page) => {
+      await page.getByRole("button", { name: "Import", exact: true }).click();
+      await expect(page.getByText("21 of 54")).toBeVisible();
+    }),
+  },
+  {
+    name: "settings-import-done",
+    route: "/settings/storage",
+    ready: "Minutae for Mac",
+    act: showImport(async (page) => {
+      await page.getByRole("button", { name: "Import", exact: true }).click();
+      await expect(page.getByText("Imported 41 meetings and 12 dictations")).toBeVisible();
+      await expect(page.getByText("53 already imported")).toBeVisible();
+    }),
+  },
   { name: "onboarding", route: "/onboarding", ready: "Microphone" },
   { name: "prompt", route: "/prompt" },
   { name: "gallery", route: "/gallery" },
