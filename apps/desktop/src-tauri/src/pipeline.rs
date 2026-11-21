@@ -1,5 +1,6 @@
 //! Post-recording pipeline as persistent jobs:
-//! transcribe (both tracks) → diarize (system track) + merge → summarize → index.
+//! transcribe (echo-cancel the mic track, then both tracks) → diarize (system track)
+//! + merge → summarize → index.
 //!
 //! Each step stores its result before enqueueing the next, so a crash or a
 //! "Retry" resumes from the failed step. Audio is never deleted on failure.
@@ -11,10 +12,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use chrono::{Local, Utc};
+use minutae_aec::EchoCanceller;
 use minutae_asr::{ProgressFn, TranscribeOptions, Transcriber};
 use minutae_core::{
-    AppSettings, Failure, FailureKind, Meeting, MeetingId, MeetingStatus, Segment, Speaker, Stage,
-    Summary, Track, Transcript, WhisperModel,
+    AppSettings, EchoCancelMode, EchoCancelReport, EchoSkip, Failure, FailureKind, Meeting,
+    MeetingId, MeetingStatus, Segment, Speaker, Stage, Summary, Track, Transcript, WhisperModel,
 };
 use minutae_diarize::Diarizer;
 use minutae_jobs::{
@@ -35,6 +37,8 @@ pub trait Host: Send + Sync + 'static {
     fn transcriber(&self, model: WhisperModel) -> Result<Arc<dyn Transcriber>, Failure>;
     /// `None` when the speaker models aren't downloaded.
     fn diarizer(&self) -> Option<Arc<dyn Diarizer>>;
+    /// Offline echo canceller for the mic track (system track as reference).
+    fn echo_canceller(&self) -> Arc<dyn EchoCanceller>;
     fn router(&self) -> Arc<Router>;
     /// Where summary markdown files go.
     fn summaries_dir(&self) -> PathBuf;
@@ -146,6 +150,18 @@ async fn transcribe(host: &dyn Host, ctx: &JobContext, id: MeetingId) -> Result<
         });
     }
     let transcriber = host.transcriber(settings.whisper_model)?;
+    // Without headphones the mic also hears the others through the speakers: clean it
+    // first so they aren't transcribed twice (as "You" and as "Them").
+    let mut files = files;
+    if let Some(mic) = files.iter_mut().find(|f| f.0 == Track::Mic) {
+        let system = tracks
+            .iter()
+            .find(|t| t.track == Track::System)
+            .map(|t| PathBuf::from(&t.path));
+        if let Some(clean) = echo_cancel(host, &store, id, &settings, &mic.1, system).await? {
+            mic.1 = clean;
+        }
+    }
     // The job runner cancels (delete meeting) or shuts down (app quit) by aborting this
     // future; the guard then raises whisper's abort flag so the blocking run stops too
     // instead of burning CPU/GPU on a result nobody will read.
@@ -237,6 +253,59 @@ async fn transcribe(host: &dyn Host, ctx: &JobContext, id: MeetingId) -> Result<
     .await
     .map_err(|e| internal(&e.to_string()))?;
     Ok(())
+}
+
+/// Runs echo cancellation on `mic` (unless the setting is off), records the report on
+/// the meeting and returns the cleaned file when it should be transcribed instead.
+/// Never fails the meeting: any problem means "transcribe the original mic track".
+async fn echo_cancel(
+    host: &dyn Host,
+    store: &Store,
+    id: MeetingId,
+    settings: &AppSettings,
+    mic: &Path,
+    system: Option<PathBuf>,
+) -> Result<Option<PathBuf>, Failure> {
+    let clean = mic.with_file_name(minutae_aec::CLEAN_MIC_FILE);
+    let report = if settings.echo_cancellation == EchoCancelMode::Off {
+        if clean.exists() {
+            let _ = std::fs::remove_file(&clean);
+        }
+        EchoCancelReport::skipped(EchoSkip::Off)
+    } else {
+        let aec = host.echo_canceller();
+        let (mic, out) = (mic.to_path_buf(), clean.clone());
+        let r = tokio::task::spawn_blocking(move || {
+            minutae_aec::cancel_files(&*aec, &mic, system.as_deref(), &out)
+        })
+        .await
+        .map_err(|e| internal(&e.to_string()))?;
+        match r {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "echo cancellation failed; using the original mic track");
+                if clean.exists() {
+                    let _ = std::fs::remove_file(&clean);
+                }
+                EchoCancelReport::skipped(EchoSkip::NoSystemTrack)
+            }
+        }
+    };
+    tracing::info!(
+        ran = report.ran,
+        skipped = ?report.skipped,
+        erle_db = ?report.erle_db,
+        delay_ms = ?report.delay_ms,
+        drift_ppm = ?report.drift_ppm,
+        elapsed_ms = report.elapsed_ms,
+        "echo cancellation"
+    );
+    let ran = report.ran;
+    store
+        .call(move |s| s.set_echo_cancel(id, &report))
+        .await
+        .map_err(store_failure)?;
+    Ok(ran.then_some(clean))
 }
 
 async fn diarize(host: &dyn Host, ctx: &JobContext, id: MeetingId) -> Result<(), Failure> {
@@ -616,6 +685,7 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
+    use minutae_aec::FakeEchoCanceller;
     use minutae_asr::FakeTranscriber;
     use minutae_core::Transport;
     use minutae_diarize::{FakeDiarizer, SpeakerTurn};
@@ -664,6 +734,56 @@ mod tests {
         ready: Mutex<Vec<MeetingId>>,
         /// Replaces `transcriber` when set (e.g. a slow one for cancellation tests).
         override_transcriber: Mutex<Option<Arc<dyn Transcriber>>>,
+        echo: Mutex<Arc<dyn EchoCanceller>>,
+        echo_mode: Mutex<EchoCancelMode>,
+    }
+
+    /// Fake transcriber that remembers which files it was asked to read.
+    #[derive(Default)]
+    struct PathSpy {
+        inner: FakeTranscriber,
+        paths: Mutex<Vec<PathBuf>>,
+    }
+
+    impl Transcriber for PathSpy {
+        fn model_name(&self) -> String {
+            "spy".into()
+        }
+        fn transcribe(
+            &self,
+            wav_path: &Path,
+            track: Track,
+            opts: &TranscribeOptions,
+            progress: Option<ProgressFn>,
+        ) -> minutae_asr::Result<Vec<Segment>> {
+            self.paths.lock().unwrap().push(wav_path.to_path_buf());
+            let samples = minutae_asr::read_wav_16k_mono(wav_path)?;
+            self.transcribe_samples(&samples, track, opts, progress)
+        }
+        fn transcribe_samples(
+            &self,
+            samples: &[f32],
+            track: Track,
+            opts: &TranscribeOptions,
+            progress: Option<ProgressFn>,
+        ) -> minutae_asr::Result<Vec<Segment>> {
+            self.inner
+                .transcribe_samples(samples, track, opts, progress)
+        }
+    }
+
+    impl PathSpy {
+        fn file_names(&self) -> Vec<String> {
+            let mut v: Vec<String> = self
+                .paths
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            v.sort();
+            v
+        }
     }
 
     /// Spins until the cancel flag is raised (max 10 s), like whisper's abort callback.
@@ -701,6 +821,7 @@ mod tests {
         fn settings(&self) -> AppSettings {
             AppSettings {
                 vocabulary: vec!["Minutae".into()],
+                echo_cancellation: *self.echo_mode.lock().unwrap(),
                 ..Default::default()
             }
         }
@@ -715,6 +836,9 @@ mod tests {
                 .to_failure());
             }
             Ok(self.transcriber.clone())
+        }
+        fn echo_canceller(&self) -> Arc<dyn EchoCanceller> {
+            self.echo.lock().unwrap().clone()
         }
         fn diarizer(&self) -> Option<Arc<dyn Diarizer>> {
             self.diarizer.clone().map(|d| d as Arc<dyn Diarizer>)
@@ -814,6 +938,8 @@ mod tests {
             missing_model,
             ready: Mutex::new(vec![]),
             override_transcriber: Mutex::new(None),
+            echo: Mutex::new(Arc::new(FakeEchoCanceller::ran(24.0))),
+            echo_mode: Mutex::new(EchoCancelMode::Auto),
         });
         let runner = JobRunner::new(store.clone(), handlers(host.clone()));
         runner.start().await.unwrap();
@@ -890,6 +1016,10 @@ mod tests {
             .usage_by_month(Utc::now() - chrono::Duration::days(1))
             .unwrap();
         assert!(usage.iter().any(|u| u.provider == "whisper"));
+        // The fake canceller "ran": its report is on the meeting, the clean file exists.
+        let ec = store.echo_cancel(id).unwrap().expect("echo report stored");
+        assert!(ec.ran && ec.erle_db == Some(24.0), "{ec:?}");
+        assert!(dir.path().join(minutae_aec::CLEAN_MIC_FILE).exists());
         runner.shutdown().await;
     }
 
@@ -1006,5 +1136,87 @@ mod tests {
             &[you.clone(), s1.clone()],
         );
         assert_eq!(text, "You: Hi.\nAlice: How are you?");
+    }
+
+    async fn run_with_spy(
+        configure: impl FnOnce(&TestHost, &Path),
+    ) -> (Store, Arc<PathSpy>, MeetingId, tempfile::TempDir) {
+        let (store, runner, host, id, dir) = setup(Ok(SUMMARY_JSON.into()), false).await;
+        let spy = Arc::new(PathSpy::default());
+        *host.override_transcriber.lock().unwrap() = Some(spy.clone());
+        configure(&host, dir.path());
+        runner
+            .enqueue(JobKind::Transcribe, json!({}), Some(id))
+            .await
+            .unwrap();
+        wait_status(&store, id, MeetingStatus::Done).await;
+        runner.shutdown().await;
+        (store, spy, id, dir)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cleaned_mic_is_transcribed_when_echo_cancellation_ran() {
+        let (store, spy, id, dir) = run_with_spy(|_, _| {}).await;
+        assert_eq!(spy.file_names(), ["mic.clean.wav", "system.wav"]);
+        assert!(store.echo_cancel(id).unwrap().unwrap().ran);
+        // The original recording is kept.
+        assert!(dir.path().join("mic.wav").exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn echo_cancellation_off_uses_the_original_mic_and_drops_a_stale_clean_file() {
+        let (store, spy, id, dir) = run_with_spy(|host, dir| {
+            *host.echo_mode.lock().unwrap() = EchoCancelMode::Off;
+            write_wav(&dir.join(minutae_aec::CLEAN_MIC_FILE), 1);
+        })
+        .await;
+        assert_eq!(spy.file_names(), ["mic.wav", "system.wav"]);
+        assert!(!dir.path().join(minutae_aec::CLEAN_MIC_FILE).exists());
+        assert_eq!(
+            store.echo_cancel(id).unwrap(),
+            Some(EchoCancelReport::skipped(EchoSkip::Off))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn headphones_skip_keeps_the_original_mic() {
+        let (store, spy, id, _dir) = run_with_spy(|host, _| {
+            *host.echo.lock().unwrap() = Arc::new(FakeEchoCanceller::skipping(EchoSkip::NoEcho));
+        })
+        .await;
+        assert_eq!(spy.file_names(), ["mic.wav", "system.wav"]);
+        let r = store.echo_cancel(id).unwrap().unwrap();
+        assert_eq!((r.ran, r.skipped), (false, Some(EchoSkip::NoEcho)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn missing_system_track_skips_echo_cancellation() {
+        let (store, spy, id, _dir) = run_with_spy(|_, dir| {
+            std::fs::remove_file(dir.join("system.wav")).unwrap();
+        })
+        .await;
+        assert_eq!(spy.file_names(), ["mic.wav"]);
+        assert_eq!(
+            store.echo_cancel(id).unwrap().unwrap().skipped,
+            Some(EchoSkip::NoSystemTrack)
+        );
+    }
+
+    /// The real canceller on a synthetic laptop call written as the two track files.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn real_echo_canceller_cleans_a_synthetic_laptop_call() {
+        let (store, spy, id, dir) = run_with_spy(|host, dir| {
+            let scene = minutae_aec::synth::laptop_call(70.0, 25.0, 9);
+            minutae_aec::write_wav_16k_mono(&dir.join("mic.wav"), &scene.mic).unwrap();
+            minutae_aec::write_wav_16k_mono(&dir.join("system.wav"), &scene.reference).unwrap();
+            *host.echo.lock().unwrap() = Arc::new(minutae_aec::OfflineAec::default());
+        })
+        .await;
+        assert_eq!(spy.file_names(), ["mic.clean.wav", "system.wav"]);
+        let r = store.echo_cancel(id).unwrap().unwrap();
+        assert!(r.ran && r.erle_db.unwrap() > 20.0, "{r:?}");
+        assert!((r.delay_ms.unwrap() - 70.0).abs() < 25.0, "{r:?}");
+        let clean = minutae_aec::read_wav_16k_mono(&dir.path().join("mic.clean.wav")).unwrap();
+        assert_eq!(clean.len(), 60 * 16_000);
     }
 }

@@ -2,8 +2,8 @@
 
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use minutae_core::{
-    Failure, Meeting, MeetingId, MeetingStatus, Moment, Progress, Speaker, Stage, Summary,
-    Transcript,
+    EchoCancelReport, Failure, Meeting, MeetingId, MeetingStatus, Moment, Progress, Speaker, Stage,
+    Summary, Transcript,
 };
 use rusqlite::{OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
@@ -59,6 +59,8 @@ pub struct MeetingDetail {
     pub moments: Vec<Moment>,
     pub tracks: Vec<Track>,
     pub progress: Option<Progress>,
+    /// What echo cancellation did before the last transcription (`None`: never ran).
+    pub echo_cancel: Option<EchoCancelReport>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -315,9 +317,40 @@ impl Store {
             action_items: self.list_action_items(id)?,
             moments: self.list_moments(id)?,
             tracks: self.list_tracks(id)?,
+            echo_cancel: self.echo_cancel(id)?,
             progress,
             meeting,
         }))
+    }
+
+    // ---- echo cancellation ----
+
+    /// Records what the echo-cancellation step did (replacing an earlier run's report).
+    pub fn set_echo_cancel(&self, id: MeetingId, report: &EchoCancelReport) -> Result<()> {
+        let json = serde_json::to_string(report)?;
+        self.write(|c| {
+            c.execute(
+                "UPDATE meetings SET echo_cancel = ?2 WHERE id = ?1",
+                params![id.to_string(), json],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn echo_cancel(&self, id: MeetingId) -> Result<Option<EchoCancelReport>> {
+        self.read(|c| {
+            let v: Option<Option<String>> = c
+                .query_row(
+                    "SELECT echo_cancel FROM meetings WHERE id = ?1",
+                    [id.to_string()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(v.flatten()
+                .as_deref()
+                .map(json_col::<EchoCancelReport>)
+                .transpose()?)
+        })
     }
 
     // ---- tracks ----

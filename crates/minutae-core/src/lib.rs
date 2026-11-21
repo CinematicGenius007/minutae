@@ -73,6 +73,52 @@ pub struct Segment {
     pub speaker_id: Option<SpeakerId>,
 }
 
+/// Why echo cancellation did not produce a cleaned mic track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EchoSkip {
+    /// Setting is "Off".
+    Off,
+    /// No system track was recorded.
+    NoSystemTrack,
+    /// The system track is (nearly) silent: nobody else spoke through the speakers.
+    SystemSilent,
+    /// The speakers can't be heard in the mic (headphones, or speakers muted).
+    NoEcho,
+    /// Ran, but removed too little to be worth using; the original mic track is kept.
+    Ineffective,
+}
+
+/// What the echo-cancellation step did for one meeting (see `minutae-aec`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EchoCancelReport {
+    /// True when transcription used the cleaned mic track (`mic.clean.wav`).
+    pub ran: bool,
+    pub skipped: Option<EchoSkip>,
+    /// Echo return loss enhancement: how much quieter the speaker echo got, dB.
+    pub erle_db: Option<f32>,
+    /// Delay of the speaker sound in the mic relative to the system track, ms.
+    pub delay_ms: Option<f32>,
+    /// Clock drift between the two tracks, parts per million.
+    pub drift_ppm: Option<f32>,
+    /// Processing time, ms.
+    pub elapsed_ms: u64,
+}
+
+impl EchoCancelReport {
+    pub fn skipped(reason: EchoSkip) -> Self {
+        Self {
+            ran: false,
+            skipped: Some(reason),
+            erle_db: None,
+            delay_ms: None,
+            drift_ppm: None,
+            elapsed_ms: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Transcript {

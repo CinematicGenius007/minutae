@@ -39,6 +39,9 @@ impl Host for CliHost {
             .ok()
             .map(|d| Arc::new(d) as Arc<dyn Diarizer>)
     }
+    fn echo_canceller(&self) -> Arc<dyn minutae_aec::EchoCanceller> {
+        Arc::new(minutae_aec::OfflineAec::default())
+    }
     fn router(&self) -> Arc<Router> {
         self.router.clone()
     }
