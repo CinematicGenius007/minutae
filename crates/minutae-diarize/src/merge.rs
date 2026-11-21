@@ -25,7 +25,7 @@ pub const BLEED_MIN_OVERLAP: f64 = 0.5;
 pub const BLEED_MIN_SIMILARITY: f64 = 0.6;
 /// Residual echo (e.g. after echo cancellation) is often transcribed only in part: a
 /// mic segment of at least [`BLEED_MIN_CONTAINED_WORDS`] words, this share of which
-/// occur in the overlapping system speech, is bleed too. Shorter ones ("yes", "okay
+/// occur *in the same order* in the overlapping system speech, is bleed too. Shorter ones ("yes", "okay
 /// thanks") are kept: the user really says those while the others talk.
 pub const BLEED_MIN_CONTAINMENT: f64 = 0.8;
 pub const BLEED_MIN_CONTAINED_WORDS: usize = 4;
@@ -36,8 +36,8 @@ pub const BLEED_TIME_SLACK_MS: u64 = 400;
 
 /// Two-track merge.
 ///
+/// - `mic` segments that are just the remote side leaking into the mic (see
 ///   [`BLEED_MIN_OVERLAP`], [`BLEED_MIN_SIMILARITY`], [`BLEED_MIN_CONTAINMENT`]) are dropped;
-///   [`BLEED_MIN_OVERLAP`] / [`BLEED_MIN_SIMILARITY`]) are dropped;
 /// - every other `mic` segment → speaker **"You"** (track `Mic`);
 /// - every `system` segment → the diarized speaker with the most time overlap,
 ///   labelled "Speaker 1", "Speaker 2"… in order of first appearance;
@@ -160,19 +160,42 @@ fn is_bleed(mic: &Segment, system: &[Segment]) -> bool {
     overlap_ok && (jaccard(&mic.text, &text) >= BLEED_MIN_SIMILARITY || contained(&mic.text, &text))
 }
 
-/// Most words of a long enough `part` occur in `whole` (see [`BLEED_MIN_CONTAINMENT`]).
+/// Most words of a long enough `part` occur in `whole`, in the same order (longest common
+/// subsequence; see [`BLEED_MIN_CONTAINMENT`]). Order matters: a reply that reuses the
+/// remote speaker's words in its own sentence ("friday works, ship the beta") is the user
+/// talking, while echo repeats them as they were said.
 fn contained(part: &str, whole: &str) -> bool {
-    let (p, w) = (tokens(part), tokens(whole));
+    let (p, w) = (words(part), words(whole));
     p.len() >= BLEED_MIN_CONTAINED_WORDS
-        && p.intersection(&w).count() as f64 >= BLEED_MIN_CONTAINMENT * p.len() as f64
+        && lcs_len(&p, &w) as f64 >= BLEED_MIN_CONTAINMENT * p.len() as f64
 }
 
-/// Lower-cased alphanumeric word set.
-fn tokens(text: &str) -> std::collections::HashSet<String> {
+/// Lower-cased alphanumeric words, in order.
+fn words(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric() && c != '\'')
         .map(|w| w.trim_matches('\'').to_lowercase())
         .filter(|w| !w.is_empty())
         .collect()
+}
+
+/// Length of the longest common subsequence of two word lists (O(n·m), one row of memory;
+/// segments are a sentence or two).
+fn lcs_len(a: &[String], b: &[String]) -> usize {
+    let mut row = vec![0usize; b.len() + 1];
+    for x in a {
+        let mut diag = 0;
+        for (j, y) in b.iter().enumerate() {
+            let up = row[j + 1];
+            row[j + 1] = if x == y { diag + 1 } else { up.max(row[j]) };
+            diag = up;
+        }
+    }
+    row[b.len()]
+}
+
+/// Lower-cased alphanumeric word set.
+fn tokens(text: &str) -> std::collections::HashSet<String> {
+    words(text).into_iter().collect()
 }
 
 /// Token-set Jaccard similarity, 0.0 when either side has no words.
@@ -603,6 +626,31 @@ mod tests {
         let mic = [seg(2_500, 4_500, "we ship the beta on friday", Track::Mic)];
         let (out, _) = merge(&mic, &sys, &[], Uuid::new_v4());
         assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn reordered_reply_with_the_remote_words_is_kept() {
+        // The user answers during the remote sentence, reusing its words in a new order.
+        let sys = [seg(
+            10_000,
+            16_000,
+            "Let's ship the beta on Friday unless anyone objects to that plan.",
+            Track::System,
+        )];
+        let mic = [seg(
+            12_000,
+            15_000,
+            "Friday plan works, ship that beta",
+            Track::Mic,
+        )];
+        let (out, sp) = merge(&mic, &sys, &[], Uuid::new_v4());
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().any(|s| label_of(s, &sp) == Some("You")));
+        assert!(!contained(
+            "friday plan works ship that beta",
+            "lets ship the beta on friday unless anyone objects to that plan"
+        ));
+        assert_eq!(lcs_len(&words("a b c d"), &words("x a c y d")), 3);
     }
 
     #[test]
