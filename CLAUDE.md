@@ -13,6 +13,8 @@ Local-first meeting recorder + dictation app for **macOS, Windows and Linux**. I
 | `docs/IPC.md` | UI ↔ Rust contract (code in `apps/desktop/src/lib/{types,api,mock}.ts`) |
 | `docs/REDESIGN.md` §1, §4, §5 | Decisions, screen list, behaviour (§2–3, §6–7 are superseded) |
 | `docs/ROADMAP.md` | What was built, by whom, status |
+| `docs/RELEASE.md` | Zero-cost release: self-signed macOS identity, Scoop, update channels |
+| `docs/install/`, `docs/agents/INSTALL.md` | User install guides; the brief for agents installing Minutae for someone |
 
 Design source (Paper, read-only for code work): https://app.paper.design/file/01M7W5R5J6SBFEN8K99EKT2NX0 — pages "Minutae — Redesign" (light) and "Minutae — Dark".
 
@@ -50,6 +52,8 @@ bun --cwd libs/ui dev                         # component gallery
 cargo test --workspace                        # Rust (needs cmake: brew install cmake)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p minutae-desktop --example e2e    # real record → transcribe → diarize → summarize on this machine
+sh scripts/install.sh --from-source           # build + install like a release (macOS/Linux)
+sh scripts/check-update.sh                    # installed vs latest release, prints the update command
 ```
 
 CI: `.github/workflows/v4.yml` (macOS, Windows, Ubuntu). Windows uses the static CRT (`.cargo/config.toml`).

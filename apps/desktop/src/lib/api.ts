@@ -6,7 +6,7 @@ import type {
   Answer, AppSettings, ApiProvider, CaptionLine, DayGroup, DiarizeModelInfo, Dictation, DictationStats,
   HudState, InputDevice, LevelFrame, MeetingDetail, Moment, ModelInfo, Permissions, PlatformInfo, Progress,
   ProviderStatus, RecordingState, SearchHit, SearchKind, StorageUsage, UsageMonth, Uuid, WhisperModel, Route,
-  Meeting, LegacyScan, ImportProgress, ImportFinished,
+  Meeting, LegacyScan, ImportProgress, ImportFinished, UpdateStatus,
 } from "./types";
 import { mockInvoke, mockListen } from "./mock";
 
@@ -114,6 +114,12 @@ export const api = {
   importLegacyScan: () => call<LegacyScan>("import_legacy_scan"),
   /** Starts the import and returns at once; follow `events.importProgress` / `events.importFinished`. */
   importLegacyRun: () => call<void>("import_legacy_run"),
+  // updates
+  updateStatus: () => call<UpdateStatus>("update_status"),
+  /** Starts a check; returns "checking" at once. The result arrives on `events.updateStatus`. */
+  checkForUpdates: () => call<UpdateStatus>("check_for_updates"),
+  /** Downloads + installs the found update, then the app restarts. Rejects while recording. */
+  installUpdate: () => call<UpdateStatus>("install_update"),
 };
 
 /** Backend → UI events. Event names are the strings below. */
@@ -137,6 +143,8 @@ export const events = {
   importProgress: (cb: (p: ImportProgress) => void) => on("import://progress", cb),
   /** One per `importLegacyRun`. Meetings/dictations changed events follow. */
   importFinished: (cb: (p: ImportFinished) => void) => on("import://finished", cb),
+  /** Updater phase / progress changed. */
+  updateStatus: (cb: (s: UpdateStatus) => void) => on("update://status", cb),
   /** macOS menu-bar panel was just opened: refresh its data. */
   trayShown: (cb: () => void) => on("tray://shown", cb),
 };

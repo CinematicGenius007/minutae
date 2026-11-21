@@ -415,6 +415,51 @@ pub struct PlatformInfo {
     pub app_version: String,
 }
 
+/// Where the updater is. `disabled`: update checks are turned off (`MINUTAE_UPDATE_CHECK=off`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdatePhase {
+    Disabled,
+    Idle,
+    Checking,
+    UpToDate,
+    Available,
+    Installing,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatus {
+    pub phase: UpdatePhase,
+    pub current_version: String,
+    /// The newer version on offer (`available`, `installing`).
+    pub version: Option<String>,
+    /// Release notes of that version, if the release has any.
+    pub notes: Option<String>,
+    /// Download progress 0..1 while `installing`; `null` when the size is unknown.
+    pub fraction: Option<f32>,
+    /// One plain sentence when `error`.
+    pub error: Option<String>,
+    /// How this copy was installed; decides who applies updates.
+    pub channel: InstallChannel,
+    /// The app can download and install the update itself ("Install and restart").
+    pub can_install: bool,
+    /// When it can't: the command that updates this install (`scoop update minutae`, …).
+    pub update_command: Option<String>,
+}
+
+/// How this copy of Minutae was installed.
+/// `direct`: a release download or `install.sh`; `scoop`: Scoop on Windows;
+/// `source`: built from a git checkout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InstallChannel {
+    Direct,
+    Scoop,
+    Source,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ModelState {
@@ -589,6 +634,7 @@ pub mod ev {
     pub const NAVIGATE: &str = "nav://goto";
     pub const IMPORT_PROGRESS: &str = "import://progress";
     pub const IMPORT_FINISHED: &str = "import://finished";
+    pub const UPDATE_STATUS: &str = "update://status";
 }
 
 #[cfg(test)]
@@ -1005,6 +1051,38 @@ mod tests {
             v["transportOrder"],
             serde_json::json!(["codexCli", "ollama", "grokCli"])
         );
+    }
+
+    #[test]
+    fn update_status_shape() {
+        let s = UpdateStatus {
+            phase: UpdatePhase::UpToDate,
+            current_version: "0.4.0".into(),
+            version: None,
+            notes: None,
+            fraction: None,
+            error: None,
+            channel: InstallChannel::Scoop,
+            can_install: false,
+            update_command: Some("scoop update minutae".into()),
+        };
+        assert_keys(
+            &s,
+            &[
+                "phase",
+                "currentVersion",
+                "version",
+                "notes",
+                "fraction",
+                "error",
+                "channel",
+                "canInstall",
+                "updateCommand",
+            ],
+        );
+        assert_eq!(serde_json::to_value(&s).unwrap()["phase"], "upToDate");
+        assert_eq!(serde_json::to_value(&s).unwrap()["channel"], "scoop");
+        assert_eq!(ev::UPDATE_STATUS, "update://status");
     }
 
     #[test]
