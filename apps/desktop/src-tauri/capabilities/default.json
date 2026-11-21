@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window, dictation HUD and call prompt: invoke app commands and listen to backend events.",
-  "windows": ["main", "hud", "prompt"],
+  "description": "Main window, dictation HUD, call prompt and macOS menu-bar panel: invoke app commands and listen to backend events.",
+  "windows": ["main", "hud", "prompt", "tray"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

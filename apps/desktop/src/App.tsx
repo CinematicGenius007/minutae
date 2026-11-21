@@ -7,7 +7,7 @@ import Shell from "./shell/Shell";
 import { paths, screens as S } from "./routes";
 
 export default function App() {
-  // Every window (main, HUD, call prompt) follows Settings → General → Appearance.
+  // Every window (main, HUD, call prompt, menu-bar panel) follows Settings → General → Appearance.
   useAppearance();
   const platform = usePlatformInfo();
   return (
@@ -19,6 +19,7 @@ export default function App() {
           {/* Overlay windows: no shell */}
           <Route path={paths.hud} component={S.hud} />
           <Route path={paths.prompt} component={S.prompt} />
+          <Route path={paths.tray} component={S.tray} />
           <Route path={paths.onboarding} component={S.onboarding} />
           <Route path={paths.gallery}>{() => <Gallery />}</Route>
           <Route>

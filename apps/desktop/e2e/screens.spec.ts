@@ -14,6 +14,8 @@ interface Shot {
   route: string;
   /** Mock switches (query string before the hash). */
   query?: string;
+  /** Window size for overlay windows (default: the desktop viewport). */
+  viewport?: { width: number; height: number };
   /** Runs after the page settles, before the screenshot. */
   act?: (page: Page) => Promise<void>;
   /** Regions that change every frame (timers, live waveform). */
@@ -23,6 +25,8 @@ interface Shot {
 }
 
 const liveMask = (page: Page) => [page.locator("canvas"), page.locator("[role=timer]"), page.locator("button[aria-pressed='true']")];
+
+const TRAY_VIEWPORT = { width: 320, height: 520 };
 
 const SHOTS: Shot[] = [
   { name: "meetings", route: "/", ready: "Q2 Design Sync" },
@@ -52,6 +56,17 @@ const SHOTS: Shot[] = [
   })),
   { name: "onboarding", route: "/onboarding", ready: "Microphone" },
   { name: "prompt", route: "/prompt" },
+  // macOS menu-bar panel: a 320 px window; the timer and level meters move every frame.
+  { name: "tray", route: "/tray", viewport: TRAY_VIEWPORT, ready: "Hiring loop" },
+  { name: "tray-empty", route: "/tray", query: "state=empty", viewport: TRAY_VIEWPORT },
+  {
+    name: "tray-recording",
+    route: "/tray",
+    query: "state=recording",
+    viewport: TRAY_VIEWPORT,
+    ready: "Stop",
+    mask: (page) => [page.locator("[data-tray-timer]"), page.locator("[data-tray-levels]")],
+  },
   { name: "gallery", route: "/gallery" },
 ];
 
@@ -91,6 +106,7 @@ for (const theme of THEMES) {
   test.describe(`${theme}`, () => {
     for (const shot of SHOTS) {
       test(`${shot.name}`, async ({ page }) => {
+        if (shot.viewport) await page.setViewportSize(shot.viewport);
         await open(page, theme, shot.route, shot.query);
         await settle(page, shot.ready);
         if (shot.act) await shot.act(page);
@@ -211,6 +227,7 @@ const A11Y_ROUTES: [string, string, string?][] = [
   ["settings-usage", "/settings/usage"],
   ["onboarding", "/onboarding"],
   ["prompt", "/prompt"],
+  ["tray", "/tray"],
 ];
 
 for (const theme of THEMES) {
