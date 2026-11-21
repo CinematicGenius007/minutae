@@ -22,6 +22,9 @@ enigo = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 arboard = { version = "3.7", default-features = false, features = ["image-data", "wayland-data-control"] }
+# XDG GlobalShortcuts portal (Wayland). zbus is pure Rust: no new system packages.
+ashpd = { version = "=0.14.1", default-features = false, features = ["tokio", "global_shortcuts"] }
+futures-util = { version = "0.3", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

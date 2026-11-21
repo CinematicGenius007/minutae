@@ -37,6 +37,20 @@ complete files after stop; captions are never saved.
 Backend: `minutae_asr::captions` (engine, trait-driven, tests with a fake transcriber) fed by
 `minutae_audio::Recorder::start_with_taps`; wiring in `apps/desktop/src-tauri/src/recording.rs`.
 
+## Global shortcuts (record, dictation)
+
+| | |
+|---|---|
+| `shortcut_status()` → `ShortcutStatus` | `backend`: `native` (tauri-plugin-global-shortcut; keys come from `recordShortcut` / `dictationHotkey`), `portal` (Wayland: XDG `GlobalShortcuts` portal; the desktop owns the keys and `dictateTrigger` / `recordTrigger` are its descriptions), `unavailable` (Wayland without the portal). `holdSupported: false` once the portal is seen not to send key releases: dictation then runs press-to-toggle. `detail` says why the portal failed |
+| `configure_shortcuts()` | Opens the desktop's own shortcut settings (portal `ConfigureShortcuts`, interface v2+; `canConfigure`). Errors with one sentence otherwise |
+| `shortcuts://changed` | `ShortcutStatus`, after the portal binds or fails, and when release support becomes known |
+
+The portal is chosen at startup when the session is Wayland (`MINUTAE_SHORTCUTS=portal|native` overrides). With the portal, `update_settings` still stores `dictationHotkey` / `recordShortcut` (sent as the preferred trigger next launch) but does not register them.
+
+Command line, forwarded to the running app by tauri-plugin-single-instance (or handled at launch): `minutae --toggle-dictation`, `minutae --toggle-recording`. These are the workaround when `backend` is `unavailable`: bind them to custom shortcuts in the desktop's keyboard settings.
+
+Mock switches for these screens: `?os=linux&session=wayland` (portal), `&portal=press` (no releases), `&portal=none` (unavailable).
+
 ## Echo cancellation
 
 - Setting `AppSettings.echoCancellation`: `"auto"` (default) or `"off"`. Auto cleans the mic track with the system track as the far-end reference before transcription, and skips when there is no system track, it is silent, or the speakers can't be heard in the mic (headphones). Changing it applies to the next transcription (including Retry).

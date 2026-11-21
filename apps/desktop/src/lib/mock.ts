@@ -7,6 +7,9 @@
 //   ?state=failed      the Detail screen shows a meeting whose summary failed (reason + fix)
 //   ?onboarding=0      first run: onboarding_done() is false, so the shell sends you to /onboarding
 //   ?os=macos          report this OS instead of guessing from the user agent (macos | windows | linux)
+//   ?session=wayland   Linux session kind (x11 | wayland); wayland uses the GlobalShortcuts portal
+//   ?portal=none       with session=wayland: no portal, shortcuts unavailable (CLI workaround shown)
+//   ?portal=press      with session=wayland: the portal sends no key releases, so hold works as toggle
 //   ?perms=none        every permission is notRequired (Windows / Linux): onboarding has nothing to ask
 //   ?audio=1           meetings have short silent audio tracks, so the player is enabled
 //   ?captions=off      live captions turned off (also: noModel = no Whisper model; none = on, nothing said yet)
@@ -22,7 +25,7 @@
 
 import type {
   Answer, AppSettings, CaptionLine, CaptionStatus, DayGroup, Dictation, ImportResult, LegacyScan, LegacySource, MeetingDetail,
-  ModelInfo, Permissions, ProviderStatus, RecordingState, SearchHit, Track,
+  ModelInfo, Permissions, ProviderStatus, RecordingState, SearchHit, ShortcutStatus, Track,
   UpdateStatus, UsageMonth,
 } from "./types";
 
@@ -37,6 +40,21 @@ const osParam = params.get("os");
 const os = osParam === "macos" || osParam === "windows" || osParam === "linux"
   ? osParam
   : typeof navigator !== "undefined" && /Mac/.test(navigator.userAgent) ? "macos" : typeof navigator !== "undefined" && /Win/.test(navigator.userAgent) ? "windows" : "linux";
+const sessionParam = params.get("session");
+const sessionKind = os === "linux" && (sessionParam === "x11" || sessionParam === "wayland") ? sessionParam : null;
+const portalParam = params.get("portal");
+const shortcutStatus: ShortcutStatus =
+  sessionKind !== "wayland"
+    ? { backend: "native", dictateTrigger: null, recordTrigger: null, canConfigure: false, holdSupported: true, detail: null }
+    : portalParam === "none"
+      ? {
+          backend: "unavailable", dictateTrigger: null, recordTrigger: null, canConfigure: false, holdSupported: null,
+          detail: "org.freedesktop.portal.GlobalShortcuts was not found",
+        }
+      : {
+          backend: "portal", dictateTrigger: "Alt+Space", recordTrigger: "Ctrl+Alt+R", canConfigure: true,
+          holdSupported: portalParam === "press" ? false : null, detail: null,
+        };
 const noPerms = params.get("perms") === "none";
 let perms: Permissions = noPerms
   ? { microphone: "notRequired", systemAudio: "notRequired", accessibility: "notRequired" }
@@ -422,7 +440,9 @@ function mockInstall() {
 export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   const r = (v: unknown) => delay(v) as Promise<T>;
   switch (cmd) {
-    case "platform": return r({ os, sessionKind: null, appVersion: "0.4.0-dev" });
+    case "platform": return r({ os, sessionKind, appVersion: "0.4.0-dev" });
+    case "shortcut_status": return r(shortcutStatus);
+    case "configure_shortcuts": return r(undefined);
     case "get_settings": return r(settings);
     case "update_settings": {
       const patch = args.patch as Partial<AppSettings>;

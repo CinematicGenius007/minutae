@@ -342,10 +342,7 @@ fn build_menu(
     let hint = MenuItem::with_id(
         app,
         "dictate_hint",
-        format!(
-            "Hold {} to dictate",
-            util::shortcut_label(&settings.dictation_hotkey)
-        ),
+        dictate_hint(&settings, &st.shortcut_status()),
         false,
         None::<&str>,
     )?;
@@ -373,6 +370,28 @@ fn build_menu(
     }
     items.extend([&open as &dyn IsMenuItem<tauri::Wry>, &prefs, &sep3, &quit]);
     Menu::with_items(app, &items)
+}
+
+/// "Hold ⌥Space to dictate", or the portal's own trigger on Wayland.
+fn dictate_hint(settings: &AppSettings, status: &dto::ShortcutStatus) -> String {
+    let verb = if status.hold_supported == Some(false)
+        || settings.dictation_mode == minutae_core::HotkeyMode::Toggle
+    {
+        "Press"
+    } else {
+        "Hold"
+    };
+    match status.backend {
+        dto::ShortcutBackend::Native => format!(
+            "{verb} {} to dictate",
+            util::shortcut_label(&settings.dictation_hotkey)
+        ),
+        dto::ShortcutBackend::Portal => match &status.dictate_trigger {
+            Some(t) => format!("{verb} {t} to dictate"),
+            None => "Dictation shortcut not set".into(),
+        },
+        dto::ShortcutBackend::Unavailable => "Dictation shortcut unavailable".into(),
+    }
 }
 
 fn record_label(rec: &RecordingState) -> String {
@@ -508,6 +527,10 @@ pub struct Shortcuts {
 /// Register exactly the record + dictation shortcuts of `settings` (replacing any
 /// others). Returns the accelerators the OS refused (e.g. another app owns them).
 pub fn register_shortcuts(app: &AppHandle, settings: &AppSettings) -> Vec<String> {
+    if crate::portal::use_portal() {
+        // Wayland: the portal owns the keys (bound once by `portal::start`).
+        return vec![];
+    }
     let st = app.state::<AppState>();
     let gs = app.global_shortcut();
     if let Err(e) = gs.unregister_all() {
@@ -535,6 +558,15 @@ pub fn register_shortcuts(app: &AppHandle, settings: &AppSettings) -> Vec<String
     failed
 }
 
+/// At startup: bind through the portal on Wayland, else register with the plugin.
+pub fn init_shortcuts(app: &AppHandle) {
+    if crate::portal::use_portal() {
+        crate::portal::start(app);
+    } else {
+        apply_shortcuts(app);
+    }
+}
+
 /// (Re)register the record and dictation shortcuts from the current settings.
 pub fn apply_shortcuts(app: &AppHandle) {
     let settings = app.state::<AppState>().settings();
@@ -550,9 +582,12 @@ pub fn on_shortcut(app: &AppHandle, shortcut: &Shortcut, state: ShortcutState) {
     if Some(shortcut.id()) == dictate {
         // Starting/stopping the mic (and stitching + reading the clip) blocks, so the
         // key events go, in order, to the dictation worker thread instead.
-        if let Some(tx) = st.dictation_keys.get() {
-            let _ = tx.send(state == ShortcutState::Pressed);
-        }
+        let key = if state == ShortcutState::Pressed {
+            crate::dictation::DictationKey::Down
+        } else {
+            crate::dictation::DictationKey::Up
+        };
+        crate::dictation::send_key(app, key);
     } else if Some(shortcut.id()) == record && state == ShortcutState::Pressed {
         let app = app.clone();
         tauri::async_runtime::spawn(async move { crate::recording::toggle(&app).await });

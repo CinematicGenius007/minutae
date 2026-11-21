@@ -144,6 +144,21 @@ export interface Permissions { microphone: PermissionState; systemAudio: Permiss
 
 export interface PlatformInfo { os: Os; sessionKind: "x11" | "wayland" | null; appVersion: string }
 
+/** native: keys from settings (macOS, Windows, X11). portal: the desktop owns the keys (Wayland).
+ *  unavailable: Wayland without a GlobalShortcuts portal; use `minutae --toggle-dictation`. */
+export type ShortcutBackend = "native" | "portal" | "unavailable";
+export interface ShortcutStatus {
+  backend: ShortcutBackend;
+  /** Portal only: the trigger the desktop assigned, as it describes it. */
+  dictateTrigger: string | null;
+  recordTrigger: string | null;
+  /** The portal can open its own shortcut settings (`configure_shortcuts`). */
+  canConfigure: boolean;
+  /** false: the desktop never reports key releases, so hold-to-talk works as press-to-toggle. null: not known yet. */
+  holdSupported: boolean | null;
+  /** Why the portal is unavailable or binding failed. */
+  detail: string | null;
+}
 /** "disabled": update checks are off (MINUTAE_UPDATE_CHECK=off). */
 export type UpdatePhase = "disabled" | "idle" | "checking" | "upToDate" | "available" | "installing" | "error";
 export interface UpdateStatus {

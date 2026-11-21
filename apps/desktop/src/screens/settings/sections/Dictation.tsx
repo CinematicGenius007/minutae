@@ -1,12 +1,130 @@
-import { GroupLabel, Segmented, SettingRow, Tag, TextField, Toggle, cx, shortcutKeys, usePlatform } from "@minutae/ui";
+import {
+  Button,
+  GroupLabel,
+  KeyCap,
+  Segmented,
+  SettingRow,
+  Tag,
+  TextField,
+  Toggle,
+  cx,
+  shortcutKeys,
+  usePlatform,
+  useToast,
+} from "@minutae/ui";
 import { useEffect, useState } from "react";
-import { errorText, updateSettings } from "../../../hooks";
+import { errorText, updateSettings, useShortcutStatus } from "../../../hooks";
+import { api } from "../../../lib/api";
+import type { AppSettings, ShortcutStatus } from "../../../lib/types";
 import { acceleratorFromEvent, shortcutProblem, toKitShortcut } from "../shared/format";
 import s from "../settings.module.css";
 import type { SectionProps } from "./types";
 
+const TOGGLE_DICTATION = "minutae --toggle-dictation";
+const TOGGLE_RECORDING = "minutae --toggle-recording";
+
+function ModeControl({ settings, update, holdSupported }: SectionProps & { holdSupported: boolean | null }) {
+  const noHold = holdSupported === false;
+  return (
+    <Segmented
+      aria-label="Shortcut mode"
+      value={noHold ? "toggle" : settings.dictationMode}
+      onValueChange={(v) => update({ dictationMode: v as AppSettings["dictationMode"] })}
+      options={[
+        { value: "hold", label: "Hold to talk", disabled: noHold },
+        { value: "toggle", label: "Press to toggle" },
+      ]}
+    />
+  );
+}
+
+/** Wayland: the desktop's GlobalShortcuts portal owns the keys. */
+function PortalShortcutRows({ status, ...props }: SectionProps & { status: ShortcutStatus }) {
+  const toast = useToast();
+  const [opening, setOpening] = useState(false);
+  const configure = () => {
+    setOpening(true);
+    api
+      .configureShortcuts()
+      .catch((e) => toast.show({ title: errorText(e) }))
+      .finally(() => setOpening(false));
+  };
+  const where = status.canConfigure ? "" : " Change it in your system’s keyboard settings.";
+  return (
+    <>
+      <SettingRow
+        title="Shortcut"
+        description={
+          <>
+            {status.dictateTrigger ? `Set by your desktop.${where}` : `Not set. Your desktop asks for a key when Minutae starts.${where}`}
+            {status.detail ? <span className={s.fieldError}>{status.detail}</span> : null}
+          </>
+        }
+        control={
+          <>
+            {status.dictateTrigger ? <KeyCap size="lg">{status.dictateTrigger}</KeyCap> : null}
+            {status.canConfigure ? (
+              <Button variant="secondary" className={s.smallBtn} loading={opening} onClick={configure}>
+                Change in system settings
+              </Button>
+            ) : null}
+          </>
+        }
+      />
+      <SettingRow
+        title="Hold or toggle"
+        description={
+          status.holdSupported === false
+            ? "Your desktop doesn’t report when you let go of the key, so each press starts or stops dictation."
+            : "Hold works when your desktop reports key releases. Otherwise Minutae switches to press to toggle."
+        }
+        control={<ModeControl {...props} holdSupported={status.holdSupported} />}
+      />
+    </>
+  );
+}
+
+/** Wayland without the portal: no global shortcuts; bind the CLI flags instead. */
+function NoPortalRows() {
+  const toast = useToast();
+  const copy = (cmd: string) =>
+    api
+      .copyText(cmd)
+      .then(() => toast.show({ title: "Command copied" }))
+      .catch((e) => toast.show({ title: errorText(e) }));
+  return (
+    <>
+      <SettingRow
+        title="Shortcut"
+        description="Your desktop doesn’t let apps set global shortcuts. Add a custom shortcut in your system’s keyboard settings that runs this command. Each press starts or stops dictation."
+        control={
+          <>
+            <code className={s.path}>{TOGGLE_DICTATION}</code>
+            <Button variant="secondary" className={s.smallBtn} onClick={() => copy(TOGGLE_DICTATION)}>
+              Copy
+            </Button>
+          </>
+        }
+      />
+      <SettingRow
+        title="Record shortcut"
+        description="The same works for starting and stopping a recording."
+        control={
+          <>
+            <code className={s.path}>{TOGGLE_RECORDING}</code>
+            <Button variant="secondary" className={s.smallBtn} onClick={() => copy(TOGGLE_RECORDING)}>
+              Copy
+            </Button>
+          </>
+        }
+      />
+    </>
+  );
+}
+
 export function DictationSection({ settings, update }: SectionProps) {
   const platform = usePlatform();
+  const shortcuts = useShortcutStatus();
   const [recording, setRecording] = useState(false);
   const [word, setWord] = useState("");
   // Inline error under the shortcut control: local validation or the backend's refusal.
@@ -65,47 +183,45 @@ export function DictationSection({ settings, update }: SectionProps) {
     <>
       <section className={s.group} aria-labelledby="g-dictation">
         <GroupLabel id="g-dictation">Dictation</GroupLabel>
-        <SettingRow
-          title="Shortcut"
-          description={
-            <>
-              {recording ? "Press the new shortcut. Esc cancels." : "Click the key, then press the one you want."}
-              {shortcutError ? (
-                <span id="s-shortcut-error" className={s.fieldError} role="alert">
-                  {shortcutError}
-                </span>
-              ) : null}
-            </>
-          }
-          control={
-            <>
-              <button
-                type="button"
-                className={cx(s.capButton, recording && s.capRecording, shortcutError && !recording && s.capInvalid)}
-                onClick={() => {
-                  if (!recording) setShortcutError(null);
-                  setRecording((r) => !r);
-                }}
-                disabled={saving}
-                aria-label={recording ? "Recording shortcut. Press the new keys." : `Dictation shortcut: ${keys.join(" ")}. Click to change.`}
-                aria-pressed={recording}
-                aria-invalid={shortcutError ? true : undefined}
-                aria-describedby={shortcutError ? "s-shortcut-error" : undefined}
-              >
-                {recording ? "Press keys…" : keyLabel}
-              </button>
-              <Segmented
-                aria-label="Shortcut mode"
-                value={settings.dictationMode}
-                onValueChange={(v) => update({ dictationMode: v })}
-                options={[
-                  { value: "hold", label: "Hold to talk" },
-                  { value: "toggle", label: "Press to toggle" },
-                ]}
-              />
-            </>
-          }
-        />
+        {shortcuts?.backend === "portal" ? (
+          <PortalShortcutRows status={shortcuts} settings={settings} update={update} />
+        ) : shortcuts?.backend === "unavailable" ? (
+          <NoPortalRows />
+        ) : (
+          <SettingRow
+            title="Shortcut"
+            description={
+              <>
+                {recording ? "Press the new shortcut. Esc cancels." : "Click the key, then press the one you want."}
+                {shortcutError ? (
+                  <span id="s-shortcut-error" className={s.fieldError} role="alert">
+                    {shortcutError}
+                  </span>
+                ) : null}
+              </>
+            }
+            control={
+              <>
+                <button
+                  type="button"
+                  className={cx(s.capButton, recording && s.capRecording, shortcutError && !recording && s.capInvalid)}
+                  onClick={() => {
+                    if (!recording) setShortcutError(null);
+                    setRecording((r) => !r);
+                  }}
+                  disabled={saving}
+                  aria-label={recording ? "Recording shortcut. Press the new keys." : `Dictation shortcut: ${keys.join(" ")}. Click to change.`}
+                  aria-pressed={recording}
+                  aria-invalid={shortcutError ? true : undefined}
+                  aria-describedby={shortcutError ? "s-shortcut-error" : undefined}
+                >
+                  {recording ? "Press keys…" : keyLabel}
+                </button>
+                <ModeControl settings={settings} update={update} holdSupported={true} />
+              </>
+            }
+          />
+        )}
         <SettingRow
           title="Tidy up what I say"
           htmlFor="s-tidy"

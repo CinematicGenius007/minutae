@@ -5,7 +5,7 @@
 import type {
   Answer, AppSettings, ApiProvider, CaptionLine, DayGroup, DiarizeModelInfo, Dictation, DictationStats,
   HudState, InputDevice, LevelFrame, MeetingDetail, Moment, ModelInfo, Permissions, PlatformInfo, Progress,
-  ProviderStatus, RecordingState, SearchHit, SearchKind, StorageUsage, UsageMonth, Uuid, WhisperModel, Route,
+  ProviderStatus, RecordingState, SearchHit, SearchKind, ShortcutStatus, StorageUsage, UsageMonth, Uuid, WhisperModel, Route,
   Meeting, LegacyScan, ImportProgress, ImportFinished, UpdateStatus,
 } from "./types";
 import { mockInvoke, mockListen } from "./mock";
@@ -28,6 +28,10 @@ async function on<T>(event: string, cb: (payload: T) => void): Promise<Unlisten>
 export const api = {
   // app
   platform: () => call<PlatformInfo>("platform"),
+  /** Which global shortcut backend is live and what the portal bound (Wayland). */
+  shortcutStatus: () => call<ShortcutStatus>("shortcut_status"),
+  /** Opens the desktop's own shortcut settings (portal ConfigureShortcuts). */
+  configureShortcuts: () => call<void>("configure_shortcuts"),
   getSettings: () => call<AppSettings>("get_settings"),
   /** E.g. `{ echoCancellation: "off" }`; applies from the next transcription (and Retry). */
   updateSettings: (patch: Partial<AppSettings>) => call<AppSettings>("update_settings", { patch }),
@@ -138,6 +142,8 @@ export const events = {
   modelProgress: (cb: (p: { model: WhisperModel | "diarize"; fraction: number; done: boolean; error: string | null }) => void) =>
     on("model://progress", cb),
   settingsChanged: (cb: (s: AppSettings) => void) => on("settings://changed", cb),
+  /** Portal bound, failed, or learned that key releases never arrive. */
+  shortcutsChanged: (cb: (s: ShortcutStatus) => void) => on("shortcuts://changed", cb),
   /** Tray / menu / shortcut asks the main window to navigate. */
   navigate: (cb: (p: { route: Route }) => void) => on("nav://goto", cb),
   importProgress: (cb: (p: ImportProgress) => void) => on("import://progress", cb),
