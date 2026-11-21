@@ -520,8 +520,9 @@ impl RecordingHandle {
     }
 
     /// Stop capture, close chunks and stitch them into `mic.wav` / `system.wav`.
-    /// If a writer failed (e.g. disk full), whatever was written is still stitched before
-    /// the mic writer's error is returned (so [`recover`] finds `mic.wav` later).
+    /// If a writer failed (e.g. disk full), whatever was written is still stitched and
+    /// returned (the failure was already sent as [`CaptureEvent::WriteFailed`]); it is an
+    /// error only when no microphone audio exists at all.
     pub fn stop(&self) -> Result<RecordedTracks> {
         let running = self
             .inner
@@ -548,15 +549,42 @@ impl RecordingHandle {
             Some(_) => wav::stitch(&self.out_dir, Track::System),
             None => Ok(None),
         };
-        mic_res?;
-        let (mic, mic_samples) = mic_stitched?
-            .ok_or_else(|| AudioError::Device("no microphone audio was captured".into()))?;
-        Ok(RecordedTracks {
-            mic,
-            system: sys_stitched?.map(|(p, _)| p),
-            duration_ms: mic_samples * 1000 / SAMPLE_RATE as u64,
-        })
+        finish_tracks(mic_res.map(|_| ()), mic_stitched, sys_stitched)
     }
+}
+
+/// What [`RecordingHandle::stop`] returns, given how the mic writer ended and what could
+/// be stitched. A writer that failed partway (disk full 40 minutes in) still leaves the
+/// audio written before the failure: keep it, so the meeting is transcribed instead of
+/// being marked failed with its audio on disk.
+fn finish_tracks(
+    mic_writer: Result<()>,
+    mic_stitched: Result<Option<(PathBuf, u64)>>,
+    sys_stitched: Result<Option<(PathBuf, u64)>>,
+) -> Result<RecordedTracks> {
+    let mic = match (mic_writer, mic_stitched) {
+        (_, Ok(Some((path, samples)))) if samples > 0 => (path, samples),
+        (Err(e), _) => return Err(e),
+        (Ok(()), Err(e)) => return Err(e),
+        (Ok(()), Ok(_)) => {
+            return Err(AudioError::Device(
+                "no microphone audio was captured".into(),
+            ));
+        }
+    };
+    let system = match sys_stitched {
+        Ok(s) => s.map(|(p, _)| p),
+        Err(e) => {
+            // The mic track alone is still a usable recording.
+            tracing::warn!(error = %e, "stitching the system track failed");
+            None
+        }
+    };
+    Ok(RecordedTracks {
+        mic: mic.0,
+        system,
+        duration_ms: mic.1 * 1000 / SAMPLE_RATE as u64,
+    })
 }
 
 impl Drop for RecordingHandle {
@@ -1036,6 +1064,22 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn partial_audio_survives_a_writer_failure() {
+        let disk_full = || Err(AudioError::Device("disk full".into()));
+        let mic = || Ok(Some((PathBuf::from("mic.wav"), 16_000 * 60)));
+        // Writer failed after a minute: the minute is kept.
+        let t = finish_tracks(disk_full(), mic(), Ok(None)).unwrap();
+        assert_eq!((t.mic, t.duration_ms), (PathBuf::from("mic.wav"), 60_000));
+        // A system track that couldn't be stitched doesn't sink the mic track.
+        let t = finish_tracks(Ok(()), mic(), Err(AudioError::Device("x".into()))).unwrap();
+        assert!(t.system.is_none());
+        // Nothing written: the writer's error is what the caller sees.
+        let e = finish_tracks(disk_full(), Ok(None), Ok(None)).unwrap_err();
+        assert!(e.to_string().contains("disk full"), "{e}");
+        assert!(finish_tracks(Ok(()), Ok(Some((PathBuf::from("m"), 0))), Ok(None)).is_err());
     }
 
     #[test]

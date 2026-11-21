@@ -376,6 +376,28 @@ fn job_state_transitions() {
 }
 
 #[test]
+fn queued_meeting_job_is_not_duplicated() {
+    let s = Store::open_in_memory().unwrap();
+    let m = meeting("Dup", Utc::now());
+    s.create_meeting(&m).unwrap();
+    let job = || NewJob::new(JobKind::Diarize, serde_json::json!({}), Some(m.id));
+    let a = s.insert_job(&job()).unwrap();
+    // The previous stage crashed after queueing this one and ran again.
+    let b = s.insert_job(&job()).unwrap();
+    assert_eq!(a.id, b.id);
+    assert_eq!(s.list_jobs(&[JobState::Queued], 10).unwrap().len(), 1);
+    // Once it runs, a new request is a new job (e.g. the user asked to redo it).
+    s.claim_job(a.id).unwrap().unwrap();
+    assert_ne!(s.insert_job(&job()).unwrap().id, a.id);
+    // Jobs without a meeting are never merged.
+    let idx = || NewJob::new(JobKind::Index, serde_json::json!(null), None);
+    assert_ne!(
+        s.insert_job(&idx()).unwrap().id,
+        s.insert_job(&idx()).unwrap().id
+    );
+}
+
+#[test]
 fn crash_looping_job_stops_after_max_attempts() {
     let s = Store::open_in_memory().unwrap();
     let j = s

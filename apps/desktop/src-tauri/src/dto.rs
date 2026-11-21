@@ -301,6 +301,7 @@ pub fn copy_reason_text(r: minutae_dictation::CopyReason) -> &'static str {
         C::Wayland => "Wayland doesn't allow typing into other apps",
         C::SecureInput => "Secure input is on",
         C::PasteFailed => "Paste didn't work",
+        C::FocusChanged => "You switched apps",
     }
 }
 
