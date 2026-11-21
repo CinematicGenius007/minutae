@@ -220,9 +220,6 @@ for (const theme of THEMES) {
       await settle(page);
       const results = await new AxeBuilder({ page })
         .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
-        // Known design exception: white on --onair (3.6:1) in the live record pill. Red is the
-        // spec'd "live" fill (DESIGN-LANGUAGE §2/§7); tracked as a design ask, not silenced elsewhere.
-        .exclude("button[aria-pressed='true']")
         .analyze();
       const bad = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
       const report = bad.map((v) => `${v.id} (${v.impact}): ${v.help}\n  ${v.nodes.map((n) => n.target.join(" ")).slice(0, 6).join("\n  ")}`);
