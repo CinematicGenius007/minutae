@@ -576,6 +576,33 @@ pub fn dismiss_call_prompt(app: AppHandle, always: Option<bool>) {
     calls::dismiss(&app, always.unwrap_or(false));
 }
 
+/// Menu-bar panel: show the main window (optionally at a route) and close the panel.
+#[tauri::command]
+pub fn open_main(app: AppHandle, route: Option<String>) {
+    shell::hide_tray_panel(&app);
+    match route {
+        Some(r) => shell::navigate(&app, &r),
+        None => shell::show_main(&app),
+    }
+}
+
+#[tauri::command]
+pub fn tray_panel_hide(app: AppHandle) {
+    shell::hide_tray_panel(&app);
+}
+
+/// The panel page reports its content height (logical px).
+#[tauri::command]
+pub fn tray_panel_resize(app: AppHandle, height: f64) {
+    shell::resize_tray_panel(&app, height);
+}
+
+/// Quit for real (stops a recording first, same as the tray menu's Quit).
+#[tauri::command]
+pub fn quit_app(app: AppHandle) {
+    shell::quit(&app);
+}
+
 #[tauri::command]
 pub async fn list_input_devices() -> R<Vec<dto::InputDevice>> {
     let list = tokio::task::spawn_blocking(minutae_audio::list_input_devices)

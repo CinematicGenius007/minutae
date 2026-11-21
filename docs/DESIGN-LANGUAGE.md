@@ -14,7 +14,7 @@ The rules are written for a web-rendered UI (HTML/CSS in a desktop webview), so 
 Every UI decision has to pass all seven.
 
 1. **One thing at a time.** Each screen has one job and at most one primary (ink-filled) button. If two actions compete, one becomes a quiet text link.
-2. **Red means live.** `--onair` is used only while audio is being captured: the record pill, the on-air dot, the live waveform tail. Red is never used for decoration, branding or emphasis. Destructive actions use `--destructive` text, never a red fill.
+2. **Red means live.** `--onair` (and its deeper `--onair-fill` for filled surfaces with text) is used only while audio is being captured: the record pill, the on-air dot, the live waveform tail. Red is never used for decoration, branding or emphasis. Destructive actions use `--destructive` text, never a red fill.
 3. **Text before chrome.** Information sits directly on the page, separated by hairlines and space, not boxed in cards. A container gets a background only if it is a control (field, segmented, chip) or floats (menu, toast, prompt).
 4. **Quiet until needed.** Secondary information is `--muted`. Hover reveals; it never hides essentials. No badges, counters or dots unless they change what the user does next.
 5. **Every state explains itself.** Loading, empty, processing, failed and offline each have designed copy. An error names the cause in plain words and offers one fix.
@@ -39,7 +39,8 @@ Every UI decision has to pass all seven.
 | `--line-strong` | `#D9D9D5` | `#3A3A38` | Keycap borders, off-toggle track, radio outline |
 | `--on-ink` | `#FFFFFF` | `#0D0D0C` | Text and icons on an `--ink` fill |
 | `--onair` | `#FF3B1F` | `#FF4A2E` | Recording state only |
-| `--on-onair` | `#FFFFFF` | `#FFFFFF` | Text on `--onair` |
+| `--onair-fill` | `#DB2F17` | `#DB2F17` | Filled recording surfaces that carry text or icons (live record pill, record button). White on it is 4.74:1 |
+| `--on-onair` | `#FFFFFF` | `#FFFFFF` | Text on `--onair-fill` |
 | `--destructive` | `#C8321F` | `#F0624D` | Destructive text links, field errors |
 | `--ok` | `#2BB673` | `#2BB673` | 6 px status dots and check glyphs only |
 | `--hud` | `#111111` | `#262624` | Dictation HUD and toasts. They stay dark in both modes |
@@ -263,7 +264,7 @@ Shortcut mapping: ⌘ → Ctrl, ⌥ → Alt everywhere except the dictation hold
   /* colour, light */
   --bg: #FFFFFF; --ink: #111111; --muted: #6B6B6B; --faint: #B5B5B0;
   --surface: #F4F4F2; --raised: #FFFFFF; --line: #E6E6E3; --line-strong: #D9D9D5;
-  --on-ink: #FFFFFF; --onair: #FF3B1F; --on-onair: #FFFFFF;
+  --on-ink: #FFFFFF; --onair: #FF3B1F; --onair-fill: #DB2F17; --on-onair: #FFFFFF;
   --destructive: #C8321F; --ok: #2BB673; --hud: #111111;
 
   /* type */
@@ -292,14 +293,14 @@ Shortcut mapping: ⌘ → Ctrl, ⌥ → Alt everywhere except the dictation hold
 :root[data-theme="dark"] {
   --bg: #0D0D0C; --ink: #EDEDE8; --muted: #8E8E88; --faint: #4A4A47;
   --surface: #181817; --raised: #2A2A28; --line: #262624; --line-strong: #3A3A38;
-  --on-ink: #0D0D0C; --onair: #FF4A2E; --destructive: #F0624D; --hud: #262624;
+  --on-ink: #0D0D0C; --onair: #FF4A2E; --onair-fill: #DB2F17; --destructive: #F0624D; --hud: #262624;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0D0D0C; --ink: #EDEDE8; --muted: #8E8E88; --faint: #4A4A47;
     --surface: #181817; --raised: #2A2A28; --line: #262624; --line-strong: #3A3A38;
-    --on-ink: #0D0D0C; --onair: #FF4A2E; --destructive: #F0624D; --hud: #262624;
+    --on-ink: #0D0D0C; --onair: #FF4A2E; --onair-fill: #DB2F17; --destructive: #F0624D; --hud: #262624;
   }
 }
 ```
