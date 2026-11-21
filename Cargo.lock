@@ -3131,8 +3131,10 @@ name = "minutae-asr"
 version = "0.4.0"
 dependencies = [
  "hound",
+ "libc",
  "minutae-core",
  "reqwest 0.12.28",
+ "rtrb",
  "serde",
  "sha2 0.10.9",
  "tempfile",

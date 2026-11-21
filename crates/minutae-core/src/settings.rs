@@ -85,6 +85,8 @@ pub struct AppSettings {
     /// None = detect automatically.
     pub language: Option<String>,
     pub label_speakers: bool,
+    /// Live captions while recording (needs a downloaded Whisper model; best effort).
+    pub live_captions: bool,
     pub echo_cancellation: EchoCancelMode,
     // Summaries
     pub transport_order: Vec<Transport>,
@@ -121,6 +123,7 @@ impl Default for AppSettings {
             whisper_model: WhisperModel::Small,
             language: None,
             label_speakers: true,
+            live_captions: true,
             echo_cancellation: EchoCancelMode::Auto,
             transport_order: vec![Transport::CodexCli, Transport::Ollama, Transport::GrokCli],
             api_fallback_enabled: false,

@@ -23,6 +23,12 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sha2 = "0.10"
 # Same version whisper-rs 0.16 uses; for the raw progress-callback signature.
 whisper-rs-sys = "0.15"
+# Lock-free ring from the recorder's writer thread to the live-caption pump.
+rtrb = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+# Lower the live-caption worker's priority (QoS on macOS, nice on Linux).
+libc = "0.2"
 
 # Metal is always on for macOS builds (Apple Silicon + Intel with Metal GPUs).
 [target.'cfg(target_os = "macos")'.dependencies]

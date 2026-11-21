@@ -17,6 +17,26 @@ Rules:
 5. Import from older Minutae apps (MIG-10): `import_legacy_scan` → `LegacyScan` (sources found at their default paths, counts, audio a run would copy, `running`). `import_legacy_run` returns at once; the run reports `import://progress` (`ImportProgress`, throttled to ~10/s) and one `import://finished` (`ImportFinished`: `ImportResult` or an error), then `meetings://changed` and `dictations://changed`. It is not a `minutae-jobs` job: re-running is safe because `legacy_imports` maps every legacy row to its v4 id. Mock switches: `?import=none|error|running|failed`.
 6. Updates (`apps/desktop/src-tauri/src/updater.rs`): `update_status`, `check_for_updates` and `install_update` return an `UpdateStatus` at once; the result, download progress and errors arrive on `update://status`. The webview never calls `tauri-plugin-updater` directly (its JS commands are not in the capability). `UpdateStatus` also carries `channel` (`direct` / `scoop` / `source`), `canInstall` and `updateCommand`: only a `direct` build with an updater public key installs updates itself; every other copy checks the GitHub API and the UI shows `updateCommand` (`scoop update minutae`, …) with a Copy button. Phase `disabled` means checks are off (`MINUTAE_UPDATE_CHECK=off`); the UI shows the version and no button. `install_update` refuses while recording and restarts the app through the normal graceful quit.
 
+## Live captions (`recording://caption`)
+
+Best effort, on-device, while a recording is running. The full transcript is still made from the
+complete files after stop; captions are never saved.
+
+- `RecordingState.captions` says what the Live screen can expect: `"on"`, `"off"` (turned off with
+  `AppSettings.liveCaptions`) or `"noModel"` (no Whisper model downloaded). Flipping the setting
+  during a recording applies at once (if a model exists).
+- Each event is a `CaptionLine`: `id`, `meetingId`, `track` (`mic` | `system`), `speaker`
+  (`"You"` | `"Them"`), `atMs`/`endMs` on the recording timeline (pauses excluded), `text`, `final`.
+- **Same `id` = same line.** A partial (`final: false`) is replaced by later events with its id; the
+  final one settles it. A final with empty `text` removes the line (it turned out to be silence or
+  a repeat).
+- Lines from both tracks interleave; order them by `atMs`.
+- Pausing stops captions; partials on screen are settled as final. When the machine falls behind,
+  older audio is skipped, so gaps in captions are normal.
+
+Backend: `minutae_asr::captions` (engine, trait-driven, tests with a fake transcriber) fed by
+`minutae_audio::Recorder::start_with_taps`; wiring in `apps/desktop/src-tauri/src/recording.rs`.
+
 ## Global shortcuts (record, dictation)
 
 | | |

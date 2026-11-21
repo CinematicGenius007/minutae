@@ -75,15 +75,26 @@ export interface EchoCancelReport {
 }
 
 export type RecordingPhase = "idle" | "recording" | "paused" | "stopping";
+/** Live captions for this recording: on, turned off in Settings, or no Whisper model downloaded. */
+export type CaptionStatus = "on" | "off" | "noModel";
 export interface RecordingState {
   phase: RecordingPhase; meetingId: Uuid | null; title: string | null; sourceApp: string | null;
   elapsedMs: number; systemAudio: "on" | "off" | "unavailable"; systemAudioError: string | null;
+  captions: CaptionStatus;
   /** While system audio is on: only the call app ("app") or everything the computer plays ("all"). */
   systemAudioScope: "app" | "all" | null;
 }
 export interface LevelFrame { elapsedMs: number; mic: number; system: number }
-/** Optional live captions (may never fire in v1). */
-export interface CaptionLine { atMs: number; speaker: string; text: string; final: boolean }
+/**
+ * `recording://caption`: one live caption line (best effort; the full transcript comes after stop).
+ * A later line with the same `id` replaces it (partial → final). A final line with empty `text`
+ * removes it. `speaker` is "You" (mic) or "Them" (system audio). `atMs`/`endMs` are on the
+ * recording timeline (pauses excluded).
+ */
+export interface CaptionLine {
+  id: number; meetingId: Uuid; track: Track; speaker: string;
+  atMs: number; endMs: number; text: string; final: boolean;
+}
 
 export interface Dictation {
   id: Uuid; createdAt: string; text: string; rawText: string; targetApp: string | null;
@@ -117,6 +128,8 @@ export interface AppSettings {
   appearance: Appearance; launchAtLogin: boolean; autoDetectMeetings: boolean; promptDelaySeconds: number;
   stopWhenCallEnds: boolean; includeSystemAudio: boolean; microphone: string | null; recordShortcut: string;
   transcribeWhere: "local" | "cloud"; whisperModel: WhisperModel; language: string | null; labelSpeakers: boolean;
+  /** Live captions while recording (only when a Whisper model is downloaded). */
+  liveCaptions: boolean;
   echoCancellation: EchoCancelMode;
   transportOrder: Transport[]; apiFallbackEnabled: boolean; summaryLength: "brief" | "detailed";
   summariesPath: string | null; codexModel: string | null; ollamaModel: string;

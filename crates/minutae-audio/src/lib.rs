@@ -16,6 +16,10 @@
 //! samples when it runs ahead, write 10 s WAV chunks) -> on stop, chunks are stitched
 //! into `mic.wav` / `system.wav`. [`recover`] stitches chunks left behind by a crash.
 //!
+//! [`Recorder::start_with_taps`] also hands every block the writer writes (16 kHz mono,
+//! with its position on the recording timeline) to an optional [`Tap`] per track, on the
+//! writer thread. Live captions use it; a tap must copy and return, never block.
+//!
 //! Problems during a recording (device unplugged, disk full) are reported live on
 //! [`RecordingHandle::events`]. A track whose device disappears is reopened on the
 //! current default device when possible.
@@ -172,6 +176,18 @@ pub enum CaptureEvent {
     SystemSourceChanged { source: SystemSource },
 }
 
+/// Receives each block a track's writer writes: `(start_sample, samples)` at 16 kHz mono,
+/// `start_sample` on the recording timeline (pauses excluded; gaps the writer pads with
+/// silence show up as a jump). Runs on the writer thread: copy and return, never block.
+pub type Tap = Box<dyn FnMut(u64, &[f32]) + Send>;
+
+/// Optional per-track taps for [`Recorder::start_with_taps`].
+#[derive(Default)]
+pub struct Taps {
+    pub mic: Option<Tap>,
+    pub system: Option<Tap>,
+}
+
 /// Starts recordings. Stateless; one [`RecordingHandle`] per meeting.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Recorder;
@@ -204,6 +220,11 @@ impl Recorder {
     /// capture fails, recording continues mic-only and
     /// [`RecordingHandle::system_error`] says why.
     pub fn start(&self, config: CaptureConfig) -> Result<RecordingHandle> {
+        self.start_with_taps(config, Taps::default())
+    }
+
+    /// [`Recorder::start`], also feeding each track's written audio to its [`Tap`].
+    pub fn start_with_taps(&self, config: CaptureConfig, taps: Taps) -> Result<RecordingHandle> {
         std::fs::create_dir_all(&config.out_dir)?;
         let shared = Arc::new(Shared::new(level::Clock::new()));
 
@@ -265,13 +286,14 @@ impl Recorder {
             None
         };
 
-        let mic_writer = spawn_writer(Track::Mic, mic_src_rx, &config, shared.clone())?;
+        let mic_writer = spawn_writer(Track::Mic, mic_src_rx, &config, shared.clone(), taps.mic)?;
         let sys_writer = match sys_info {
             Ok(_) => Some(spawn_writer(
                 Track::System,
                 sys_src_rx,
                 &config,
                 shared.clone(),
+                taps.system,
             )?),
             Err(_) => None,
         };
@@ -920,11 +942,13 @@ fn spawn_writer(
     sources: Receiver<Source>,
     config: &CaptureConfig,
     shared: Arc<Shared>,
+    tap: Option<Tap>,
 ) -> Result<JoinHandle<Result<u64>>> {
     let mut writer = wav::ChunkWriter::new(&config.out_dir, track, config.chunk_secs)?;
     let name = format!("minutae-writer-{}", wav::track_name(track));
     Ok(std::thread::Builder::new().name(name).spawn(move || {
-        match run_writer(track, &mut writer, &sources, &shared) {
+        let mut tap = tap;
+        match run_writer(track, &mut writer, &sources, &shared, &mut tap) {
             Ok(()) => writer.finish(),
             Err(e) => {
                 tracing::error!(track = wav::track_name(track), error = %e, "writing audio failed");
@@ -948,6 +972,7 @@ fn run_writer(
     writer: &mut wav::ChunkWriter,
     sources: &Receiver<Source>,
     shared: &Shared,
+    tap: &mut Option<Tap>,
 ) -> Result<()> {
     let meter = match track {
         Track::Mic => &shared.mic_meter,
@@ -978,16 +1003,16 @@ fn run_writer(
             }
         }
         let got = drain(&mut src.consumer, &mut resampler, &mut out);
-        write_block(writer, meter, &out, &mut to_drop)?;
+        write_block(writer, meter, tap, &out, &mut to_drop)?;
         if more_sources {
             match sources.try_recv() {
                 Ok(next) => {
                     // The old stream is gone; finish its ring, then continue on the new one.
                     drain(&mut src.consumer, &mut resampler, &mut out);
-                    write_block(writer, meter, &out, &mut to_drop)?;
+                    write_block(writer, meter, tap, &out, &mut to_drop)?;
                     out.clear();
                     resampler.flush(&mut out);
-                    write_block(writer, meter, &out, &mut to_drop)?;
+                    write_block(writer, meter, tap, &out, &mut to_drop)?;
                     resampler = Resampler::new(next.rate, SAMPLE_RATE);
                     src = next;
                     continue;
@@ -1005,7 +1030,7 @@ fn run_writer(
     }
     out.clear();
     resampler.flush(&mut out);
-    write_block(writer, meter, &out, &mut to_drop)?;
+    write_block(writer, meter, tap, &out, &mut to_drop)?;
     // Align the track's end with the wall clock (frozen at stop).
     let expected = shared.clock.active_samples(SAMPLE_RATE);
     let written = writer.total_samples();
@@ -1037,6 +1062,7 @@ fn drain(ring: &mut rtrb::Consumer<f32>, resampler: &mut Resampler, out: &mut Ve
 fn write_block(
     writer: &mut wav::ChunkWriter,
     meter: &level::Meter,
+    tap: &mut Option<Tap>,
     block: &[f32],
     to_drop: &mut u64,
 ) -> Result<()> {
@@ -1046,7 +1072,13 @@ fn write_block(
     meter.add(block);
     let skip = (*to_drop).min(block.len() as u64);
     *to_drop -= skip;
-    writer.write(&block[skip as usize..])
+    let block = &block[skip as usize..];
+    if let Some(tap) = tap.as_mut()
+        && !block.is_empty()
+    {
+        tap(writer.total_samples(), block);
+    }
+    writer.write(block)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1196,7 +1228,7 @@ mod tests {
         drop((tx, pa, pb)); // capture finished
         advance(&t, 1_500); // 1.5 s of active time: the last 0.5 s is a real gap
         shared.clock.freeze();
-        run_writer(Track::Mic, &mut w, &rx, &shared).unwrap();
+        run_writer(Track::Mic, &mut w, &rx, &shared, &mut None).unwrap();
         let total = w.finish().unwrap();
         assert_eq!(total, 24_000, "padded to the frozen clock");
         let (path, n) = wav::stitch(&d, Track::Mic).unwrap().unwrap();
@@ -1271,7 +1303,7 @@ mod tests {
             advance(&t, (secs * 1000) as u64);
             shared.clock.freeze();
             let mut w = wav::ChunkWriter::new(&d, Track::System, 1).unwrap();
-            run_writer(Track::System, &mut w, &rx, &shared).unwrap();
+            run_writer(Track::System, &mut w, &rx, &shared, &mut None).unwrap();
             w.finish().unwrap();
             let (path, total) = wav::stitch(&d, Track::System).unwrap().unwrap();
             assert_eq!(total, 16_000 * secs as u64, "{fl} Hz: duration");
@@ -1320,7 +1352,7 @@ mod tests {
         advance(&t, (secs * 1000) as u64);
         shared.clock.freeze();
         let mut w = wav::ChunkWriter::new(&d, Track::System, 10).unwrap();
-        run_writer(Track::System, &mut w, &rx, &shared).unwrap();
+        run_writer(Track::System, &mut w, &rx, &shared, &mut None).unwrap();
         assert_eq!(w.finish().unwrap(), 16_000 * secs as u64);
         let (path, _) = wav::stitch(&d, Track::System).unwrap().unwrap();
         let got: Vec<i16> = hound::WavReader::open(&path)
@@ -1343,6 +1375,40 @@ mod tests {
     }
 
     #[test]
+    fn tap_sees_exactly_what_is_written_with_positions() {
+        let d = tmpdir("tap");
+        let (src, t) = manual_time();
+        let shared = Shared::new(level::Clock::with_source(src));
+        shared.paused.store(true, Ordering::SeqCst);
+        let mut w = wav::ChunkWriter::new(&d, Track::Mic, 10).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (a, pa) = feed(&vec![0.25; 8_000], 16_000);
+        let (b, pb) = feed(&vec![0.5; 4_000], 16_000);
+        tx.send(a).unwrap();
+        tx.send(b).unwrap();
+        drop((tx, pa, pb));
+        advance(&t, 1_000); // final pad of 0.25 s is silence, not tapped
+        shared.clock.freeze();
+        let seen = Arc::new(Mutex::new(Vec::<(u64, usize, f32)>::new()));
+        let s2 = seen.clone();
+        let mut tap: Option<Tap> = Some(Box::new(move |start, block: &[f32]| {
+            s2.lock().unwrap().push((start, block.len(), block[0]));
+        }));
+        run_writer(Track::Mic, &mut w, &rx, &shared, &mut tap).unwrap();
+        assert_eq!(w.finish().unwrap(), 16_000);
+        let seen = seen.lock().unwrap();
+        let mut pos = 0;
+        for &(start, len, _) in seen.iter() {
+            assert_eq!(start, pos, "blocks are contiguous on the timeline");
+            pos += len as u64;
+        }
+        assert_eq!(pos, 12_000);
+        assert_eq!(seen.first().unwrap().2, 0.25);
+        assert_eq!(seen.last().unwrap().2, 0.5);
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
     fn writer_drops_samples_when_ahead_of_clock() {
         let d = tmpdir("ahead");
         let (src, _t) = manual_time();
@@ -1355,7 +1421,7 @@ mod tests {
         let (a, pa) = feed(&vec![0.1; 16_000], 16_000);
         tx.send(a).unwrap();
         drop((tx, pa));
-        run_writer(Track::System, &mut w, &rx, &shared).unwrap();
+        run_writer(Track::System, &mut w, &rx, &shared, &mut None).unwrap();
         assert_eq!(w.total_samples(), ALIGN_SLACK_SAMPLES / 2);
         w.finish().unwrap();
         std::fs::remove_dir_all(d).unwrap();
@@ -1370,7 +1436,7 @@ mod tests {
         // Make chunk creation fail: replace the chunks dir with a file after the writer
         // was constructed (stands in for disk full / permissions).
         let (tx, rx) = mpsc::channel();
-        let h = spawn_writer(Track::Mic, rx, &cfg, shared.clone()).unwrap();
+        let h = spawn_writer(Track::Mic, rx, &cfg, shared.clone(), None).unwrap();
         std::fs::remove_dir_all(d.join(wav::CHUNKS_DIR)).unwrap();
         std::fs::write(d.join(wav::CHUNKS_DIR), b"not a dir").unwrap();
         let (a, pa) = feed(&vec![0.1; 1_600], 16_000);

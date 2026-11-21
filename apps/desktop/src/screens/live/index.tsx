@@ -78,7 +78,7 @@ export default function LiveScreen() {
   const go = useGo();
   const toast = useToast();
   const platform = usePlatform();
-  const { settings } = useSettings();
+  const { update: updateSettings } = useSettings();
   const { state, elapsedMs, live, capturing, paused } = useRecording();
   const { start, stop, busy } = useRecordActions();
   const captions = useCaptions(state?.meetingId ?? null);
@@ -217,7 +217,15 @@ export default function LiveScreen() {
       <LiveTranscript
         captions={captions}
         moments={moments}
-        where={settings?.transcribeWhere === "cloud" ? "Cloud" : "On-device"}
+        where="On-device"
+        status={state.captions}
+        paused={paused}
+        onTurnOn={() => {
+          updateSettings({ liveCaptions: true }).catch((e) =>
+            toast.show({ title: `Couldn't turn on captions. ${toError(e).message}` }),
+          );
+        }}
+        onGetModel={() => go("/settings/transcription")}
       />
     </div>
   );

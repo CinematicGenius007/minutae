@@ -51,6 +51,13 @@ pub fn apply_settings(app: &AppHandle, old: &AppSettings, new: &AppSettings) {
     if old.whisper_model != new.whisper_model {
         st.transcribers.clear();
     }
+    if old.live_captions != new.live_captions {
+        let app = app.clone();
+        let enabled = new.live_captions;
+        tauri::async_runtime::spawn(async move {
+            recording::apply_caption_setting(&app, enabled).await;
+        });
+    }
     if let Some(dir) = new
         .recordings_path
         .as_deref()
