@@ -65,6 +65,10 @@ $isNewer = ($b.Num -gt $a.Num) -or ($b.Num -eq $a.Num -and $a.Pre -and -not $b.P
 $Cmd = switch ($Channel) {
   "scoop"  { "scoop update minutae" }
   "source" { "cd `"$Src`"; git pull; bun install; bun run build" }
+  # The installer (.exe) copy: Minutae's own updater installs it (Settings, General,
+  # Updates), or download the new setup .exe. Never `scoop install` here: that adds a
+  # second copy.
+  "direct" { "open Minutae, Settings, General, Updates (or download https://github.com/$Repo/releases/latest)" }
   default  { "scoop install https://github.com/$Repo/releases/latest/download/minutae.json" }
 }
 

@@ -20,6 +20,10 @@
 # It never uses sudo. Quit Minutae before updating.
 set -eu
 
+# Everything runs inside main(), called on the last line, so a download cut short by
+# `curl | sh` runs nothing at all.
+main() {
+
 REPO="CinematicGenius007/minutae"
 VERSION=""
 DEST=""
@@ -94,7 +98,9 @@ DESKTOP_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/applications/minutae.desktop"
 
 install_linux_binary() { # src-file version
   run mkdir -p "$DEST" "$(dirname "$DESKTOP_FILE")"
-  run install -m 0755 "$1" "$TARGET"
+  # Same-folder copy + rename: atomic, and the old binary stays until the new one is complete.
+  run install -m 0755 "$1" "$TARGET.new"
+  run mv -f "$TARGET.new" "$TARGET"
   ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/128x128/apps"
   run mkdir -p "$ICON_DIR"
   if [ "$DRY" = 0 ]; then
@@ -105,7 +111,7 @@ install_linux_binary() { # src-file version
 Type=Application
 Name=Minutae
 Comment=Local-first meeting notes and dictation
-Exec=$TARGET
+Exec="$TARGET"
 Icon=minutae
 Categories=Office;AudioVideo;
 Terminal=false
@@ -117,11 +123,21 @@ EOF
 }
 
 install_macos_app() { # src .app
+  # Copy next to the old app first and swap at the end, so a failed copy leaves the
+  # installed version untouched.
+  NEW="$DEST/.Minutae.app.new"
+  OLD="$DEST/.Minutae.app.old"
   run mkdir -p "$DEST"
-  if [ -e "$TARGET" ]; then run rm -rf "$TARGET"; fi
-  run ditto "$1" "$TARGET"
+  run rm -rf "$NEW" "$OLD"
+  run ditto "$1" "$NEW"
   # Downloads carry com.apple.quarantine; without notarization Gatekeeper would block the app.
-  run xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null || true
+  run xattr -dr com.apple.quarantine "$NEW" 2>/dev/null || true
+  if [ -e "$TARGET" ]; then run mv "$TARGET" "$OLD"; fi
+  if ! run mv "$NEW" "$TARGET"; then
+    [ -e "$OLD" ] && mv "$OLD" "$TARGET"
+    die "couldn't move the new Minutae.app into $DEST; the old version is still installed"
+  fi
+  run rm -rf "$OLD"
 }
 
 # ── From source ──────────────────────────────────────────────────────────────
@@ -196,6 +212,16 @@ WANT="$(awk -v f="$FILE" '$2 == f || $2 == "*"f { print $1 }' "$TMP/SHA256SUMS.t
 [ -n "$WANT" ] || die "$FILE isn't listed in SHA256SUMS.txt"
 GOT="$(sha256 "$TMP/$FILE")"
 [ "$WANT" = "$GOT" ] || die "checksum mismatch for $FILE (expected $WANT, got $GOT). Nothing was installed."
+# The checksum only proves the download isn't corrupt (it comes from the same release page).
+# Build provenance proves GitHub Actions built the file from this repo; it needs a signed-in
+# GitHub CLI, so it's checked whenever one is available.
+if [ -z "${MINUTAE_RELEASE_BASE:-}" ] && have gh && gh auth token >/dev/null 2>&1; then
+  gh attestation verify "$TMP/$FILE" --repo "$REPO" >/dev/null 2>&1 \
+    || die "$FILE has no valid build provenance for $REPO (gh attestation verify failed). Nothing was installed."
+  say "Verified build provenance (built by GitHub Actions from $REPO)."
+else
+  say "Checksum OK. (Sign in to the GitHub CLI, gh, to also verify where the file was built.)"
+fi
 
 if [ "$OS" = macos ]; then
   MNT="$TMP/mnt"
@@ -211,3 +237,6 @@ fi
 say "Installed Minutae $VERSION to $TARGET."
 say "Check for updates any time: Settings → General → Updates, or"
 say "  curl -fsSL https://raw.githubusercontent.com/$REPO/main/scripts/check-update.sh | sh"
+}
+
+main "$@"

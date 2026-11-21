@@ -149,6 +149,14 @@ Scoop remembers that URL and re-reads it on `scoop update minutae`. The manifest
 
 Native libraries: whisper.cpp and sherpa-onnx/onnxruntime are linked **statically** (`minutae-diarize` default feature `static`), so the bundles carry no extra `.dylib` / `.so` / `.dll` files and nothing extra needs signing. Check with `otool -L Minutae.app/Contents/MacOS/minutae-desktop` (only `/System` and `/usr/lib` entries). If you ever switch to the `shared` feature, add the libraries to `bundle.macOS.frameworks` / `bundle.resources` so Tauri signs them, and add `com.apple.security.cs.disable-library-validation` only if they can't be signed with the same team ID.
 
+## Supply chain
+
+- Every action in `release.yml` and `v4.yml` is pinned to a commit SHA (the tag is in a comment). To update one, resolve the new tag with `gh api repos/<owner>/<action>/commits/<tag> --jq .sha`.
+- Workflows are read-only by default. Only the `build` and `checksums` jobs get `contents: write`, to upload release files.
+- Signing secrets are exported only in the step right before the Tauri build, and cleared right after it. Earlier steps (tool installs, the config overlay) never see them. Dependency build scripts still run in that build step; that can't be avoided without splitting compile and signing.
+- The `checksums` job attests build provenance for every file in `SHA256SUMS.txt` (free on public repos). Anyone can check a download with `gh attestation verify <file> --repo CinematicGenius007/minutae`. `install.sh` does this automatically when `gh` is signed in. `SHA256SUMS.txt` on its own only catches corrupt downloads, because it sits on the same release page as the files.
+- Updates waiting to restart: on macOS and Linux the installed update waits for any recording or dictation to finish before the app restarts. On Windows the installer closes the app itself, so the app checks for a recording only before the download starts.
+
 ## Test locally
 
 ```bash

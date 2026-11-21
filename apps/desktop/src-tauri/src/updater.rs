@@ -35,12 +35,23 @@ pub struct Plan {
     pub update_command: Option<String>,
 }
 
-/// Scoop installs live in `…\scoop\apps\<name>\<version>\`; release builds are compiled
-/// with `MINUTAE_CHANNEL=release` (release.yml); anything else was built from source.
-pub fn detect_channel(exe: Option<&Path>, baked: Option<&str>) -> InstallChannel {
-    let in_scoop = exe
-        .map(|p| p.to_string_lossy().replace('\\', "/").to_lowercase())
-        .is_some_and(|p| p.contains("/scoop/apps/"));
+/// Scoop installs live in `<root>\apps\<name>\<version>\`, where `<root>` is
+/// `…\scoop` by default or wherever `$SCOOP` / `$SCOOP_GLOBAL` point (`scoop_roots`).
+/// Release builds are compiled with `MINUTAE_CHANNEL=release` (release.yml); anything else
+/// was built from source.
+pub fn detect_channel(
+    exe: Option<&Path>,
+    baked: Option<&str>,
+    scoop_roots: &[String],
+) -> InstallChannel {
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
+    let in_scoop = exe.map(|p| norm(&p.to_string_lossy())).is_some_and(|p| {
+        p.contains("/scoop/apps/")
+            || scoop_roots
+                .iter()
+                .filter(|r| !r.trim().is_empty())
+                .any(|r| p.starts_with(&format!("{}/apps/", norm(r))))
+    });
     if in_scoop {
         InstallChannel::Scoop
     } else if baked == Some("release") {
@@ -263,7 +274,11 @@ pub fn configured_pubkey(app: &AppHandle) -> Option<String> {
 pub fn init(app: &AppHandle) -> Arc<Updates> {
     let current = app.package_info().version.to_string();
     let exe = std::env::current_exe().ok();
-    let channel = detect_channel(exe.as_deref(), option_env!("MINUTAE_CHANNEL"));
+    let scoop_roots: Vec<String> = ["SCOOP", "SCOOP_GLOBAL"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .collect();
+    let channel = detect_channel(exe.as_deref(), option_env!("MINUTAE_CHANNEL"), &scoop_roots);
     let can_install = channel == InstallChannel::Direct && configured_pubkey(app).is_some();
     let off = std::env::var("MINUTAE_UPDATE_CHECK").is_ok_and(|v| v.eq_ignore_ascii_case("off"));
     let source: Option<Arc<dyn UpdateSource>> = if off {
@@ -611,16 +626,26 @@ mod tests {
     fn channel_detection() {
         let scoop = Path::new(r"C:\Users\a\scoop\apps\minutae\0.4.0\Minutae.exe");
         assert_eq!(
-            detect_channel(Some(scoop), Some("release")),
+            detect_channel(Some(scoop), Some("release"), &[]),
             InstallChannel::Scoop
+        );
+        // Scoop moved with $SCOOP: the path has no "scoop" folder in it.
+        let custom = Path::new(r"D:\tools\apps\minutae\current\Minutae.exe");
+        assert_eq!(
+            detect_channel(Some(custom), Some("release"), &[r"D:\tools\".into()]),
+            InstallChannel::Scoop
+        );
+        assert_eq!(
+            detect_channel(Some(custom), Some("release"), &["".into()]),
+            InstallChannel::Direct
         );
         let app = Path::new("/Applications/Minutae.app/Contents/MacOS/minutae-desktop");
         assert_eq!(
-            detect_channel(Some(app), Some("release")),
+            detect_channel(Some(app), Some("release"), &[]),
             InstallChannel::Direct
         );
-        assert_eq!(detect_channel(Some(app), None), InstallChannel::Source);
-        assert_eq!(detect_channel(None, None), InstallChannel::Source);
+        assert_eq!(detect_channel(Some(app), None, &[]), InstallChannel::Source);
+        assert_eq!(detect_channel(None, None, &[]), InstallChannel::Source);
     }
 
     #[test]

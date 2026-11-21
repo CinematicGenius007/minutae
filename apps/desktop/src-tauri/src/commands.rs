@@ -73,10 +73,29 @@ pub async fn install_update(
     let u = updates.inner().clone();
     tauri::async_runtime::spawn(async move {
         if u.run_install().await.is_ok() {
+            // A recording or dictation may have started during the download: the new
+            // version is already in place, so wait for them to finish before restarting.
+            let state = app.state::<AppState>();
+            while busy_for_restart(&state).await {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
             shell::restart(&app);
         }
     });
     Ok(s)
+}
+
+/// A meeting is recording or a dictation is in progress (restarting would cut it off).
+async fn busy_for_restart(state: &AppState) -> bool {
+    if state.recording.lock().await.is_some() {
+        return true;
+    }
+    state.dictation.get().is_some_and(|d| {
+        !matches!(
+            d.state(),
+            minutae_dictation::DictationState::Idle | minutae_dictation::DictationState::Error
+        )
+    })
 }
 
 #[tauri::command]

@@ -72,6 +72,7 @@ That's enough. **Don't launch Minutae to test it**: it asks for the microphone a
 |---|---|
 | `No published release yet` / `couldn't find a published release` | Use the source route, or tell the person no release exists yet |
 | `checksum mismatch` | Stop. Report it. Don't retry from another source |
+| `no valid build provenance` | Stop. Report it. The file wasn't built by this repo's release workflow. Don't retry from another source |
 | `Minutae is running` | Ask the person to quit Minutae, then rerun |
 | `no Linux release for aarch64` | Source route |
 | AppImage won't start (`libfuse.so.2`) | Tell the person to install FUSE 2 (see linux.md) |

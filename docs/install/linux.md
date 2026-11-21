@@ -8,7 +8,7 @@ x86_64. Tested on Ubuntu 22.04+ and Fedora; any distro with WebKitGTK 4.1 should
 curl -fsSL https://raw.githubusercontent.com/CinematicGenius007/minutae/main/scripts/install.sh | sh
 ```
 
-The script downloads the AppImage for the latest release, checks it against `SHA256SUMS.txt`, installs it as `~/.local/bin/minutae`, and adds Minutae to your app menu. It never uses `sudo`.
+The script downloads the AppImage for the latest release, checks it against `SHA256SUMS.txt` (and, with a signed-in GitHub CLI, its build provenance via `gh attestation verify`), installs it as `~/.local/bin/minutae`, and adds Minutae to your app menu. It never uses `sudo`.
 
 The AppImage needs FUSE 2: `sudo apt install libfuse2` (Ubuntu 22.04: `libfuse2`, 24.04: `libfuse2t64`) or `sudo dnf install fuse fuse-libs`.
 
