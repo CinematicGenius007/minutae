@@ -2,7 +2,9 @@
 //!
 //! System audio ("everyone else on the call") is captured by opening an
 //! *input* stream on the default *output* device:
-//! - macOS 14.6+: cpal creates a Core Audio process tap + private aggregate device.
+//! - macOS: cpal creates a global Core Audio process tap + private aggregate device.
+//!   When the call app is known, `macos::tap` taps only its processes instead (14.4+),
+//!   and `macos::sck` uses ScreenCaptureKit on 13.0 - 14.3.
 //! - Windows: cpal uses WASAPI loopback.
 //! - Linux (PipeWire host, `pipewire` feature): cpal sets `stream.capture.sink`.
 //! - Linux (PulseAudio host): we record the default sink's `.monitor` source.
@@ -131,6 +133,15 @@ pub(crate) fn open_system() -> Result<(cpal::Device, SupportedStreamConfig)> {
             "system audio capture not supported on this OS".into(),
         ))
     }
+}
+
+/// A running capture stream, whatever produced it. Dropping it stops capture.
+pub(crate) enum LiveStream {
+    Cpal(#[allow(dead_code)] cpal::Stream),
+    #[cfg(target_os = "macos")]
+    Tap(crate::macos::tap::ProcessTap),
+    #[cfg(target_os = "macos")]
+    Sck(#[allow(dead_code)] crate::macos::sck::SckStream),
 }
 
 /// Where a capture stream's samples and errors go.

@@ -18,7 +18,7 @@ use objc2_core_audio::{
 use objc2_core_foundation::{CFRetained, CFString};
 
 use crate::names::{from_bundle_id, macos_is_ignored};
-use crate::{DetectError, MicActivity, MicMonitor, Result};
+use crate::{DetectError, MicActivity, MicMonitor, MicProcess, Result};
 
 const SYSTEM: AudioObjectID = kAudioObjectSystemObject as AudioObjectID;
 
@@ -142,6 +142,7 @@ impl CoreAudioMonitor {
     fn poll_processes(&self) -> Option<MicActivity> {
         let procs = get_ids(SYSTEM, kAudioHardwarePropertyProcessObjectList)?;
         let mut apps: Vec<String> = Vec::new();
+        let mut process: Option<MicProcess> = None;
         let mut busy = false;
         for p in procs {
             if get::<u32>(p, kAudioProcessPropertyIsRunningInput) != Some(1) {
@@ -151,9 +152,10 @@ impl CoreAudioMonitor {
             if pid == self.own_pid {
                 continue;
             }
-            let name = match bundle_id(p) {
-                Some(b) if macos_is_ignored(&b) => continue,
-                Some(b) => from_bundle_id(&b),
+            let bundle = bundle_id(p);
+            let name = match &bundle {
+                Some(b) if macos_is_ignored(b) => continue,
+                Some(b) => from_bundle_id(b),
                 None => match process_name(pid) {
                     Some(n) => crate::names::from_exe(&n),
                     None => "Unknown app".to_string(),
@@ -161,10 +163,22 @@ impl CoreAudioMonitor {
             };
             busy = true;
             if !apps.contains(&name) {
-                apps.push(name);
+                apps.push(name.clone());
+            }
+            // The first app's lowest pid: stable across polls, so the debouncer does not
+            // see a "new" app when processes are listed in another order.
+            if pid > 0 && apps[0] == name && process.as_ref().is_none_or(|cur| pid < cur.pid) {
+                process = Some(MicProcess {
+                    pid,
+                    bundle_id: bundle,
+                });
             }
         }
-        Some(MicActivity { busy, apps })
+        Some(MicActivity {
+            busy,
+            apps,
+            process,
+        })
     }
 
     fn poll_device(&self) -> Result<MicActivity> {

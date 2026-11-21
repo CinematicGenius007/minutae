@@ -78,6 +78,12 @@ impl ActiveRecording {
                 SystemAudio::On
             },
             system_audio_error: self.system_error.clone(),
+            system_audio_scope: match self.handle.system_source() {
+                Some(s) if self.include_system && self.system_error.is_none() => {
+                    Some(s.scope.into())
+                }
+                _ => None,
+            },
         }
     }
 }
@@ -143,9 +149,14 @@ pub async fn start(
         source_app,
         failure: None,
     };
+    // During a call (prompt accepted, or Record pressed mid-call) record only the call
+    // app's audio where the OS allows; otherwise everything the computer plays.
+    let system_app =
+        crate::calls::audio_target(&st.calls.lock().unwrap_or_else(|e| e.into_inner()));
     let cfg = CaptureConfig {
         mic_device: settings.microphone.clone(),
         include_system: settings.include_system_audio,
+        system_app,
         out_dir: dir.clone(),
         chunk_secs: 10,
     };
@@ -575,6 +586,10 @@ async fn watch_capture(
         match ev {
             CaptureEvent::StreamError { track, message } => {
                 tracing::warn!(?track, %message, "capture stream error");
+            }
+            CaptureEvent::SystemSourceChanged { source } => {
+                tracing::info!(?source, "system audio source changed");
+                emit_state(&app).await;
             }
             CaptureEvent::DeviceSwitched { track, device } => {
                 tracing::info!(?track, ?device, "capture device switched");

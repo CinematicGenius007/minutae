@@ -191,6 +191,25 @@ pub struct RecordingState {
     pub elapsed_ms: u64,
     pub system_audio: SystemAudio,
     pub system_audio_error: Option<String>,
+    /// What the system track holds while it is on: only the call app, or everything the
+    /// computer plays (no call app known, it has no audio yet, or the OS can't separate it).
+    pub system_audio_scope: Option<SystemAudioScope>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SystemAudioScope {
+    App,
+    All,
+}
+
+impl From<minutae_audio::SystemScope> for SystemAudioScope {
+    fn from(s: minutae_audio::SystemScope) -> Self {
+        match s {
+            minutae_audio::SystemScope::App => Self::App,
+            minutae_audio::SystemScope::All => Self::All,
+        }
+    }
 }
 
 impl RecordingState {
@@ -207,6 +226,7 @@ impl RecordingState {
                 SystemAudio::Off
             },
             system_audio_error: None,
+            system_audio_scope: None,
         }
     }
 }
@@ -861,11 +881,17 @@ mod tests {
                 "elapsedMs",
                 "systemAudio",
                 "systemAudioError",
+                "systemAudioScope",
             ],
         );
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["phase"], "idle");
         assert_eq!(v["systemAudio"], "on");
+        assert_eq!(v["systemAudioScope"], serde_json::Value::Null);
+        assert_eq!(
+            serde_json::to_value(SystemAudioScope::from(minutae_audio::SystemScope::App)).unwrap(),
+            "app"
+        );
         assert_keys(
             &LevelFrame {
                 elapsed_ms: 0,

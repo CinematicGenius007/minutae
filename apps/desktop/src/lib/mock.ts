@@ -174,7 +174,7 @@ const dictations: Dictation[] = [
   targetApp: app as string, wordCount: (text as string).split(/\s+/).length, durationMs: 6000, inserted: true,
 }));
 
-let recording: RecordingState = { phase: "idle", meetingId: null, title: null, sourceApp: null, elapsedMs: 0, systemAudio: "on", systemAudioError: null };
+let recording: RecordingState = { phase: "idle", meetingId: null, title: null, sourceApp: null, elapsedMs: 0, systemAudio: "on", systemAudioError: null, systemAudioScope: null };
 let tick: ReturnType<typeof setInterval> | null = null;
 function startTicker() {
   if (tick) return;
@@ -187,7 +187,7 @@ function startTicker() {
   }, 33);
 }
 if (params.get("state") === "recording") {
-  recording = { phase: "recording", meetingId: id(9), title: "Q2 Design Sync", sourceApp: "Zoom", elapsedMs: 768000, systemAudio: "on", systemAudioError: null };
+  recording = { phase: "recording", meetingId: id(9), title: "Q2 Design Sync", sourceApp: "Zoom", elapsedMs: 768000, systemAudio: "on", systemAudioError: null, systemAudioScope: "app" };
   startTicker();
 }
 
@@ -404,7 +404,7 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
     case "recording_state": return r(recording);
     case "start_recording":
     case "accept_call_prompt":
-      recording = { phase: "recording", meetingId: id(9), title: (args.title as string) ?? "Untitled meeting", sourceApp: (args.sourceApp as string) ?? null, elapsedMs: 0, systemAudio: "on", systemAudioError: null };
+      recording = { phase: "recording", meetingId: id(9), title: (args.title as string) ?? "Untitled meeting", sourceApp: (args.sourceApp as string) ?? null, elapsedMs: 0, systemAudio: "on", systemAudioError: null, systemAudioScope: "all" };
       startTicker(); emit("recording://state", recording);
       return r({ id: id(9), title: recording.title, startedAt: new Date().toISOString(), endedAt: null, status: "recording", sourceApp: recording.sourceApp, failure: null });
     case "stop_recording": {
@@ -412,7 +412,7 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
       recording = { ...recording, phase: "stopping" };
       emit("recording://state", recording);
       await new Promise((done) => setTimeout(done, 600));
-      recording = { phase: "idle", meetingId: null, title: null, sourceApp: null, elapsedMs: 0, systemAudio: "on", systemAudioError: null };
+      recording = { phase: "idle", meetingId: null, title: null, sourceApp: null, elapsedMs: 0, systemAudio: "on", systemAudioError: null, systemAudioScope: null };
       emit("recording://state", recording);
       return r(meetingId);
     }

@@ -73,16 +73,34 @@ static SYSTEM_AUDIO_REQUEST: std::sync::atomic::AtomicU8 = std::sync::atomic::At
 /// capture started system audio without an error, else `denied` (so onboarding can move
 /// on and offer System Settings). A tap the user denied may still record silence, so
 /// this can over-report `granted`; recording surfaces "unavailable" if so.
+/// On macOS 13.0 - 14.3 system audio comes from ScreenCaptureKit, whose Screen Recording
+/// permission has a real status API, used instead.
 /// Elsewhere no permission is needed.
 pub fn system_audio() -> PermissionState {
     if !cfg!(target_os = "macos") {
         return PermissionState::NotRequired;
+    }
+    #[cfg(target_os = "macos")]
+    if uses_screen_recording() {
+        return if minutae_audio::screen_recording::granted() {
+            PermissionState::Granted
+        } else if SYSTEM_AUDIO_REQUEST.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            PermissionState::Denied
+        } else {
+            PermissionState::NotDetermined
+        };
     }
     match SYSTEM_AUDIO_REQUEST.load(std::sync::atomic::Ordering::SeqCst) {
         1 => PermissionState::Granted,
         2 => PermissionState::Denied,
         _ => PermissionState::NotDetermined,
     }
+}
+
+/// System audio needs Screen Recording here (ScreenCaptureKit, macOS 13.0 - 14.3).
+#[cfg(target_os = "macos")]
+fn uses_screen_recording() -> bool {
+    minutae_audio::app_capture_backend() == minutae_audio::SystemBackend::ScreenCapture
 }
 
 /// No permission to ask for on this OS (Windows/Linux): onboarding has nothing to show.
@@ -122,6 +140,14 @@ pub fn request(kind: PermissionKind) -> Permissions {
             minutae_dictation::prompt_accessibility();
         }
         PermissionKind::SystemAudio => {
+            // Before macOS 14.4: ScreenCaptureKit's Screen Recording prompt.
+            #[cfg(target_os = "macos")]
+            if uses_screen_recording() {
+                let ok = minutae_audio::screen_recording::request();
+                SYSTEM_AUDIO_REQUEST
+                    .store(if ok { 1 } else { 2 }, std::sync::atomic::Ordering::SeqCst);
+                return permissions();
+            }
             // A short system-audio capture triggers the macOS prompt.
             #[cfg(target_os = "macos")]
             {
@@ -130,6 +156,7 @@ pub fn request(kind: PermissionKind) -> Permissions {
                 let cfg = minutae_audio::CaptureConfig {
                     mic_device: None,
                     include_system: true,
+                    system_app: None,
                     out_dir: dir.clone(),
                     chunk_secs: 10,
                 };
