@@ -114,6 +114,6 @@
 }
 .recordFab:hover { background: var(--ink-hover); }
 .recordFabDot { width: var(--s-6); height: var(--s-6); border-radius: var(--radius-full); background: var(--onair); }
-.recordFabLive { background: var(--onair); }
-.recordFabLive:hover { background: color-mix(in srgb, var(--onair) 90%, black); }
+.recordFabLive { background: var(--onair-fill); }
+.recordFabLive:hover { background: color-mix(in srgb, var(--onair-fill) 90%, black); }
 .recordFabStop { width: var(--s-5); height: var(--s-5); border-radius: var(--s-1); background: var(--on-onair); }

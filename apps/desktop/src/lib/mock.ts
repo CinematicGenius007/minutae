@@ -390,6 +390,8 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
     case "usage_month": return r(usage);
     case "storage_usage": return r({ recordingsBytes: 4.1e9, modelsBytes: 608e6, indexBytes: 46e6, dataDir: "~/Library/Minutae" });
     case "pick_folder": case "export_all": return r(null);
+    // Window plumbing (menu-bar panel): nothing to do in the browser.
+    case "open_main": case "quit_app": case "tray_panel_hide": case "tray_panel_resize": return r(undefined);
     default: return r(undefined);
   }
 }

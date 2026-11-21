@@ -307,6 +307,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::platform,
+            commands::open_main,
+            commands::tray_panel_hide,
+            commands::tray_panel_resize,
+            commands::quit_app,
             commands::get_settings,
             commands::update_settings,
             commands::permissions,

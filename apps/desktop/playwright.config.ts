@@ -6,7 +6,8 @@
 //   bun run test:e2e:update     regenerate baselines (review the PNG diff before committing)
 import { defineConfig, devices } from "@playwright/test";
 
-// Each checkout can use its own port (worktrees share 1420): E2E_PORT=1434 bun run test:e2e
+// Each checkout (git worktree) can run its own server: E2E_PORT=1431 bun run test:e2e.
+// reuseExistingServer would otherwise silently test whichever checkout already holds the port.
 const port = Number(process.env.E2E_PORT ?? 1420);
 
 export default defineConfig({

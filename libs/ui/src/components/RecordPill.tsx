@@ -15,6 +15,8 @@ export interface RecordPillProps extends Omit<ButtonHTMLAttributes<HTMLButtonEle
   liveLabel?: string;
   /** Extra words for screen readers only, appended to the visible label ("open the live view"). */
   srHint?: string;
+  /** Show the mono timer while live (default true). Off when a larger timer sits nearby. */
+  showTimer?: boolean;
   /** Stretch to the container (sidebar). */
   fullWidth?: boolean;
   platform?: Platform;
@@ -33,6 +35,7 @@ export function RecordPill({
   idleLabel = "Record",
   liveLabel = "Recording",
   fullWidth = false,
+  showTimer = true,
   srHint,
   platform,
   className,
@@ -61,7 +64,7 @@ export function RecordPill({
         </span>
         {srHint ? <span className="mn-sr-only">, {srHint}</span> : null}
         {live ? (
-          <span className={cx(s.trail, s.timer)} aria-hidden>{formatDuration(elapsedMs)}</span>
+          showTimer ? <span className={cx(s.trail, s.timer)} aria-hidden>{formatDuration(elapsedMs)}</span> : null
         ) : shortcut ? (
           <span className={cx(s.trail, s.shortcut)} aria-hidden>{formatShortcut(shortcut, platform)}</span>
         ) : null}
