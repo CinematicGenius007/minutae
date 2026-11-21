@@ -236,6 +236,23 @@ const V2: &str = r#"
 ALTER TABLE meetings ADD COLUMN title_lc TEXT NOT NULL DEFAULT '';
 "#;
 
+/// v3: `legacy_imports`, the stable map from a row in an older Minutae database (Swift app,
+/// Tauri v1 app) to the v4 row made from it, so re-running the import never duplicates.
+/// No foreign key: deleting an imported meeting keeps its mapping, so a re-run doesn't bring
+/// it back. `extra` keeps legacy data v4 has no column for yet (e.g. Swift tags) as JSON.
+const V3: &str = r#"
+CREATE TABLE legacy_imports (
+  source      TEXT NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN ('meeting','dictation')),
+  legacy_id   TEXT NOT NULL,
+  v4_id       TEXT NOT NULL,
+  imported_at INTEGER NOT NULL,
+  extra       TEXT,
+  PRIMARY KEY (source, kind, legacy_id)
+);
+CREATE INDEX legacy_imports_v4 ON legacy_imports(v4_id);
+"#;
+
 /// One schema step: SQL, then an optional Rust data step in the same transaction.
 struct Migration {
     sql: &'static str,
@@ -250,6 +267,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         sql: V2,
         data: Some(backfill_title_lc),
+    },
+    Migration {
+        sql: V3,
+        data: None,
     },
 ];
 

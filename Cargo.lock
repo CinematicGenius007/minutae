@@ -3158,6 +3158,7 @@ dependencies = [
  "minutae-detect",
  "minutae-diarize",
  "minutae-dictation",
+ "minutae-import",
  "minutae-jobs",
  "minutae-llm",
  "minutae-search",
@@ -3243,6 +3244,21 @@ dependencies = [
  "tracing",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "minutae-import"
+version = "0.4.0"
+dependencies = [
+ "chrono",
+ "dirs 6.0.0",
+ "minutae-core",
+ "minutae-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

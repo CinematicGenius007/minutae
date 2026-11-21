@@ -570,6 +570,32 @@ pub struct StorageUsage {
     pub data_dir: String,
 }
 
+// ---- import from older Minutae apps (MIG-10) ----
+
+/// `LegacySource`, `ImportProgress`, `ImportResult`, `ImportIssue` in types.ts. The import
+/// crate's types already serialize to exactly those shapes, so they are the DTOs.
+pub use minutae_import::{
+    ImportResult, Issue as ImportIssue, Progress as ImportProgress, SourceKind as LegacySourceKind,
+    SourceScan as LegacySource,
+};
+
+/// Result of `import_legacy_scan`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyScan {
+    pub sources: Vec<LegacySource>,
+    /// An import started earlier is still running (progress events will follow).
+    pub running: bool,
+}
+
+/// Payload of `import://finished`: the run's result, or why it couldn't run at all.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportFinished {
+    pub result: Option<ImportResult>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallDetected {
@@ -603,6 +629,8 @@ pub mod ev {
     /// macOS menu-bar panel was just opened (refresh its data). Payload: none.
     pub const TRAY_PANEL_SHOWN: &str = "tray://shown";
     pub const NAVIGATE: &str = "nav://goto";
+    pub const IMPORT_PROGRESS: &str = "import://progress";
+    pub const IMPORT_FINISHED: &str = "import://finished";
     pub const UPDATE_STATUS: &str = "update://status";
 }
 
@@ -1156,6 +1184,84 @@ mod tests {
                 data_dir: "d".into(),
             },
             &["recordingsBytes", "modelsBytes", "indexBytes", "dataDir"],
+        );
+    }
+
+    #[test]
+    fn import_shapes_match_types_ts() {
+        let source = LegacySource {
+            kind: LegacySourceKind::TauriV1,
+            name: "n".into(),
+            path: "p".into(),
+            meetings: 1,
+            dictations: 0,
+            already_imported: 0,
+            audio_bytes: 0,
+            error: None,
+        };
+        assert_keys(
+            &source,
+            &[
+                "kind",
+                "name",
+                "path",
+                "meetings",
+                "dictations",
+                "alreadyImported",
+                "audioBytes",
+                "error",
+            ],
+        );
+        assert_eq!(serde_json::to_value(source.kind).unwrap(), "tauriV1");
+        assert_keys(
+            &LegacyScan {
+                sources: vec![source.clone()],
+                running: false,
+            },
+            &["sources", "running"],
+        );
+        assert_eq!(
+            serde_json::to_value(LegacySourceKind::Swift).unwrap(),
+            "swift"
+        );
+        assert_keys(
+            &ImportProgress {
+                source: LegacySourceKind::Swift,
+                done: 1,
+                total: 2,
+                title: None,
+            },
+            &["source", "done", "total", "title"],
+        );
+        let issue = ImportIssue {
+            source: LegacySourceKind::Swift,
+            legacy_id: "x".into(),
+            title: None,
+            reason: "r".into(),
+            failed: true,
+        };
+        assert_keys(&issue, &["source", "legacyId", "title", "reason", "failed"]);
+        let result = ImportResult {
+            issues: vec![issue],
+            ..Default::default()
+        };
+        assert_keys(
+            &result,
+            &[
+                "imported",
+                "dictations",
+                "skipped",
+                "failed",
+                "copiedBytes",
+                "issues",
+            ],
+        );
+        assert_keys(
+            &ImportFinished {
+                result: Some(result),
+                error: None,
+            },
+            &["result", "error"],
         );
     }
 }

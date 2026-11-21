@@ -9,6 +9,7 @@
 //   ?os=macos          report this OS instead of guessing from the user agent (macos | windows | linux)
 //   ?perms=none        every permission is notRequired (Windows / Linux): onboarding has nothing to ask
 //   ?audio=1           meetings have short silent audio tracks, so the player is enabled
+//   ?import=none       no older Minutae data (also: error, running, failed; see legacyScan below)
 //   ?update=available|checking|error|disabled   start the updater in that phase (default idle)
 //   ?channel=scoop|source   a copy that can't install updates itself and shows its update command
 //
@@ -19,7 +20,8 @@
 //   - ask() answers take a different time per question, so a later question can land first
 
 import type {
-  Answer, AppSettings, DayGroup, Dictation, MeetingDetail, ModelInfo, Permissions, ProviderStatus, RecordingState, SearchHit,
+  Answer, AppSettings, DayGroup, Dictation, ImportResult, LegacyScan, LegacySource, MeetingDetail, ModelInfo, Permissions,
+  ProviderStatus, RecordingState, SearchHit,
   UpdateStatus, UsageMonth,
 } from "./types";
 
@@ -219,6 +221,55 @@ const hits: SearchHit[] = [
   { kind: "dictation", meetingId: null, dictationId: id(300), title: "Dictation in Mail", snippet: "Let's keep the May date and I'll send the revised plan…", highlights: [], atMs: null, date: iso(0, 16, 2) },
 ];
 
+// Import from older Minutae apps. `?import=none` nothing found, `?import=error` the scan fails,
+// `?import=running` a run holds at 21 of 54, `?import=failed` the run stops with an error.
+const importMode = params.get("import");
+let legacyImported = false;
+let importing = false;
+function legacyScan(): LegacyScan {
+  if (importMode === "none") return { sources: [], running: false };
+  const sources: LegacySource[] = [
+    { kind: "swift", name: "Minutae for Mac", path: "~/Library/Minutae/minutae.db", meetings: 42, dictations: 12,
+      alreadyImported: legacyImported ? 53 : 0, audioBytes: legacyImported ? 0 : 3.2e9, error: null },
+    { kind: "tauriV1", name: "Minutae 1", path: "~/Library/Application Support/com.nebula.minutae/minutae.db", meetings: 3, dictations: 0,
+      alreadyImported: 0, audioBytes: 0, error: "This file isn't a Minutae database, or it is damaged." },
+  ];
+  return { sources, running: importing };
+}
+function runImport() {
+  const total = 54;
+  importing = true;
+  let done = 0;
+  const step = () => {
+    if (importMode === "running" && done >= 21) return;
+    if (importMode === "failed" && done >= 8) {
+      importing = false;
+      emit("import://finished", { result: null, error: "The import stopped unexpectedly. Try again." });
+      return;
+    }
+    done = Math.min(total, done + 7);
+    emit("import://progress", { source: "swift", done, total, title: "Q2 Design Sync" });
+    if (done < total) {
+      setTimeout(step, 60);
+      return;
+    }
+    importing = false;
+    legacyImported = true;
+    const result: ImportResult = {
+      imported: 41, dictations: 12, skipped: 0, failed: 2, copiedBytes: 3.2e9,
+      issues: [
+        { source: "swift", legacyId: "a1", title: "Vendor call", reason: "Imported without audio: the file is missing.", failed: false },
+        { source: "swift", legacyId: "b2", title: "Standup", reason: "It has no readable start time.", failed: true },
+        { source: "tauriV1", legacyId: "", title: null, reason: "This file isn't a Minutae database, or it is damaged.", failed: true },
+      ],
+    };
+    emit("import://finished", { result, error: null });
+    emit("meetings://changed", { meetingId: null });
+    emit("dictations://changed", null);
+  };
+  setTimeout(step, 60);
+}
+
 const STOP = new Set(["the", "and", "did", "does", "was", "were", "why", "what", "when", "who", "how", "for", "with", "that", "this", "are", "you", "our", "its"]);
 
 /** [start, end) ranges of every query word (≥ 3 letters, not a stop word) in `text`, case-insensitive, merged. */
@@ -380,6 +431,11 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
     case "usage_month": return r(usage);
     case "storage_usage": return r({ recordingsBytes: 4.1e9, modelsBytes: 608e6, indexBytes: 46e6, dataDir: "~/Library/Minutae" });
     case "pick_folder": case "export_all": return r(null);
+    case "import_legacy_scan": return importMode === "error" ? fail("Couldn't read the older Minutae folder.") : r(legacyScan());
+    case "import_legacy_run":
+      if (importing) return fail("An import is already running.");
+      runImport();
+      return r(undefined);
     case "update_status": return r(update);
     case "check_for_updates":
       if (update.phase !== "disabled" && update.phase !== "checking" && update.phase !== "installing") mockCheck();

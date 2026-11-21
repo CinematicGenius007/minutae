@@ -357,6 +357,8 @@ pub fn run() {
             commands::pick_folder,
             commands::export_all,
             commands::erase_all,
+            commands::import_legacy_scan,
+            commands::import_legacy_run,
             commands::update_status,
             commands::check_for_updates,
             commands::install_update,

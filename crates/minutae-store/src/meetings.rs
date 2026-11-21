@@ -139,30 +139,42 @@ fn progress_from(
     }))
 }
 
+pub(crate) fn insert_meeting(c: &rusqlite::Connection, m: &Meeting) -> Result<()> {
+    let now = now_ms();
+    c.execute(
+        "INSERT INTO meetings (id, title, started_at, ended_at, status, source_app, failure, created_at, updated_at, title_lc)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9)",
+        params![
+            m.id.to_string(),
+            m.title,
+            ms(m.started_at),
+            m.ended_at.map(ms),
+            enum_str(&m.status),
+            m.source_app,
+            m.failure.as_ref().map(serde_json::to_string).transpose()?,
+            now,
+            title_key(&m.title)
+        ],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn write_track(c: &rusqlite::Connection, t: &Track) -> Result<()> {
+    c.execute(
+        "INSERT INTO tracks (meeting_id, track, path, duration_ms, bytes) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(meeting_id, track) DO UPDATE SET path = excluded.path,
+           duration_ms = excluded.duration_ms, bytes = excluded.bytes",
+        params![t.meeting_id.to_string(), enum_str(&t.track), t.path, t.duration_ms, t.bytes],
+    )?;
+    Ok(())
+}
+
 const ACTIVE_JOB: &str = "(SELECT id FROM jobs WHERE meeting_id = m.id AND state IN ('running','queued') \
      ORDER BY state = 'running' DESC, created_at LIMIT 1)";
 
 impl Store {
     pub fn create_meeting(&self, m: &Meeting) -> Result<()> {
-        let now = now_ms();
-        self.write(|c| {
-            c.execute(
-                "INSERT INTO meetings (id, title, started_at, ended_at, status, source_app, failure, created_at, updated_at, title_lc)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9)",
-                params![
-                    m.id.to_string(),
-                    m.title,
-                    ms(m.started_at),
-                    m.ended_at.map(ms),
-                    enum_str(&m.status),
-                    m.source_app,
-                    m.failure.as_ref().map(serde_json::to_string).transpose()?,
-                    now,
-                    title_key(&m.title)
-                ],
-            )?;
-            Ok(())
-        })
+        self.write(|c| insert_meeting(c, m))
     }
 
     /// Overwrite every column of an existing meeting.
@@ -311,15 +323,7 @@ impl Store {
     // ---- tracks ----
 
     pub fn upsert_track(&self, t: &Track) -> Result<()> {
-        self.write(|c| {
-            c.execute(
-                "INSERT INTO tracks (meeting_id, track, path, duration_ms, bytes) VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(meeting_id, track) DO UPDATE SET path = excluded.path,
-                   duration_ms = excluded.duration_ms, bytes = excluded.bytes",
-                params![t.meeting_id.to_string(), enum_str(&t.track), t.path, t.duration_ms, t.bytes],
-            )?;
-            Ok(())
-        })
+        self.write(|c| write_track(c, t))
     }
 
     pub fn list_tracks(&self, id: MeetingId) -> Result<Vec<Track>> {

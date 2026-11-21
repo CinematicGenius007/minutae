@@ -5,6 +5,7 @@ import { tildify } from "../shared/format";
 import { errorText, useLoad } from "../../../hooks";
 import p from "../shared/page.module.css";
 import s from "../settings.module.css";
+import { ImportLegacySection } from "./ImportLegacy";
 import type { SectionProps } from "./types";
 
 function revealLabel(platform: string): string {
@@ -160,6 +161,8 @@ export function StorageSection({ settings, update }: SectionProps) {
           }
         />
       </section>
+
+      <ImportLegacySection />
 
       <ConfirmDialog
         open={confirmErase}
