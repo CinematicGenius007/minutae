@@ -523,7 +523,19 @@ impl Shared {
             inner.phase = Phase::Inserting;
         }
 
-        let outcome = self.deps.inserter.insert(&text).await;
+        // Paste only into the app the user started dictating in. If they switched apps while
+        // it was transcribing (to a terminal, a chat…), the text goes to the clipboard.
+        let now_app = self.deps.inserter.target_app();
+        let outcome = match (&job.target_app, &now_app) {
+            (Some(then), Some(now)) if then != now => {
+                tracing::info!(%then, %now, "focus changed during dictation; copying instead");
+                self.deps
+                    .inserter
+                    .copy(&text, CopyReason::FocusChanged)
+                    .await
+            }
+            _ => self.deps.inserter.insert(&text).await,
+        };
         let words = postprocess::word_count(&text);
         {
             let mut inner = self.lock();

@@ -63,6 +63,8 @@ export type RecordingPhase = "idle" | "recording" | "paused" | "stopping";
 export interface RecordingState {
   phase: RecordingPhase; meetingId: Uuid | null; title: string | null; sourceApp: string | null;
   elapsedMs: number; systemAudio: "on" | "off" | "unavailable"; systemAudioError: string | null;
+  /** While system audio is on: only the call app ("app") or everything the computer plays ("all"). */
+  systemAudioScope: "app" | "all" | null;
 }
 export interface LevelFrame { elapsedMs: number; mic: number; system: number }
 /** Optional live captions (may never fire in v1). */
@@ -126,6 +128,24 @@ export interface ShortcutStatus {
   /** Why the portal is unavailable or binding failed. */
   detail: string | null;
 }
+/** "disabled": update checks are off (MINUTAE_UPDATE_CHECK=off). */
+export type UpdatePhase = "disabled" | "idle" | "checking" | "upToDate" | "available" | "installing" | "error";
+export interface UpdateStatus {
+  phase: UpdatePhase; currentVersion: string;
+  /** Newer version on offer (available / installing). */
+  version: string | null; notes: string | null;
+  /** 0..1 download progress while installing; null when the size is unknown. */
+  fraction: number | null;
+  /** One sentence when phase is "error". */
+  error: string | null;
+  /** How this copy was installed: release download / install.sh, Scoop, or a source build. */
+  channel: InstallChannel;
+  /** The app installs the update itself ("Install and restart"). */
+  canInstall: boolean;
+  /** When it can't: the command that updates this copy, e.g. "scoop update minutae". null = download from GitHub. */
+  updateCommand: string | null;
+}
+export type InstallChannel = "direct" | "scoop" | "source";
 
 export type ModelState = "missing" | "downloading" | "ready";
 export interface ModelInfo { model: WhisperModel; sizeBytes: number; state: ModelState; fraction: number | null }
@@ -143,6 +163,36 @@ export interface UsageMonth {
 }
 
 export interface StorageUsage { recordingsBytes: number; modelsBytes: number; indexBytes: number; dataDir: string }
+
+/** An older Minutae database: the Swift Mac app or the Tauri v1 app (MIG-10). */
+export type LegacySourceKind = "swift" | "tauriV1";
+export interface LegacySource {
+  kind: LegacySourceKind; name: string; path: string;
+  meetings: number; dictations: number;
+  /** Meetings and dictations from this source already imported. */
+  alreadyImported: number;
+  /** Audio a run would copy into the recordings folder. */
+  audioBytes: number;
+  /** Plain sentence when the database can't be read. */
+  error: string | null;
+}
+export interface LegacyScan {
+  sources: LegacySource[];
+  /** An import started earlier is still running (progress events will follow). */
+  running: boolean;
+}
+export interface ImportProgress { source: LegacySourceKind; done: number; total: number; title: string | null }
+export interface ImportIssue {
+  source: LegacySourceKind;
+  /** Empty when the whole source failed. */
+  legacyId: string; title: string | null; reason: string;
+  /** false: imported anyway (e.g. without its audio). */
+  failed: boolean;
+}
+export interface ImportResult {
+  imported: number; dictations: number; skipped: number; failed: number; copiedBytes: number; issues: ImportIssue[];
+}
+export interface ImportFinished { result: ImportResult | null; error: string | null }
 
 export type Route =
   | "/" | "/live" | "/dictate" | "/library" | "/onboarding" | "/gallery"

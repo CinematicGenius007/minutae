@@ -191,6 +191,25 @@ pub struct RecordingState {
     pub elapsed_ms: u64,
     pub system_audio: SystemAudio,
     pub system_audio_error: Option<String>,
+    /// What the system track holds while it is on: only the call app, or everything the
+    /// computer plays (no call app known, it has no audio yet, or the OS can't separate it).
+    pub system_audio_scope: Option<SystemAudioScope>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SystemAudioScope {
+    App,
+    All,
+}
+
+impl From<minutae_audio::SystemScope> for SystemAudioScope {
+    fn from(s: minutae_audio::SystemScope) -> Self {
+        match s {
+            minutae_audio::SystemScope::App => Self::App,
+            minutae_audio::SystemScope::All => Self::All,
+        }
+    }
 }
 
 impl RecordingState {
@@ -207,6 +226,7 @@ impl RecordingState {
                 SystemAudio::Off
             },
             system_audio_error: None,
+            system_audio_scope: None,
         }
     }
 }
@@ -301,6 +321,7 @@ pub fn copy_reason_text(r: minutae_dictation::CopyReason) -> &'static str {
         C::Wayland => "Wayland doesn't allow typing into other apps",
         C::SecureInput => "Secure input is on",
         C::PasteFailed => "Paste didn't work",
+        C::FocusChanged => "You switched apps",
     }
 }
 
@@ -455,6 +476,51 @@ impl ShortcutStatus {
     }
 }
 
+/// Where the updater is. `disabled`: update checks are turned off (`MINUTAE_UPDATE_CHECK=off`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdatePhase {
+    Disabled,
+    Idle,
+    Checking,
+    UpToDate,
+    Available,
+    Installing,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatus {
+    pub phase: UpdatePhase,
+    pub current_version: String,
+    /// The newer version on offer (`available`, `installing`).
+    pub version: Option<String>,
+    /// Release notes of that version, if the release has any.
+    pub notes: Option<String>,
+    /// Download progress 0..1 while `installing`; `null` when the size is unknown.
+    pub fraction: Option<f32>,
+    /// One plain sentence when `error`.
+    pub error: Option<String>,
+    /// How this copy was installed; decides who applies updates.
+    pub channel: InstallChannel,
+    /// The app can download and install the update itself ("Install and restart").
+    pub can_install: bool,
+    /// When it can't: the command that updates this install (`scoop update minutae`, …).
+    pub update_command: Option<String>,
+}
+
+/// How this copy of Minutae was installed.
+/// `direct`: a release download or `install.sh`; `scoop`: Scoop on Windows;
+/// `source`: built from a git checkout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InstallChannel {
+    Direct,
+    Scoop,
+    Source,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ModelState {
@@ -568,6 +634,32 @@ pub struct StorageUsage {
     pub data_dir: String,
 }
 
+// ---- import from older Minutae apps (MIG-10) ----
+
+/// `LegacySource`, `ImportProgress`, `ImportResult`, `ImportIssue` in types.ts. The import
+/// crate's types already serialize to exactly those shapes, so they are the DTOs.
+pub use minutae_import::{
+    ImportResult, Issue as ImportIssue, Progress as ImportProgress, SourceKind as LegacySourceKind,
+    SourceScan as LegacySource,
+};
+
+/// Result of `import_legacy_scan`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyScan {
+    pub sources: Vec<LegacySource>,
+    /// An import started earlier is still running (progress events will follow).
+    pub running: bool,
+}
+
+/// Payload of `import://finished`: the run's result, or why it couldn't run at all.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportFinished {
+    pub result: Option<ImportResult>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallDetected {
@@ -602,6 +694,9 @@ pub mod ev {
     pub const TRAY_PANEL_SHOWN: &str = "tray://shown";
     pub const NAVIGATE: &str = "nav://goto";
     pub const SHORTCUTS_CHANGED: &str = "shortcuts://changed";
+    pub const IMPORT_PROGRESS: &str = "import://progress";
+    pub const IMPORT_FINISHED: &str = "import://finished";
+    pub const UPDATE_STATUS: &str = "update://status";
 }
 
 #[cfg(test)]
@@ -830,11 +925,17 @@ mod tests {
                 "elapsedMs",
                 "systemAudio",
                 "systemAudioError",
+                "systemAudioScope",
             ],
         );
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["phase"], "idle");
         assert_eq!(v["systemAudio"], "on");
+        assert_eq!(v["systemAudioScope"], serde_json::Value::Null);
+        assert_eq!(
+            serde_json::to_value(SystemAudioScope::from(minutae_audio::SystemScope::App)).unwrap(),
+            "app"
+        );
         assert_keys(
             &LevelFrame {
                 elapsed_ms: 0,
@@ -999,6 +1100,38 @@ mod tests {
     }
 
     #[test]
+    fn update_status_shape() {
+        let s = UpdateStatus {
+            phase: UpdatePhase::UpToDate,
+            current_version: "0.4.0".into(),
+            version: None,
+            notes: None,
+            fraction: None,
+            error: None,
+            channel: InstallChannel::Scoop,
+            can_install: false,
+            update_command: Some("scoop update minutae".into()),
+        };
+        assert_keys(
+            &s,
+            &[
+                "phase",
+                "currentVersion",
+                "version",
+                "notes",
+                "fraction",
+                "error",
+                "channel",
+                "canInstall",
+                "updateCommand",
+            ],
+        );
+        assert_eq!(serde_json::to_value(&s).unwrap()["phase"], "upToDate");
+        assert_eq!(serde_json::to_value(&s).unwrap()["channel"], "scoop");
+        assert_eq!(ev::UPDATE_STATUS, "update://status");
+    }
+
+    #[test]
     fn platform_shapes() {
         assert_keys(
             &InputDevice {
@@ -1146,6 +1279,84 @@ mod tests {
                 data_dir: "d".into(),
             },
             &["recordingsBytes", "modelsBytes", "indexBytes", "dataDir"],
+        );
+    }
+
+    #[test]
+    fn import_shapes_match_types_ts() {
+        let source = LegacySource {
+            kind: LegacySourceKind::TauriV1,
+            name: "n".into(),
+            path: "p".into(),
+            meetings: 1,
+            dictations: 0,
+            already_imported: 0,
+            audio_bytes: 0,
+            error: None,
+        };
+        assert_keys(
+            &source,
+            &[
+                "kind",
+                "name",
+                "path",
+                "meetings",
+                "dictations",
+                "alreadyImported",
+                "audioBytes",
+                "error",
+            ],
+        );
+        assert_eq!(serde_json::to_value(source.kind).unwrap(), "tauriV1");
+        assert_keys(
+            &LegacyScan {
+                sources: vec![source.clone()],
+                running: false,
+            },
+            &["sources", "running"],
+        );
+        assert_eq!(
+            serde_json::to_value(LegacySourceKind::Swift).unwrap(),
+            "swift"
+        );
+        assert_keys(
+            &ImportProgress {
+                source: LegacySourceKind::Swift,
+                done: 1,
+                total: 2,
+                title: None,
+            },
+            &["source", "done", "total", "title"],
+        );
+        let issue = ImportIssue {
+            source: LegacySourceKind::Swift,
+            legacy_id: "x".into(),
+            title: None,
+            reason: "r".into(),
+            failed: true,
+        };
+        assert_keys(&issue, &["source", "legacyId", "title", "reason", "failed"]);
+        let result = ImportResult {
+            issues: vec![issue],
+            ..Default::default()
+        };
+        assert_keys(
+            &result,
+            &[
+                "imported",
+                "dictations",
+                "skipped",
+                "failed",
+                "copiedBytes",
+                "issues",
+            ],
+        );
+        assert_keys(
+            &ImportFinished {
+                result: Some(result),
+                error: None,
+            },
+            &["result", "error"],
         );
     }
 }

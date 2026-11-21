@@ -337,6 +337,25 @@ async fn copied_outcome_reaches_hud_and_record() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn switching_apps_while_transcribing_copies_instead_of_pasting() {
+    let mut r = rig("ship it");
+    r.ctl.key_down(); // in Notes
+    sleep(ms(500)).await;
+    r.ins.set_app(Some("Terminal"));
+    r.ctl.key_up();
+    let events = r.drain().await;
+    assert!(events.contains(&DictationEvent::Hud(HudState::Copied {
+        words: 2,
+        reason: CopyReason::FocusChanged
+    })));
+    assert!(
+        r.ins.texts().is_empty(),
+        "nothing may be pasted into Terminal"
+    );
+    assert_eq!(r.ins.copied_texts().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
 async fn insertion_failure_is_an_error() {
     let mut r = rig_with(
         FakeSpeech::new("secret"),

@@ -150,6 +150,8 @@ pub struct AppState {
     pub shortcut_status: Mutex<crate::dto::ShortcutStatus>,
     /// The portal backend once bound (Wayland), for `configure_shortcuts`.
     pub shortcut_portal: OnceLock<Arc<dyn minutae_dictation::ShortcutPortal>>,
+    /// True while `import_legacy_run` works, so a second click can't start another run.
+    pub importing: std::sync::atomic::AtomicBool,
 }
 
 impl AppState {
@@ -183,6 +185,7 @@ impl AppState {
             dictation_keys: OnceLock::new(),
             shortcut_status: Mutex::new(crate::dto::ShortcutStatus::native()),
             shortcut_portal: OnceLock::new(),
+            importing: Default::default(),
         }
     }
 

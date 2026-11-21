@@ -3,7 +3,8 @@
 
 use std::time::Duration;
 
-use minutae_detect::MicEvent;
+use minutae_audio::AppTarget;
+use minutae_detect::{MicEvent, MicProcess};
 use tauri::{AppHandle, Emitter, Manager};
 
 use minutae_core::MeetingId;
@@ -17,6 +18,8 @@ const STOP_AFTER_CALL_ENDS: Duration = Duration::from_secs(10);
 pub struct CallState {
     /// App named by the last `Busy` event (prompt shown or pending).
     pub app: Option<String>,
+    /// Its process (macOS), so a recording can capture only the call app's audio.
+    pub process: Option<MicProcess>,
     pub busy: bool,
     /// Bumped on every mic event; delayed actions check it is unchanged.
     pub generation: u64,
@@ -58,11 +61,12 @@ async fn on_event(app: &AppHandle, event: MicEvent) {
     let st = app.state::<AppState>();
     let settings = st.settings();
     match event {
-        MicEvent::Busy { app: name } => {
+        MicEvent::Busy { app: name, process } => {
             let generation = {
                 let mut c = st.calls.lock().unwrap_or_else(|e| e.into_inner());
                 c.busy = true;
                 c.app = name.clone();
+                c.process = process;
                 c.generation += 1;
                 c.generation
             };
@@ -135,6 +139,22 @@ async fn on_event(app: &AppHandle, event: MicEvent) {
             }
         }
     }
+}
+
+/// The app to record system audio from: the call app while a call is going on, else
+/// `None` (all system audio).
+pub fn audio_target(calls: &CallState) -> Option<AppTarget> {
+    if !calls.busy {
+        return None;
+    }
+    calls
+        .process
+        .as_ref()
+        .map(|p| AppTarget {
+            pid: Some(p.pid),
+            bundle_id: p.bundle_id.clone(),
+        })
+        .filter(|t| !t.is_empty())
 }
 
 /// Auto-stop only the meeting the timer was started for, if it is still recording
@@ -218,6 +238,27 @@ pub fn dismiss(app: &AppHandle, always: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_target_only_during_a_call_with_a_known_process() {
+        let mut c = CallState::default();
+        assert_eq!(audio_target(&c), None);
+        c.busy = true;
+        assert_eq!(audio_target(&c), None, "process unknown (Windows/Linux)");
+        c.process = Some(MicProcess {
+            pid: 7,
+            bundle_id: Some("us.zoom.xos".into()),
+        });
+        assert_eq!(
+            audio_target(&c),
+            Some(AppTarget {
+                pid: Some(7),
+                bundle_id: Some("us.zoom.xos".into())
+            })
+        );
+        c.busy = false;
+        assert_eq!(audio_target(&c), None, "call over: record everything");
+    }
 
     #[test]
     fn auto_stop_only_for_the_same_call_meeting() {

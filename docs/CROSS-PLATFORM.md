@@ -82,7 +82,7 @@ This is the part that decides whether the design is "honestly implementable".
 |---|---|---|---|---|
 | Microphone | CoreAudio | WASAPI | PipeWire / Pulse / ALSA | `cpal` |
 | Other people's audio (system output) | Core Audio process tap (14.4+), ScreenCaptureKit fallback | WASAPI loopback | PipeWire monitor source | `cpal` (Win, Linux); `objc2` bindings (macOS) |
-| Detect a call (mic used by another app) | `kAudioDevicePropertyDeviceIsRunningSomewhere` (exists in legacy) | Capability Access Manager consent store (mic in-use entries) | PipeWire / Pulse source-outputs | own code |
+| Detect a call (mic used by another app) | Core Audio process objects (`kAudioProcessPropertyIsRunningInput`, 14+), else `kAudioDevicePropertyDeviceIsRunningSomewhere` | Capability Access Manager consent store (mic in-use entries) | PipeWire / Pulse source-outputs | own code |
 | Transcription | whisper.cpp + Metal | whisper.cpp + Vulkan/CUDA, CPU fallback | same as Windows | `whisper-rs` |
 | Who said what (diarization) | sherpa-onnx (pyannote segmentation + speaker embedding), CPU / CoreML | sherpa-onnx CPU / CUDA | sherpa-onnx CPU | official `sherpa-onnx` crate |
 | Global hold-to-talk hotkey | Yes (needs Accessibility) | Yes | X11 yes; Wayland through the GlobalShortcuts portal (desktop-dependent, see below) | `tauri-plugin-global-shortcut` (pressed/released); Wayland: `ashpd` (zbus, pure Rust) |
@@ -97,6 +97,14 @@ This is the part that decides whether the design is "honestly implementable".
 - The user's accelerators go to `BindShortcuts` as preferred triggers only; the desktop shows its own dialog and owns the keys. Settings shows the trigger it returned and, when the portal is version 2+, a "Change in system settings" button (`ConfigureShortcuts`).
 - `Activated` → press, `Deactivated` → release, so hold-to-talk works where the compositor sends both. If a second `Activated` arrives with no `Deactivated` in between, or `Deactivated` arrives under 20 ms after `Activated`, releases are treated as missing: dictation switches to press-to-toggle for the session and Settings says so.
 - No portal (older GNOME, some compositors): Settings explains it and offers `minutae --toggle-dictation` / `--toggle-recording` to bind as custom desktop shortcuts. tauri-plugin-single-instance forwards the flags to the running app.
+
+**macOS system audio, in detail (`minutae-audio`):**
+
+- During a call, the mic monitor (`minutae-detect`) reports the process using the mic (pid + bundle id). The recording then captures **only that app's audio**, so music and videos stay out. `target::resolve` collects the app's audio processes: the process itself, processes with the same bundle root (`com.google.Chrome.helper*` → `com.google.Chrome`), and children or processes the app is "responsible" for (Safari's `com.apple.WebKit.GPU`). Shared WebKit ids and terminal siblings of CLI tools are excluded.
+- **14.4+:** `CATapDescription initStereoMixdownOfProcesses` → `AudioHardwareCreateProcessTap` → a private aggregate device (default output as clock + the tap) → an IOProc that downmixes into the rtrb ring (no allocation). `kAudioHardwarePropertyTranslatePIDToProcessObject` is the fallback lookup.
+- **13.0–14.3:** ScreenCaptureKit (`SCStream`, `capturesAudio`, `excludesCurrentProcessAudio`), with a content filter that includes only the call app's `SCRunningApplication`s, or the whole display if the app is not found. Needs Screen Recording; onboarding asks for it on those versions (`CGPreflight/RequestScreenCaptureAccess`). `MINUTAE_MAC_SYSTEM_AUDIO=sck|tap` forces a backend for testing.
+- **Fallback:** no call app, no audio process yet, or tap failure → all system audio (cpal global tap). Once a second the capture thread re-resolves: it switches to the app once it has audio, adds new helper processes, and rebuilds when the output device changes. `RecordingHandle::system_source()` and `CaptureEvent::SystemSourceChanged` report the mode. The UI shows "Mic + Zoom audio" vs "Mic + system audio" (`RecordingState.systemAudioScope`).
+- CoreAudio is weak-linked (`-weak_framework CoreAudio` in the build scripts) so the tap symbols (14.2+) don't stop the app launching on 13.x.
 
 **Prior art:** Meetily (open source, Tauri + Rust) records mic + system audio and transcribes locally on all three OSes using the same APIs (WASAPI loopback, ScreenCaptureKit/CoreAudio, Pulse monitor sources). So the approach is proven, not hypothetical.
 

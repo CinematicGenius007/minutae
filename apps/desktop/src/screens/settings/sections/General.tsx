@@ -17,6 +17,7 @@ import { toKitShortcut } from "../shared/format";
 import { useLoad, useShortcutStatus } from "../../../hooks";
 import s from "../settings.module.css";
 import type { SectionProps } from "./types";
+import { UpdateRow } from "./UpdateRow";
 
 const DEFAULT_MIC = "__system_default__";
 
@@ -146,6 +147,7 @@ export function GeneralSection({ settings, update }: SectionProps) {
           htmlFor="s-login"
           control={<Toggle id="s-login" checked={settings.launchAtLogin} onCheckedChange={(v) => update({ launchAtLogin: v })} />}
         />
+        <UpdateRow />
       </section>
     </>
   );

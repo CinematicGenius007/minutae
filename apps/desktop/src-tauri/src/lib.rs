@@ -12,6 +12,7 @@ pub mod portal;
 pub mod recording;
 pub mod shell;
 pub mod state;
+pub mod updater;
 pub mod util;
 
 use std::sync::Arc;
@@ -205,6 +206,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let (sink, usage_rx) = minutae_llm::usage_channel();
     app.manage(AppState::new(store, sink));
     let handle = app.handle().clone();
+    app.manage(updater::init(&handle));
 
     shell::create_aux_windows(&handle)?;
     shell::create_tray(&handle)?;
@@ -282,6 +284,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        // Always registered (its config must exist); `updater::init` turns the feature off
+        // at runtime when no public key is configured.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -364,6 +369,11 @@ pub fn run() {
             commands::pick_folder,
             commands::export_all,
             commands::erase_all,
+            commands::import_legacy_scan,
+            commands::import_legacy_run,
+            commands::update_status,
+            commands::check_for_updates,
+            commands::install_update,
         ]);
 
     let app = builder

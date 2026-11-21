@@ -12,6 +12,9 @@
 //   ?portal=press      with session=wayland: the portal sends no key releases, so hold works as toggle
 //   ?perms=none        every permission is notRequired (Windows / Linux): onboarding has nothing to ask
 //   ?audio=1           meetings have short silent audio tracks, so the player is enabled
+//   ?import=none       no older Minutae data (also: error, running, failed; see legacyScan below)
+//   ?update=available|checking|error|disabled   start the updater in that phase (default idle)
+//   ?channel=scoop|source   a copy that can't install updates itself and shows its update command
 //
 // Behaviour mirrors the real backend where the UI must cope with it:
 //   - request_permission("systemAudio" | "accessibility") on macOS can keep answering notDetermined
@@ -20,8 +23,9 @@
 //   - ask() answers take a different time per question, so a later question can land first
 
 import type {
-  Answer, AppSettings, DayGroup, Dictation, MeetingDetail, ModelInfo, Permissions, ProviderStatus, RecordingState, SearchHit,
-  ShortcutStatus, UsageMonth,
+  Answer, AppSettings, DayGroup, Dictation, ImportResult, LegacyScan, LegacySource, MeetingDetail, ModelInfo, Permissions,
+  ProviderStatus, RecordingState, SearchHit,
+  ShortcutStatus, UpdateStatus, UsageMonth,
 } from "./types";
 
 type Listener = (payload: unknown) => void;
@@ -188,7 +192,7 @@ const dictations: Dictation[] = [
   targetApp: app as string, wordCount: (text as string).split(/\s+/).length, durationMs: 6000, inserted: true,
 }));
 
-let recording: RecordingState = { phase: "idle", meetingId: null, title: null, sourceApp: null, elapsedMs: 0, systemAudio: "on", systemAudioError: null };
+let recording: RecordingState = { phase: "idle", meetingId: null, title: null, sourceApp: null, elapsedMs: 0, systemAudio: "on", systemAudioError: null, systemAudioScope: null };
 let tick: ReturnType<typeof setInterval> | null = null;
 function startTicker() {
   if (tick) return;
@@ -201,7 +205,7 @@ function startTicker() {
   }, 33);
 }
 if (params.get("state") === "recording") {
-  recording = { phase: "recording", meetingId: id(9), title: "Q2 Design Sync", sourceApp: "Zoom", elapsedMs: 768000, systemAudio: "on", systemAudioError: null };
+  recording = { phase: "recording", meetingId: id(9), title: "Q2 Design Sync", sourceApp: "Zoom", elapsedMs: 768000, systemAudio: "on", systemAudioError: null, systemAudioScope: "app" };
   startTicker();
 }
 
@@ -234,6 +238,55 @@ const hits: SearchHit[] = [
   { kind: "meeting", meetingId: id(3), dictationId: null, title: "Weekly product review", snippet: "If onboarding slips, the launch has to move with it.", highlights: [], atMs: 1960000, date: iso(1, 10, 0) },
   { kind: "dictation", meetingId: null, dictationId: id(300), title: "Dictation in Mail", snippet: "Let's keep the May date and I'll send the revised plan…", highlights: [], atMs: null, date: iso(0, 16, 2) },
 ];
+
+// Import from older Minutae apps. `?import=none` nothing found, `?import=error` the scan fails,
+// `?import=running` a run holds at 21 of 54, `?import=failed` the run stops with an error.
+const importMode = params.get("import");
+let legacyImported = false;
+let importing = false;
+function legacyScan(): LegacyScan {
+  if (importMode === "none") return { sources: [], running: false };
+  const sources: LegacySource[] = [
+    { kind: "swift", name: "Minutae for Mac", path: "~/Library/Minutae/minutae.db", meetings: 42, dictations: 12,
+      alreadyImported: legacyImported ? 53 : 0, audioBytes: legacyImported ? 0 : 3.2e9, error: null },
+    { kind: "tauriV1", name: "Minutae 1", path: "~/Library/Application Support/com.nebula.minutae/minutae.db", meetings: 3, dictations: 0,
+      alreadyImported: 0, audioBytes: 0, error: "This file isn't a Minutae database, or it is damaged." },
+  ];
+  return { sources, running: importing };
+}
+function runImport() {
+  const total = 54;
+  importing = true;
+  let done = 0;
+  const step = () => {
+    if (importMode === "running" && done >= 21) return;
+    if (importMode === "failed" && done >= 8) {
+      importing = false;
+      emit("import://finished", { result: null, error: "The import stopped unexpectedly. Try again." });
+      return;
+    }
+    done = Math.min(total, done + 7);
+    emit("import://progress", { source: "swift", done, total, title: "Q2 Design Sync" });
+    if (done < total) {
+      setTimeout(step, 60);
+      return;
+    }
+    importing = false;
+    legacyImported = true;
+    const result: ImportResult = {
+      imported: 41, dictations: 12, skipped: 0, failed: 2, copiedBytes: 3.2e9,
+      issues: [
+        { source: "swift", legacyId: "a1", title: "Vendor call", reason: "Imported without audio: the file is missing.", failed: false },
+        { source: "swift", legacyId: "b2", title: "Standup", reason: "It has no readable start time.", failed: true },
+        { source: "tauriV1", legacyId: "", title: null, reason: "This file isn't a Minutae database, or it is damaged.", failed: true },
+      ],
+    };
+    emit("import://finished", { result, error: null });
+    emit("meetings://changed", { meetingId: null });
+    emit("dictations://changed", null);
+  };
+  setTimeout(step, 60);
+}
 
 const STOP = new Set(["the", "and", "did", "does", "was", "were", "why", "what", "when", "who", "how", "for", "with", "that", "this", "are", "you", "our", "its"]);
 
@@ -300,6 +353,46 @@ function answerFor(question: string): Promise<Answer> {
   return delay({ text: a.text, sources, provider: "Codex" }, a.ms);
 }
 
+// Updater. A check finds nothing unless ?update=available; install "downloads" for ~1.5 s,
+// then (instead of restarting) goes back to idle on the new version.
+// ?channel=scoop|source: a copy that can't install itself and shows its update command.
+const updateParam = params.get("update");
+const channelParam = params.get("channel");
+let update: UpdateStatus = {
+  phase: "idle", currentVersion: "0.4.0", version: null, notes: null, fraction: null, error: null,
+  channel: "direct", canInstall: true, updateCommand: null,
+  ...(channelParam === "scoop" ? { channel: "scoop", canInstall: false, updateCommand: "scoop update minutae" } as const : {}),
+  ...(channelParam === "source"
+    ? { channel: "source", canInstall: false, updateCommand: "git pull && ./scripts/install.sh --from-source" } as const
+    : {}),
+  ...(updateParam === "available" ? { phase: "available", version: "0.5.0", notes: "Faster transcription on Apple silicon." } as const : {}),
+  ...(updateParam === "checking" ? { phase: "checking" } as const : {}),
+  ...(updateParam === "disabled" ? { phase: "disabled" } as const : {}),
+  ...(updateParam === "error"
+    ? { phase: "error", error: "Couldn't reach the update server. Check your connection and try again." } as const
+    : {}),
+};
+const setUpdate = (patch: Partial<UpdateStatus>) => {
+  update = { ...update, ...patch };
+  emit("update://status", update);
+};
+function mockCheck() {
+  setUpdate({ phase: "checking", error: null, fraction: null });
+  setTimeout(() => setUpdate(updateParam === "available" ? { phase: "available", version: "0.5.0" } : { phase: "upToDate" }), 700);
+}
+function mockInstall() {
+  setUpdate({ phase: "installing", fraction: 0 });
+  let f = 0;
+  const t = setInterval(() => {
+    f = Math.min(1, f + 0.2);
+    setUpdate({ fraction: f });
+    if (f >= 1) {
+      clearInterval(t);
+      setUpdate({ phase: "idle", currentVersion: update.version ?? update.currentVersion, version: null, notes: null, fraction: null });
+    }
+  }, 300);
+}
+
 export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   const r = (v: unknown) => delay(v) as Promise<T>;
   switch (cmd) {
@@ -331,7 +424,7 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
     case "recording_state": return r(recording);
     case "start_recording":
     case "accept_call_prompt":
-      recording = { phase: "recording", meetingId: id(9), title: (args.title as string) ?? "Untitled meeting", sourceApp: (args.sourceApp as string) ?? null, elapsedMs: 0, systemAudio: "on", systemAudioError: null };
+      recording = { phase: "recording", meetingId: id(9), title: (args.title as string) ?? "Untitled meeting", sourceApp: (args.sourceApp as string) ?? null, elapsedMs: 0, systemAudio: "on", systemAudioError: null, systemAudioScope: "all" };
       startTicker(); emit("recording://state", recording);
       return r({ id: id(9), title: recording.title, startedAt: new Date().toISOString(), endedAt: null, status: "recording", sourceApp: recording.sourceApp, failure: null });
     case "stop_recording": {
@@ -339,7 +432,7 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
       recording = { ...recording, phase: "stopping" };
       emit("recording://state", recording);
       await new Promise((done) => setTimeout(done, 600));
-      recording = { phase: "idle", meetingId: null, title: null, sourceApp: null, elapsedMs: 0, systemAudio: "on", systemAudioError: null };
+      recording = { phase: "idle", meetingId: null, title: null, sourceApp: null, elapsedMs: 0, systemAudio: "on", systemAudioError: null, systemAudioScope: null };
       emit("recording://state", recording);
       return r(meetingId);
     }
@@ -358,6 +451,21 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
     case "usage_month": return r(usage);
     case "storage_usage": return r({ recordingsBytes: 4.1e9, modelsBytes: 608e6, indexBytes: 46e6, dataDir: "~/Library/Minutae" });
     case "pick_folder": case "export_all": return r(null);
+    case "import_legacy_scan": return importMode === "error" ? fail("Couldn't read the older Minutae folder.") : r(legacyScan());
+    case "import_legacy_run":
+      if (importing) return fail("An import is already running.");
+      runImport();
+      return r(undefined);
+    case "update_status": return r(update);
+    case "check_for_updates":
+      if (update.phase !== "disabled" && update.phase !== "checking" && update.phase !== "installing") mockCheck();
+      return r(update);
+    case "install_update":
+      if (recording.phase !== "idle") return fail("Stop the recording before installing the update.");
+      if (!update.canInstall) return fail(`Update this copy from a terminal: ${update.updateCommand}`);
+      if (update.phase !== "available") return fail("No update is ready to install. Check for updates first.");
+      mockInstall();
+      return r(update);
     // Window plumbing (menu-bar panel): nothing to do in the browser.
     case "open_main": case "quit_app": case "tray_panel_hide": case "tray_panel_resize": return r(undefined);
     default: return r(undefined);

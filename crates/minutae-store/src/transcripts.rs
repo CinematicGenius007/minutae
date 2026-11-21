@@ -6,45 +6,58 @@ use rusqlite::{OptionalExtension, params};
 use crate::meetings::expect_one;
 use crate::{Result, Store, enum_from, enum_str, now_ms, parse_uuid};
 
+/// Replace the meeting's transcript, segments and speakers inside an open transaction.
+pub(crate) fn write_transcript(
+    tx: &rusqlite::Connection,
+    transcript: &Transcript,
+    speakers: &[Speaker],
+) -> Result<()> {
+    let mid = transcript.meeting_id.to_string();
+    tx.execute("DELETE FROM segments WHERE meeting_id = ?1", [&mid])?;
+    tx.execute("DELETE FROM speakers WHERE meeting_id = ?1", [&mid])?;
+    tx.execute(
+            "INSERT INTO transcripts (meeting_id, language, model, created_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(meeting_id) DO UPDATE SET language = excluded.language, model = excluded.model,
+               created_at = excluded.created_at",
+            params![mid, transcript.language, transcript.model, now_ms()],
+        )?;
+    {
+        let mut stmt = tx.prepare_cached(
+                "INSERT INTO speakers (id, meeting_id, label, display_name, track) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+        for s in speakers {
+            stmt.execute(params![
+                s.id.to_string(),
+                mid,
+                s.label,
+                s.display_name,
+                enum_str(&s.track)
+            ])?;
+        }
+    }
+    {
+        let mut stmt = tx.prepare_cached(
+                "INSERT INTO segments (meeting_id, start_ms, end_ms, text, track, speaker_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+        for s in &transcript.segments {
+            stmt.execute(params![
+                mid,
+                s.start_ms,
+                s.end_ms,
+                s.text,
+                enum_str(&s.track),
+                s.speaker_id.map(|u| u.to_string())
+            ])?;
+        }
+    }
+    Ok(())
+}
+
 impl Store {
     /// Replace the meeting's transcript, segments and speakers in one transaction.
     /// Segments may only reference speakers in `speakers` (or none).
     pub fn replace_transcript(&self, transcript: &Transcript, speakers: &[Speaker]) -> Result<()> {
-        let mid = transcript.meeting_id.to_string();
-        self.transaction(|tx| {
-            tx.execute("DELETE FROM segments WHERE meeting_id = ?1", [&mid])?;
-            tx.execute("DELETE FROM speakers WHERE meeting_id = ?1", [&mid])?;
-            tx.execute(
-                "INSERT INTO transcripts (meeting_id, language, model, created_at) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(meeting_id) DO UPDATE SET language = excluded.language, model = excluded.model,
-                   created_at = excluded.created_at",
-                params![mid, transcript.language, transcript.model, now_ms()],
-            )?;
-            {
-                let mut stmt = tx.prepare_cached(
-                    "INSERT INTO speakers (id, meeting_id, label, display_name, track) VALUES (?1, ?2, ?3, ?4, ?5)",
-                )?;
-                for s in speakers {
-                    stmt.execute(params![s.id.to_string(), mid, s.label, s.display_name, enum_str(&s.track)])?;
-                }
-            }
-            {
-                let mut stmt = tx.prepare_cached(
-                    "INSERT INTO segments (meeting_id, start_ms, end_ms, text, track, speaker_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                )?;
-                for s in &transcript.segments {
-                    stmt.execute(params![
-                        mid,
-                        s.start_ms,
-                        s.end_ms,
-                        s.text,
-                        enum_str(&s.track),
-                        s.speaker_id.map(|u| u.to_string())
-                    ])?;
-                }
-            }
-            Ok(())
-        })
+        self.transaction(|tx| write_transcript(tx, transcript, speakers))
     }
 
     pub fn get_transcript(&self, id: MeetingId) -> Result<Option<Transcript>> {

@@ -13,6 +13,7 @@ static = ["sherpa-onnx/static"]
 shared = ["sherpa-onnx/shared"]
 
 [dependencies]
+sha2 = "0.10"
 minutae-core.workspace = true
 serde.workspace = true
 thiserror.workspace = true

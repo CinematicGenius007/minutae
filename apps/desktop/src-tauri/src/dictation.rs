@@ -59,6 +59,7 @@ impl AudioSource for MicSource {
         let handle = Recorder::new().start(CaptureConfig {
             mic_device: device,
             include_system: false,
+            system_app: None,
             out_dir: dir.clone(),
             chunk_secs: 30,
         })?;
