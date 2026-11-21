@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/desktop/src-tauri"]
-# The v3 Tauri app keeps its own Cargo.lock/target and its own workflows (ci.yml, release.yml).
+# The v3 Tauri app keeps its own Cargo.lock/target and its own workflows (ci.yml, release-legacy.yml).
 exclude = ["legacy"]
 
 [workspace.package]

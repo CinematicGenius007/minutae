@@ -9,6 +9,8 @@
 //   ?os=macos          report this OS instead of guessing from the user agent (macos | windows | linux)
 //   ?perms=none        every permission is notRequired (Windows / Linux): onboarding has nothing to ask
 //   ?audio=1           meetings have short silent audio tracks, so the player is enabled
+//   ?update=available|checking|error|disabled   start the updater in that phase (default idle)
+//   ?channel=scoop|source   a copy that can't install updates itself and shows its update command
 //
 // Behaviour mirrors the real backend where the UI must cope with it:
 //   - request_permission("systemAudio" | "accessibility") on macOS can keep answering notDetermined
@@ -18,7 +20,7 @@
 
 import type {
   Answer, AppSettings, DayGroup, Dictation, MeetingDetail, ModelInfo, Permissions, ProviderStatus, RecordingState, SearchHit,
-  UsageMonth,
+  UpdateStatus, UsageMonth,
 } from "./types";
 
 type Listener = (payload: unknown) => void;
@@ -282,6 +284,46 @@ function answerFor(question: string): Promise<Answer> {
   return delay({ text: a.text, sources, provider: "Codex" }, a.ms);
 }
 
+// Updater. A check finds nothing unless ?update=available; install "downloads" for ~1.5 s,
+// then (instead of restarting) goes back to idle on the new version.
+// ?channel=scoop|source: a copy that can't install itself and shows its update command.
+const updateParam = params.get("update");
+const channelParam = params.get("channel");
+let update: UpdateStatus = {
+  phase: "idle", currentVersion: "0.4.0", version: null, notes: null, fraction: null, error: null,
+  channel: "direct", canInstall: true, updateCommand: null,
+  ...(channelParam === "scoop" ? { channel: "scoop", canInstall: false, updateCommand: "scoop update minutae" } as const : {}),
+  ...(channelParam === "source"
+    ? { channel: "source", canInstall: false, updateCommand: "git pull && ./scripts/install.sh --from-source" } as const
+    : {}),
+  ...(updateParam === "available" ? { phase: "available", version: "0.5.0", notes: "Faster transcription on Apple silicon." } as const : {}),
+  ...(updateParam === "checking" ? { phase: "checking" } as const : {}),
+  ...(updateParam === "disabled" ? { phase: "disabled" } as const : {}),
+  ...(updateParam === "error"
+    ? { phase: "error", error: "Couldn't reach the update server. Check your connection and try again." } as const
+    : {}),
+};
+const setUpdate = (patch: Partial<UpdateStatus>) => {
+  update = { ...update, ...patch };
+  emit("update://status", update);
+};
+function mockCheck() {
+  setUpdate({ phase: "checking", error: null, fraction: null });
+  setTimeout(() => setUpdate(updateParam === "available" ? { phase: "available", version: "0.5.0" } : { phase: "upToDate" }), 700);
+}
+function mockInstall() {
+  setUpdate({ phase: "installing", fraction: 0 });
+  let f = 0;
+  const t = setInterval(() => {
+    f = Math.min(1, f + 0.2);
+    setUpdate({ fraction: f });
+    if (f >= 1) {
+      clearInterval(t);
+      setUpdate({ phase: "idle", currentVersion: update.version ?? update.currentVersion, version: null, notes: null, fraction: null });
+    }
+  }, 300);
+}
+
 export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   const r = (v: unknown) => delay(v) as Promise<T>;
   switch (cmd) {
@@ -338,6 +380,16 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
     case "usage_month": return r(usage);
     case "storage_usage": return r({ recordingsBytes: 4.1e9, modelsBytes: 608e6, indexBytes: 46e6, dataDir: "~/Library/Minutae" });
     case "pick_folder": case "export_all": return r(null);
+    case "update_status": return r(update);
+    case "check_for_updates":
+      if (update.phase !== "disabled" && update.phase !== "checking" && update.phase !== "installing") mockCheck();
+      return r(update);
+    case "install_update":
+      if (recording.phase !== "idle") return fail("Stop the recording before installing the update.");
+      if (!update.canInstall) return fail(`Update this copy from a terminal: ${update.updateCommand}`);
+      if (update.phase !== "available") return fail("No update is ready to install. Check for updates first.");
+      mockInstall();
+      return r(update);
     // Window plumbing (menu-bar panel): nothing to do in the browser.
     case "open_main": case "quit_app": case "tray_panel_hide": case "tray_panel_resize": return r(undefined);
     default: return r(undefined);

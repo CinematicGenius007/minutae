@@ -1,10 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements (the app is not sandboxed, so com.apple.security.network.*
+  and other App Sandbox keys do not apply and are left out).
+
+  - audio-input: microphone (meetings + dictation). System audio uses a Core Audio process
+    tap, which needs NSAudioCaptureUsageDescription in Info.plist, not an entitlement.
+  - No automation.apple-events: the updater would only use it to ask for an admin password
+    when the app's folder isn't writable. install.sh puts the app where the user can write
+    (/Applications if writable, else ~/Applications), so that never comes up.
+
+  Not needed: JIT / unsigned memory (WebKit's JIT lives in Apple's WebContent process) and
+  disable-library-validation (whisper.cpp and sherpa-onnx/onnxruntime are linked
+  statically; the binary loads no third-party dylibs — check with `otool -L`).
+-->
 <plist version="1.0">
 <dict>
   <key>com.apple.security.device.audio-input</key>
-  <true/>
-  <key>com.apple.security.network.client</key>
   <true/>
 </dict>
 </plist>

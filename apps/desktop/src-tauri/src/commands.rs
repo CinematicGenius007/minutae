@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use chrono::{Datelike, Local, NaiveDate, TimeZone, Utc};
 use minutae_core::{AppSettings, MeetingStatus, Stage, Transport, WhisperModel, paths};
@@ -16,6 +17,7 @@ use uuid::Uuid;
 use crate::dto::{self, ev};
 use crate::pipeline::find_summary_file;
 use crate::state::{AppState, emit_meetings_changed, recordings_root, summaries_root};
+use crate::updater::Updates;
 use crate::{calls, models, platform, recording, shell, util};
 
 type R<T> = Result<T, String>;
@@ -33,6 +35,67 @@ fn uuid(s: &str) -> R<Uuid> {
 #[tauri::command]
 pub fn platform(app: AppHandle) -> dto::PlatformInfo {
     platform::info(app.package_info().version.to_string())
+}
+
+// ---------------------------------------------------------------- updates
+
+#[tauri::command]
+pub fn update_status(updates: State<'_, Arc<Updates>>) -> dto::UpdateStatus {
+    updates.status()
+}
+
+/// Starts a check and returns at once (`checking`, or the current status when updates are
+/// off or already busy). The result arrives on `update://status`.
+#[tauri::command]
+pub fn check_for_updates(updates: State<'_, Arc<Updates>>) -> dto::UpdateStatus {
+    let Some(s) = updates.begin_check() else {
+        return updates.status();
+    };
+    let u = updates.inner().clone();
+    tauri::async_runtime::spawn(async move {
+        u.run_check().await;
+    });
+    s
+}
+
+/// Downloads and installs the update found by the last check, then restarts the app
+/// (graceful quit first). Returns at once; progress and errors arrive on `update://status`.
+#[tauri::command]
+pub async fn install_update(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    updates: State<'_, Arc<Updates>>,
+) -> R<dto::UpdateStatus> {
+    if state.recording.lock().await.is_some() {
+        return Err("Stop the recording before installing the update.".into());
+    }
+    let s = updates.begin_install()?;
+    let u = updates.inner().clone();
+    tauri::async_runtime::spawn(async move {
+        if u.run_install().await.is_ok() {
+            // A recording or dictation may have started during the download: the new
+            // version is already in place, so wait for them to finish before restarting.
+            let state = app.state::<AppState>();
+            while busy_for_restart(&state).await {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+            shell::restart(&app);
+        }
+    });
+    Ok(s)
+}
+
+/// A meeting is recording or a dictation is in progress (restarting would cut it off).
+async fn busy_for_restart(state: &AppState) -> bool {
+    if state.recording.lock().await.is_some() {
+        return true;
+    }
+    state.dictation.get().is_some_and(|d| {
+        !matches!(
+            d.state(),
+            minutae_dictation::DictationState::Idle | minutae_dictation::DictationState::Error
+        )
+    })
 }
 
 #[tauri::command]

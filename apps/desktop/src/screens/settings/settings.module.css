@@ -49,6 +49,16 @@
 .row.row { padding-block: var(--s-5); }
 
 .path { font-family: var(--font-mono); font-size: var(--fs-meta-lg); line-height: var(--lh-caption); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 360px; }
+.command {
+  display: block;
+  margin-top: var(--s-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta-lg);
+  line-height: var(--lh-caption);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
 .quietLink.quietLink { min-height: auto; font-size: var(--fs-body-sm); line-height: var(--lh-body-sm); }
 .dangerTitle { color: var(--destructive); }
 .smallBtn.smallBtn { height: var(--h-chip); padding-inline: var(--s-4); font-size: var(--fs-caption); line-height: var(--lh-caption); }

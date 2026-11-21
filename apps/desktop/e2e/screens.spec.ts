@@ -54,6 +54,15 @@ const SHOTS: Shot[] = [
     name: `settings-${s}`,
     route: `/settings/${s}`,
   })),
+  // Settings → General "Updates" row: loading (checking), update found, error.
+  ...(["checking", "available", "error"] as const).map((u) => ({
+    name: `settings-general-update-${u}`,
+    route: "/settings/general",
+    query: `update=${u}`,
+    ready: "Updates",
+  })),
+  // A Scoop copy can't install itself: the row shows its update command instead.
+  { name: "settings-general-update-scoop", route: "/settings/general", query: "update=available&channel=scoop", ready: "Updates" },
   { name: "onboarding", route: "/onboarding", ready: "Microphone" },
   { name: "prompt", route: "/prompt" },
   // macOS menu-bar panel: a 320 px window; the timer and level meters move every frame.
@@ -248,6 +257,28 @@ for (const theme of THEMES) {
 // ── Behaviour ───────────────────────────────────────────────────────────────
 
 const mod = (browserName: string) => (browserName === "webkit" ? "Meta" : "Control");
+
+test("updates: check → up to date; available → install shows progress", async ({ page }) => {
+  await page.goto(url("/settings/general"));
+  await settle(page, "Updates");
+  await page.getByRole("button", { name: "Check for updates" }).click();
+  await expect(page.getByText("Checking…")).toBeVisible();
+  await expect(page.getByText("Version 0.4.0 is the latest.")).toBeVisible();
+
+  await page.goto(url("/settings/general", "update=available"));
+  await settle(page, "Updates");
+  await expect(page.getByText("Version 0.5.0 is available. You have 0.4.0.")).toBeVisible();
+  await page.getByRole("button", { name: "Install and restart" }).click();
+  await expect(page.getByRole("progressbar", { name: "Update download" })).toBeVisible();
+});
+
+test("updates: a Scoop copy shows its command instead of installing", async ({ page }) => {
+  await page.goto(url("/settings/general", "update=available&channel=scoop"));
+  await settle(page, "Updates");
+  await expect(page.getByText("scoop update minutae", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Install and restart" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Copy command" })).toBeVisible();
+});
 
 test("record: pill → live → pause / resume → mark moment → stop lands on the meeting", async ({ page }) => {
   await page.goto(url("/"));
