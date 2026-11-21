@@ -165,25 +165,15 @@ pub fn navigate(app: &AppHandle, route: &str) {
 
 // ---- tray ----
 
-/// 32×32 template image: a ring (idle) or a filled dot (recording).
-fn tray_image(filled: bool) -> Image<'static> {
-    const N: u32 = 32;
-    let mut rgba = vec![0u8; (N * N * 4) as usize];
-    let c = (N as f32 - 1.0) / 2.0;
-    for y in 0..N {
-        for x in 0..N {
-            let d = ((x as f32 - c).powi(2) + (y as f32 - c).powi(2)).sqrt();
-            let outer = (11.0 - d).clamp(0.0, 1.0);
-            let alpha = if filled {
-                outer
-            } else {
-                outer * (d - 7.0).clamp(0.0, 1.0)
-            };
-            let i = ((y * N + x) * 4) as usize;
-            rgba[i + 3] = (alpha * 255.0) as u8;
-        }
-    }
-    Image::new_owned(rgba, N, N)
+/// Template images (monochrome, alpha only) generated from `assets/brand/tray-*.svg`:
+/// the "m●" mark when idle, a filled tile with the "m" knocked out while recording.
+fn tray_image(recording: bool) -> Image<'static> {
+    let bytes: &'static [u8] = if recording {
+        include_bytes!("../icons/tray/recording.png")
+    } else {
+        include_bytes!("../icons/tray/idle.png")
+    };
+    Image::from_bytes(bytes).expect("bundled tray PNG decodes")
 }
 
 pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -414,5 +404,18 @@ pub fn on_shortcut(app: &AppHandle, shortcut: &Shortcut, state: ShortcutState) {
     } else if Some(shortcut.id()) == record && state == ShortcutState::Pressed {
         let app = app.clone();
         tauri::async_runtime::spawn(async move { crate::recording::toggle(&app).await });
+    }
+}
+
+#[cfg(test)]
+mod tray_tests {
+    #[test]
+    fn tray_images_decode_as_square_templates() {
+        for recording in [false, true] {
+            let img = super::tray_image(recording);
+            assert_eq!((img.width(), img.height()), (64, 64));
+            // Template images carry shape in alpha only.
+            assert!(img.rgba().chunks(4).any(|p| p[3] > 0));
+        }
     }
 }
