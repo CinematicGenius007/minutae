@@ -1,5 +1,9 @@
 # Minutae — Codex Context
 
+> **Start here:**
+> - Installing, updating or building Minutae for someone → [`docs/agents/INSTALL.md`](docs/agents/INSTALL.md).
+> - Working on the code → [`CLAUDE.md`](CLAUDE.md) is the current project context (v4, Tauri 2 + Rust) and wins over this file. The rest of this file describes the earlier app and is kept for history.
+
 This file gives Codex full context on the project so every session starts with a complete picture.
 
 ---

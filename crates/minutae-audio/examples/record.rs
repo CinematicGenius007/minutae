@@ -1,10 +1,14 @@
 //! Record mic + system audio for N seconds and print levels.
 //!
 //! `cargo run -p minutae-audio --example record -- 5 [out_dir]`
+//!
+//! Per-app system audio (macOS): set `MINUTAE_APP_PID` and/or `MINUTAE_APP_BUNDLE` to
+//! record only that app, e.g. `MINUTAE_APP_BUNDLE=com.apple.Music`. Set
+//! `MINUTAE_MAC_SYSTEM_AUDIO=sck` to force the ScreenCaptureKit fallback.
 
 use std::time::{Duration, Instant};
 
-use minutae_audio::{CaptureConfig, Recorder, list_input_devices};
+use minutae_audio::{AppTarget, CaptureConfig, Recorder, list_input_devices};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -24,7 +28,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let handle = Recorder::new().start(CaptureConfig::new(out_dir))?;
+    let target = AppTarget {
+        pid: std::env::var("MINUTAE_APP_PID")
+            .ok()
+            .and_then(|s| s.parse().ok()),
+        bundle_id: std::env::var("MINUTAE_APP_BUNDLE").ok(),
+    };
+    let mut cfg = CaptureConfig::new(out_dir);
+    if !target.is_empty() {
+        println!("Call app: {target:?}");
+        cfg.system_app = Some(target);
+    }
+    let handle = Recorder::new().start(cfg)?;
+    let mut events = handle.events();
+    println!("System source: {:?}", handle.system_source());
     match handle.system_error() {
         None => println!("System audio: capturing"),
         Some(e) => println!("System audio: NOT captured ({e})"),
@@ -34,6 +51,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut mic_peak, mut sys_peak) = (0f32, 0f32);
     while start.elapsed() < Duration::from_secs(secs) {
         std::thread::sleep(Duration::from_millis(250));
+        while let Ok(ev) = events.try_recv() {
+            println!("event: {ev:?}");
+        }
         let f = *levels.borrow();
         mic_peak = mic_peak.max(f.mic_rms);
         sys_peak = sys_peak.max(f.system_rms);

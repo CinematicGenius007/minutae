@@ -153,11 +153,31 @@ fn job_row(r: &Row<'_>) -> rusqlite::Result<JobRecord> {
 }
 
 impl Store {
+    /// Queue `job`. A meeting job identical to one already queued (same kind, meeting and
+    /// payload) is not added again; the queued one is returned. That makes "queue the next
+    /// stage" safe to repeat: a job that crashes after queueing its successor but before
+    /// finishing reruns and queues it again, which would otherwise run the stage (and its
+    /// LLM calls) twice.
     pub fn insert_job(&self, job: &NewJob) -> Result<JobRecord> {
         let id = uuid::Uuid::new_v4();
         let now = now_ms();
         let payload = serde_json::to_string(&job.payload)?;
-        self.write(|c| {
+        self.transaction(|c| {
+            if let Some(mid) = job.meeting_id {
+                let existing = c
+                    .query_row(
+                        &format!(
+                            "SELECT {COLS} FROM jobs WHERE state = 'queued' AND kind = ?1
+                             AND meeting_id = ?2 AND payload = ?3 ORDER BY created_at LIMIT 1"
+                        ),
+                        params![job.kind.as_str(), mid.to_string(), payload],
+                        job_row,
+                    )
+                    .optional()?;
+                if let Some(rec) = existing {
+                    return Ok(rec);
+                }
+            }
             Ok(c.query_row(
                 &format!(
                     "INSERT INTO jobs (id, kind, state, meeting_id, payload, attempts, max_attempts, run_after, created_at, updated_at)

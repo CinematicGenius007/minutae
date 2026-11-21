@@ -376,6 +376,28 @@ fn job_state_transitions() {
 }
 
 #[test]
+fn queued_meeting_job_is_not_duplicated() {
+    let s = Store::open_in_memory().unwrap();
+    let m = meeting("Dup", Utc::now());
+    s.create_meeting(&m).unwrap();
+    let job = || NewJob::new(JobKind::Diarize, serde_json::json!({}), Some(m.id));
+    let a = s.insert_job(&job()).unwrap();
+    // The previous stage crashed after queueing this one and ran again.
+    let b = s.insert_job(&job()).unwrap();
+    assert_eq!(a.id, b.id);
+    assert_eq!(s.list_jobs(&[JobState::Queued], 10).unwrap().len(), 1);
+    // Once it runs, a new request is a new job (e.g. the user asked to redo it).
+    s.claim_job(a.id).unwrap().unwrap();
+    assert_ne!(s.insert_job(&job()).unwrap().id, a.id);
+    // Jobs without a meeting are never merged.
+    let idx = || NewJob::new(JobKind::Index, serde_json::json!(null), None);
+    assert_ne!(
+        s.insert_job(&idx()).unwrap().id,
+        s.insert_job(&idx()).unwrap().id
+    );
+}
+
+#[test]
 fn crash_looping_job_stops_after_max_attempts() {
     let s = Store::open_in_memory().unwrap();
     let j = s
@@ -439,24 +461,88 @@ fn progress_is_ignored_once_job_finished() {
 }
 
 #[test]
-fn import_hook_runs_once() {
-    struct Fake;
-    impl Importer for Fake {
-        fn source_key(&self) -> String {
-            "fake:1".into()
-        }
-        fn import(&self, store: &Store) -> Result<ImportReport> {
-            store.create_meeting(&meeting("Imported", Utc::now()))?;
-            Ok(ImportReport {
-                meetings: 1,
-                ..Default::default()
-            })
-        }
-    }
+fn legacy_meeting_import_is_atomic_and_idempotent() {
     let s = Store::open_in_memory().unwrap();
-    assert_eq!(s.import_once(&Fake).unwrap().unwrap().meetings, 1);
-    assert!(s.import_once(&Fake).unwrap().is_none());
+    let m = meeting("Imported sync", Utc::now());
+    let you = Speaker {
+        id: Uuid::new_v4(),
+        meeting_id: m.id,
+        label: "Speaker A".into(),
+        display_name: None,
+        track: Track::Mic,
+    };
+    let bundle = ImportedMeeting {
+        meeting: m.clone(),
+        tracks: vec![TrackFile {
+            meeting_id: m.id,
+            track: Track::Mic,
+            path: "/r/mic.wav".into(),
+            duration_ms: Some(1000),
+            bytes: Some(44),
+        }],
+        transcript: Some(Transcript {
+            meeting_id: m.id,
+            language: Some("en".into()),
+            model: "whisper".into(),
+            segments: vec![seg(0, "the quarterly budget moved", Some(you.id))],
+        }),
+        speakers: vec![you],
+        summary: Some(summary(m.id, &[("Send notes", true)])),
+        extra: Some(serde_json::json!({ "tags": ["Work"] })),
+    };
+    assert!(
+        s.import_legacy_meeting("swift", "legacy-1", &bundle)
+            .unwrap()
+    );
+    // Same legacy id again: nothing written.
+    let mut again = bundle.clone();
+    again.meeting.id = Uuid::new_v4();
+    again.tracks.clear();
+    again.transcript = None;
+    again.speakers.clear();
+    again.summary = None;
+    assert!(
+        !s.import_legacy_meeting("swift", "legacy-1", &again)
+            .unwrap()
+    );
     assert_eq!(s.count_meetings().unwrap(), 1);
+    assert_eq!(
+        s.legacy_mapping("swift", LegacyKind::Meeting, "legacy-1")
+            .unwrap(),
+        Some(m.id)
+    );
+    assert!(s.id_in_use(m.id).unwrap());
+    assert_eq!(s.list_action_items(m.id).unwrap().len(), 1);
+    // Imported text is searchable.
+    let hits = s.search("budget", &SearchFilters::default()).unwrap();
+    assert!(hits.iter().any(|h| h.meeting_id == Some(m.id)));
+    // Rows that belong to another meeting are refused before anything is written.
+    let mut bad = bundle.clone();
+    bad.meeting.id = Uuid::new_v4();
+    assert!(s.import_legacy_meeting("swift", "legacy-2", &bad).is_err());
+    assert!(
+        s.legacy_mapping("swift", LegacyKind::Meeting, "legacy-2")
+            .unwrap()
+            .is_none()
+    );
+    // A failing write rolls back the mapping too (duplicate meeting id).
+    let mut dup = bundle.clone();
+    dup.extra = None;
+    assert!(s.import_legacy_meeting("swift", "legacy-3", &dup).is_err());
+    assert!(
+        s.legacy_mapping("swift", LegacyKind::Meeting, "legacy-3")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        s.legacy_imported_ids("swift", LegacyKind::Meeting)
+            .unwrap()
+            .len(),
+        1
+    );
+    s.record_import_run("swift", &serde_json::json!({ "imported": 1 }))
+        .unwrap();
+    assert_eq!(s.last_import_run("swift").unwrap().unwrap()["imported"], 1);
 }
 
 #[test]
@@ -637,7 +723,9 @@ fn v2_migration_backfills_title_key() {
     s.create_meeting(&m).unwrap();
     // Roll the file back to a v1 database.
     s.write(|c| {
-        c.execute_batch("ALTER TABLE meetings DROP COLUMN title_lc; PRAGMA user_version = 1;")?;
+        c.execute_batch(
+            "ALTER TABLE meetings DROP COLUMN title_lc; DROP TABLE legacy_imports; PRAGMA user_version = 1;",
+        )?;
         Ok(())
     })
     .unwrap();

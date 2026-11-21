@@ -23,10 +23,20 @@
 //! Problems during a recording (device unplugged, disk full) are reported live on
 //! [`RecordingHandle::events`]. A track whose device disappears is reopened on the
 //! current default device when possible.
+//!
+//! System audio and the call app: when [`CaptureConfig::system_app`] names the app on the
+//! call, macOS records only that app's audio (a Core Audio process tap on 14.4+,
+//! ScreenCaptureKit on 13.0 - 14.3) and keeps following it as helper processes appear.
+//! Until the app has an audio process, or if the tap fails, all system audio is recorded.
+//! [`RecordingHandle::system_source`] says which is live; changes are sent as
+//! [`CaptureEvent::SystemSourceChanged`].
 
 mod capture;
 mod level;
+#[cfg(target_os = "macos")]
+mod macos;
 mod resample;
+mod target;
 mod wav;
 
 use std::path::{Path, PathBuf};
@@ -43,7 +53,29 @@ use tokio::sync::{broadcast, watch};
 pub use capture::{InputDevice, list_input_devices};
 pub use level::rms;
 pub use resample::Resampler;
+pub use target::{AppTarget, SystemBackend, SystemScope, SystemSource};
 pub use wav::{SAMPLE_RATE, read_pcm16_tolerant};
+
+/// How this machine records one app's audio when [`CaptureConfig::system_app`] is set.
+/// `Loopback` = it can't (all system audio is recorded).
+pub fn app_capture_backend() -> SystemBackend {
+    #[cfg(target_os = "macos")]
+    {
+        macos::app_backend()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        SystemBackend::Loopback
+    }
+}
+
+/// macOS Screen Recording permission, which the ScreenCaptureKit fallback needs.
+#[cfg(target_os = "macos")]
+pub mod screen_recording {
+    pub use crate::macos::sck::{
+        request_screen_recording as request, screen_recording_granted as granted,
+    };
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum AudioError {
@@ -74,6 +106,10 @@ pub struct CaptureConfig {
     pub mic_device: Option<String>,
     /// Also record the computer's output audio (the other participants).
     pub include_system: bool,
+    /// The app on the call: record only its audio where the OS allows (macOS).
+    /// `None` = all system audio.
+    #[serde(default)]
+    pub system_app: Option<AppTarget>,
     pub out_dir: PathBuf,
     /// Chunk length; a crash loses at most this much audio (usually ~1 s,
     /// since the open chunk's header is refreshed every second).
@@ -85,6 +121,7 @@ impl CaptureConfig {
         Self {
             mic_device: None,
             include_system: true,
+            system_app: None,
             out_dir,
             chunk_secs: 10,
         }
@@ -133,6 +170,10 @@ pub enum CaptureEvent {
     /// the error if it was the mic.
     #[serde(rename_all = "camelCase")]
     WriteFailed { track: Track, message: String },
+    /// The system track switched between the call app only and all system audio (e.g.
+    /// the call app started playing audio after the recording began).
+    #[serde(rename_all = "camelCase")]
+    SystemSourceChanged { source: SystemSource },
 }
 
 /// Receives each block a track's writer writes: `(start_sample, samples)` at 16 kHz mono,
@@ -206,7 +247,7 @@ impl Recorder {
                     mic: TrackStream::new(mic_src_tx),
                     system: TrackStream::new(sys_src_tx),
                 };
-                let mic_rate = match cap.open(Track::Mic, false) {
+                let mic_rate = match cap.open(Track::Mic, Why::Start) {
                     Ok(rate) => rate,
                     Err(e) => {
                         let _ = ready_tx.send(Err(e));
@@ -214,7 +255,8 @@ impl Recorder {
                     }
                 };
                 let sys_info = if cap.cfg.include_system {
-                    cap.open(Track::System, false).map_err(|e| e.to_string())
+                    cap.open(Track::System, Why::Start)
+                        .map_err(|e| e.to_string())
                 } else {
                     Err("disabled".to_string())
                 };
@@ -327,12 +369,20 @@ fn stream_error_handler(
 
 /// One track's live stream, owned by the capture thread.
 struct TrackStream {
-    stream: Option<cpal::Stream>,
+    stream: Option<capture::LiveStream>,
     generation: u64,
     /// Hands each newly opened stream's ring to the writer. `None` = no writer.
     sources: Option<mpsc::Sender<Source>>,
     /// Device lost and not yet reopened.
     lost: bool,
+    /// System track recording only the call app: the OS handles of its processes.
+    /// `None` = all system audio.
+    app_handles: Option<Vec<u32>>,
+    /// Per-app capture that failed to start for this set (not retried every second).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    failed: Option<Vec<u32>>,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    ticks: u32,
 }
 
 impl TrackStream {
@@ -342,8 +392,33 @@ impl TrackStream {
             generation: 0,
             sources: Some(sources),
             lost: false,
+            app_handles: None,
+            failed: None,
+            ticks: 0,
         }
     }
+}
+
+/// Why a track is being opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Why {
+    Start,
+    /// The previous stream died.
+    Reopen,
+    /// The system track follows the call app (new process, output device changed).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Retarget,
+}
+
+/// A freshly started stream, ready to hand to the writer.
+struct Opened {
+    stream: capture::LiveStream,
+    rate: u32,
+    consumer: rtrb::Consumer<f32>,
+    device: String,
+    /// System track only.
+    source: Option<SystemSource>,
+    app_handles: Option<Vec<u32>>,
 }
 
 struct CaptureLoop {
@@ -363,17 +438,27 @@ impl CaptureLoop {
     }
 
     /// Open (or reopen) `track` and hand its ring to the writer. Returns the device rate.
-    fn open(&mut self, track: Track, reopen: bool) -> Result<u32> {
-        use cpal::traits::StreamTrait;
-        let (device, config) = match track {
-            Track::Mic => match capture::open_mic(self.cfg.mic_device.as_deref()) {
-                // The chosen mic vanished: fall back to the default input.
-                Err(_) if reopen && self.cfg.mic_device.is_some() => capture::open_mic(None)?,
-                other => other?,
-            },
-            Track::System => capture::open_system()?,
+    fn open(&mut self, track: Track, why: Why) -> Result<u32> {
+        let opened = match track {
+            Track::Mic => {
+                let (device, config) = match capture::open_mic(self.cfg.mic_device.as_deref()) {
+                    // The chosen mic vanished: fall back to the default input.
+                    Err(_) if why == Why::Reopen && self.cfg.mic_device.is_some() => {
+                        capture::open_mic(None)?
+                    }
+                    other => other?,
+                };
+                self.open_cpal(track, &device, &config)?
+            }
+            Track::System => self.open_system()?,
         };
-        let rate = config.sample_rate();
+        let rate = opened.rate;
+        self.install(track, opened, why);
+        Ok(rate)
+    }
+
+    /// A ring for a new stream on `track` (bumps the track's generation).
+    fn sink(&mut self, track: Track, rate: u32) -> (capture::StreamSink, rtrb::Consumer<f32>) {
         let (producer, consumer) = rtrb::RingBuffer::new(capture::ring_capacity(rate));
         let on_error = self.on_error.clone();
         let paused = self.shared.paused.clone();
@@ -386,22 +471,224 @@ impl CaptureLoop {
             generation: slot.generation,
             on_error,
         };
-        let stream = capture::build_stream(&device, &config, sink)?;
+        (sink, consumer)
+    }
+
+    fn open_cpal(
+        &mut self,
+        track: Track,
+        device: &cpal::Device,
+        config: &cpal::SupportedStreamConfig,
+    ) -> Result<Opened> {
+        use cpal::traits::StreamTrait;
+        let rate = config.sample_rate();
+        let (sink, consumer) = self.sink(track, rate);
+        let stream = capture::build_stream(device, config, sink)?;
         stream.play().map_err(capture::dev_err)?;
+        Ok(Opened {
+            stream: capture::LiveStream::Cpal(stream),
+            rate,
+            consumer,
+            device: capture::device_name(device),
+            source: (track == Track::System).then_some(SystemSource {
+                scope: SystemScope::All,
+                backend: SystemBackend::Loopback,
+            }),
+            app_handles: None,
+        })
+    }
+
+    /// All system audio through the OS loopback (cpal).
+    fn open_loopback(&mut self) -> Result<Opened> {
+        let (device, config) = capture::open_system()?;
+        self.open_cpal(Track::System, &device, &config)
+    }
+
+    /// The system track: only the call app where possible, else all system audio.
+    fn open_system(&mut self) -> Result<Opened> {
+        #[cfg(target_os = "macos")]
+        {
+            let target = self.cfg.system_app.clone().filter(|t| !t.is_empty());
+            if macos::app_backend() == SystemBackend::ScreenCapture {
+                // No process taps on this macOS: ScreenCaptureKit does both cases.
+                return self.open_sck(target.as_ref());
+            }
+            if let Some(t) = &target {
+                let objects = resolve_tap_target(t);
+                if objects.is_empty() {
+                    tracing::info!(
+                        "the call app has no audio process yet; recording all system audio until it has"
+                    );
+                } else {
+                    match self.open_tap(&objects) {
+                        Ok(o) => return Ok(o),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "per-app audio tap failed; recording all system audio");
+                            self.system.failed = Some(objects);
+                        }
+                    }
+                }
+            }
+        }
+        self.open_loopback()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn open_tap(&mut self, objects: &[u32]) -> Result<Opened> {
+        let mut tap = macos::tap::ProcessTap::create(objects)?;
+        let rate = tap.rate;
+        let (sink, consumer) = self.sink(Track::System, rate);
+        tap.start(sink)?;
+        let handles = tap.objects.clone();
+        Ok(Opened {
+            stream: capture::LiveStream::Tap(tap),
+            rate,
+            consumer,
+            device: "call app audio (process tap)".into(),
+            source: Some(SystemSource {
+                scope: SystemScope::App,
+                backend: SystemBackend::ProcessTap,
+            }),
+            app_handles: Some(handles),
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn open_sck(&mut self, target: Option<&AppTarget>) -> Result<Opened> {
+        let rate = macos::sck::RATE;
+        let (sink, consumer) = self.sink(Track::System, rate);
+        let on_error = self.on_error.clone();
+        let generation = sink.generation;
+        let on_stop = Box::new(move |message: String| {
+            on_error(
+                Track::System,
+                generation,
+                cpal::Error::with_message(cpal::ErrorKind::StreamInvalidated, message),
+            )
+        });
+        let stream = macos::sck::SckStream::start(target, sink, on_stop)?;
+        let app = !stream.pids.is_empty();
+        let handles = app.then(|| stream.pids.clone());
+        Ok(Opened {
+            stream: capture::LiveStream::Sck(stream),
+            rate,
+            consumer,
+            device: "ScreenCaptureKit".into(),
+            source: Some(SystemSource {
+                scope: if app {
+                    SystemScope::App
+                } else {
+                    SystemScope::All
+                },
+                backend: SystemBackend::ScreenCapture,
+            }),
+            app_handles: handles,
+        })
+    }
+
+    /// Make `opened` the live stream of `track` (the previous one, if any, stops after
+    /// the new one runs) and tell the writer and listeners.
+    fn install(&mut self, track: Track, opened: Opened, why: Why) {
+        let Opened {
+            stream,
+            rate,
+            consumer,
+            device,
+            source,
+            app_handles,
+        } = opened;
+        let slot = self.slot(track);
         if let Some(tx) = &slot.sources {
             let _ = tx.send(Source { consumer, rate });
         }
         slot.stream = Some(stream);
         slot.lost = false;
-        if reopen {
-            let name = capture::device_name(&device);
-            tracing::info!(track = wav::track_name(track), device = %name, "audio device reopened");
+        slot.app_handles = app_handles;
+        if let Some(source) = source {
+            let prev = self
+                .shared
+                .system_source
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .replace(source);
+            tracing::info!(?source, "system audio source");
+            if prev.is_some_and(|p| p != source) {
+                self.shared
+                    .emit(CaptureEvent::SystemSourceChanged { source });
+            }
+        }
+        if why == Why::Reopen {
+            tracing::info!(track = wav::track_name(track), %device, "audio device reopened");
             self.shared.emit(CaptureEvent::DeviceSwitched {
                 track,
-                device: Some(name),
+                device: Some(device),
             });
         }
-        Ok(rate)
+    }
+
+    /// Once a second: follow the call app (macOS). Switch from all audio to the app once
+    /// it has an audio process, add helper processes that appear, and rebuild the tap
+    /// when the output device changes.
+    #[cfg(target_os = "macos")]
+    fn retarget_system(&mut self) {
+        let Some(target) = self.cfg.system_app.clone().filter(|t| !t.is_empty()) else {
+            return;
+        };
+        let slot = &mut self.system;
+        if slot.sources.is_none() || slot.lost || slot.stream.is_none() {
+            return;
+        }
+        slot.ticks = slot.ticks.wrapping_add(1);
+        let ticks = slot.ticks;
+        match macos::app_backend() {
+            SystemBackend::ProcessTap => {
+                let stale = matches!(&slot.stream, Some(capture::LiveStream::Tap(t)) if t.stale());
+                let resolved = resolve_tap_target(&target);
+                let next = match target::retarget(slot.app_handles.as_deref(), &resolved) {
+                    target::Retarget::To(h) => Some(h),
+                    target::Retarget::Keep if stale && !resolved.is_empty() => Some(resolved),
+                    target::Retarget::Keep => None,
+                };
+                if stale && next.is_none() {
+                    // The tap's device is gone and the app has no process left to tap.
+                    match self.open_loopback() {
+                        Ok(o) => self.install(Track::System, o, Why::Retarget),
+                        Err(e) => tracing::warn!(error = %e, "system audio fallback failed"),
+                    }
+                    return;
+                }
+                let Some(objects) = next else { return };
+                if self.system.failed.as_ref() == Some(&objects) && !stale {
+                    return;
+                }
+                match self.open_tap(&objects) {
+                    Ok(o) => {
+                        self.system.failed = None;
+                        self.install(Track::System, o, Why::Retarget);
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "per-app audio tap failed; keeping the current source");
+                        self.system.failed = Some(objects);
+                    }
+                }
+            }
+            SystemBackend::ScreenCapture => {
+                // Upgrade "all audio" to the app once it shows up (every 5 s: listing
+                // shareable content is heavier than a Core Audio query).
+                if slot.app_handles.is_some() || !ticks.is_multiple_of(5) {
+                    return;
+                }
+                if let Ok(pids) = macos::sck::resolve(&target)
+                    && !pids.is_empty()
+                {
+                    match self.open_sck(Some(&target)) {
+                        Ok(o) => self.install(Track::System, o, Why::Retarget),
+                        Err(e) => tracing::warn!(error = %e, "ScreenCaptureKit retarget failed"),
+                    }
+                }
+            }
+            SystemBackend::Loopback => {}
+        }
     }
 
     fn reopen(&mut self, track: Track) {
@@ -413,7 +700,7 @@ impl CaptureLoop {
             slot.stream = None; // stop the dead stream before opening a new one
             !slot.lost
         };
-        if let Err(e) = self.open(track, true) {
+        if let Err(e) = self.open(track, Why::Reopen) {
             self.slot(track).lost = true;
             if first_failure {
                 tracing::warn!(track = wav::track_name(track), error = %e, "audio device lost");
@@ -440,12 +727,27 @@ impl CaptureLoop {
                             self.reopen(track);
                         }
                     }
+                    #[cfg(target_os = "macos")]
+                    self.retarget_system();
                 }
             }
         }
         // Dropping the streams abandons the rings; dropping the senders tells the
         // writers no further sources will come, so they drain and finish.
     }
+}
+
+/// Core Audio process objects of the call app; falls back to translating its pid
+/// (`kAudioHardwarePropertyTranslatePIDToProcessObject`) when the list has no match.
+#[cfg(target_os = "macos")]
+fn resolve_tap_target(t: &AppTarget) -> Vec<u32> {
+    let mut objects = target::resolve(t, &macos::CoreAudioProcesses, std::process::id() as i32);
+    if objects.is_empty()
+        && let Some(o) = t.pid.and_then(macos::process_object)
+    {
+        objects.push(o);
+    }
+    objects
 }
 
 struct Shared {
@@ -456,6 +758,8 @@ struct Shared {
     sys_meter: level::Meter,
     last_error: Mutex<Option<String>>,
     events: broadcast::Sender<CaptureEvent>,
+    /// What the system track records right now (`None` = no system track).
+    system_source: Mutex<Option<SystemSource>>,
 }
 
 impl Shared {
@@ -468,6 +772,7 @@ impl Shared {
             sys_meter: level::Meter::default(),
             last_error: Mutex::new(None),
             events: broadcast::channel(EVENT_CAPACITY).0,
+            system_source: Mutex::new(None),
         }
     }
 
@@ -510,6 +815,19 @@ impl RecordingHandle {
         self.system_error.as_deref()
     }
 
+    /// What the system track is recording right now: only the call app or all system
+    /// audio, and through which OS API. `None` = no system track.
+    pub fn system_source(&self) -> Option<SystemSource> {
+        if self.system_error.is_some() {
+            return None;
+        }
+        *self
+            .shared
+            .system_source
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Most recent stream error reported by the OS, if any.
     pub fn last_stream_error(&self) -> Option<String> {
         self.shared
@@ -542,8 +860,9 @@ impl RecordingHandle {
     }
 
     /// Stop capture, close chunks and stitch them into `mic.wav` / `system.wav`.
-    /// If a writer failed (e.g. disk full), whatever was written is still stitched before
-    /// the mic writer's error is returned (so [`recover`] finds `mic.wav` later).
+    /// If a writer failed (e.g. disk full), whatever was written is still stitched and
+    /// returned (the failure was already sent as [`CaptureEvent::WriteFailed`]); it is an
+    /// error only when no microphone audio exists at all.
     pub fn stop(&self) -> Result<RecordedTracks> {
         let running = self
             .inner
@@ -570,15 +889,42 @@ impl RecordingHandle {
             Some(_) => wav::stitch(&self.out_dir, Track::System),
             None => Ok(None),
         };
-        mic_res?;
-        let (mic, mic_samples) = mic_stitched?
-            .ok_or_else(|| AudioError::Device("no microphone audio was captured".into()))?;
-        Ok(RecordedTracks {
-            mic,
-            system: sys_stitched?.map(|(p, _)| p),
-            duration_ms: mic_samples * 1000 / SAMPLE_RATE as u64,
-        })
+        finish_tracks(mic_res.map(|_| ()), mic_stitched, sys_stitched)
     }
+}
+
+/// What [`RecordingHandle::stop`] returns, given how the mic writer ended and what could
+/// be stitched. A writer that failed partway (disk full 40 minutes in) still leaves the
+/// audio written before the failure: keep it, so the meeting is transcribed instead of
+/// being marked failed with its audio on disk.
+fn finish_tracks(
+    mic_writer: Result<()>,
+    mic_stitched: Result<Option<(PathBuf, u64)>>,
+    sys_stitched: Result<Option<(PathBuf, u64)>>,
+) -> Result<RecordedTracks> {
+    let mic = match (mic_writer, mic_stitched) {
+        (_, Ok(Some((path, samples)))) if samples > 0 => (path, samples),
+        (Err(e), _) => return Err(e),
+        (Ok(()), Err(e)) => return Err(e),
+        (Ok(()), Ok(_)) => {
+            return Err(AudioError::Device(
+                "no microphone audio was captured".into(),
+            ));
+        }
+    };
+    let system = match sys_stitched {
+        Ok(s) => s.map(|(p, _)| p),
+        Err(e) => {
+            // The mic track alone is still a usable recording.
+            tracing::warn!(error = %e, "stitching the system track failed");
+            None
+        }
+    };
+    Ok(RecordedTracks {
+        mic: mic.0,
+        system,
+        duration_ms: mic.1 * 1000 / SAMPLE_RATE as u64,
+    })
 }
 
 impl Drop for RecordingHandle {
@@ -1102,6 +1448,22 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn partial_audio_survives_a_writer_failure() {
+        let disk_full = || Err(AudioError::Device("disk full".into()));
+        let mic = || Ok(Some((PathBuf::from("mic.wav"), 16_000 * 60)));
+        // Writer failed after a minute: the minute is kept.
+        let t = finish_tracks(disk_full(), mic(), Ok(None)).unwrap();
+        assert_eq!((t.mic, t.duration_ms), (PathBuf::from("mic.wav"), 60_000));
+        // A system track that couldn't be stitched doesn't sink the mic track.
+        let t = finish_tracks(Ok(()), mic(), Err(AudioError::Device("x".into()))).unwrap();
+        assert!(t.system.is_none());
+        // Nothing written: the writer's error is what the caller sees.
+        let e = finish_tracks(disk_full(), Ok(None), Ok(None)).unwrap_err();
+        assert!(e.to_string().contains("disk full"), "{e}");
+        assert!(finish_tracks(Ok(()), Ok(Some((PathBuf::from("m"), 0))), Ok(None)).is_err());
     }
 
     #[test]

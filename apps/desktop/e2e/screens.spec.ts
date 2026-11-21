@@ -24,6 +24,13 @@ interface Shot {
   ready?: string;
 }
 
+/** Runs `then`, then scrolls the Import section into view (it sits below the fold on Storage). */
+const showImport = (then?: (page: Page) => Promise<void>) => async (page: Page) => {
+  if (then) await then(page);
+  await page.locator('section[aria-labelledby="g-import"]').evaluate((el) => el.scrollIntoView({ block: "end" }));
+  await page.evaluate(() => document.fonts.ready);
+};
+
 const liveMask = (page: Page) => [page.locator("canvas"), page.locator("[role=timer]"), page.locator("button[aria-pressed='true']")];
 
 const TRAY_VIEWPORT = { width: 320, height: 520 };
@@ -56,6 +63,39 @@ const SHOTS: Shot[] = [
     name: `settings-${s}`,
     route: `/settings/${s}`,
   })),
+  // Settings → Storage → Import from older Minutae: found, empty, scan error, running, done.
+  { name: "settings-import", route: "/settings/storage", ready: "Minutae for Mac", act: showImport() },
+  { name: "settings-import-empty", route: "/settings/storage", query: "import=none", ready: "Nothing to import", act: showImport() },
+  { name: "settings-import-error", route: "/settings/storage", query: "import=error", ready: "Couldn't look for older", act: showImport() },
+  {
+    name: "settings-import-running",
+    route: "/settings/storage",
+    query: "import=running",
+    ready: "Minutae for Mac",
+    act: showImport(async (page) => {
+      await page.getByRole("button", { name: "Import", exact: true }).click();
+      await expect(page.getByText("21 of 54")).toBeVisible();
+    }),
+  },
+  {
+    name: "settings-import-done",
+    route: "/settings/storage",
+    ready: "Minutae for Mac",
+    act: showImport(async (page) => {
+      await page.getByRole("button", { name: "Import", exact: true }).click();
+      await expect(page.getByText("Imported 41 meetings and 12 dictations")).toBeVisible();
+      await expect(page.getByText("53 already imported")).toBeVisible();
+    }),
+  },
+  // Settings → General "Updates" row: loading (checking), update found, error.
+  ...(["checking", "available", "error"] as const).map((u) => ({
+    name: `settings-general-update-${u}`,
+    route: "/settings/general",
+    query: `update=${u}`,
+    ready: "Updates",
+  })),
+  // A Scoop copy can't install itself: the row shows its update command instead.
+  { name: "settings-general-update-scoop", route: "/settings/general", query: "update=available&channel=scoop", ready: "Updates" },
   { name: "onboarding", route: "/onboarding", ready: "Microphone" },
   { name: "prompt", route: "/prompt" },
   // macOS menu-bar panel: a 320 px window; the timer and level meters move every frame.
@@ -251,6 +291,28 @@ for (const theme of THEMES) {
 // ── Behaviour ───────────────────────────────────────────────────────────────
 
 const mod = (browserName: string) => (browserName === "webkit" ? "Meta" : "Control");
+
+test("updates: check → up to date; available → install shows progress", async ({ page }) => {
+  await page.goto(url("/settings/general"));
+  await settle(page, "Updates");
+  await page.getByRole("button", { name: "Check for updates" }).click();
+  await expect(page.getByText("Checking…")).toBeVisible();
+  await expect(page.getByText("Version 0.4.0 is the latest.")).toBeVisible();
+
+  await page.goto(url("/settings/general", "update=available"));
+  await settle(page, "Updates");
+  await expect(page.getByText("Version 0.5.0 is available. You have 0.4.0.")).toBeVisible();
+  await page.getByRole("button", { name: "Install and restart" }).click();
+  await expect(page.getByRole("progressbar", { name: "Update download" })).toBeVisible();
+});
+
+test("updates: a Scoop copy shows its command instead of installing", async ({ page }) => {
+  await page.goto(url("/settings/general", "update=available&channel=scoop"));
+  await settle(page, "Updates");
+  await expect(page.getByText("scoop update minutae", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Install and restart" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Copy command" })).toBeVisible();
+});
 
 test("record: pill → live → pause / resume → mark moment → stop lands on the meeting", async ({ page }) => {
   await page.goto(url("/"));

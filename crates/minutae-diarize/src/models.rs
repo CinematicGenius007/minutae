@@ -4,8 +4,10 @@
 //!
 //! Same rules as the whisper models: stream into `.part`, resume with `Range`, rename atomically.
 //! Every file is checked against its published byte size (download, archive before
-//! extraction, extracted model, and `status`); a file that fails is deleted so the next
-//! attempt starts clean instead of reusing a corrupt archive forever.
+//! extraction, extracted model, and `status`), and each fresh download against its pinned
+//! SHA-256 (the files are parsed by native ONNX code, so a swapped release asset must not
+//! load). A file that fails is deleted so the next attempt starts clean instead of reusing
+//! a corrupt archive forever.
 
 use std::path::{Path, PathBuf};
 
@@ -19,13 +21,18 @@ pub const SEGMENTATION_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releas
 /// Member of the archive we extract.
 const SEGMENTATION_MEMBER: &str = "sherpa-onnx-pyannote-segmentation-3-0/model.onnx";
 const SEGMENTATION_ARCHIVE_BYTES: u64 = 6_958_444;
+const SEGMENTATION_ARCHIVE_SHA256: &str =
+    "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488";
 /// Size of `model.onnx` inside the archive.
 const SEGMENTATION_MODEL_BYTES: u64 = 5_992_913;
+const SEGMENTATION_MODEL_SHA256: &str =
+    "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079";
 const SEGMENTATION_ARCHIVE: &str = "pyannote-segmentation-3-0.tar.bz2";
 pub const SEGMENTATION_FILE: &str = "pyannote-segmentation-3-0.onnx";
 
 pub const EMBEDDING_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx";
 const EMBEDDING_BYTES: u64 = 28_281_165;
+const EMBEDDING_SHA256: &str = "53cab20ba8f2eb2f6e2d89ecc18e88ef3222169b61b4419cbc13666744a4574b";
 pub const EMBEDDING_FILE: &str = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx";
 
 /// Download progress across both files.
@@ -124,6 +131,25 @@ impl DiarizeModels {
         }
     }
 
+    /// `path` hashes to `sha256` (always true when checks are off). Deletes the file when it
+    /// doesn't, so the next attempt downloads it again.
+    async fn verify_hash(&self, path: &Path, sha256: &'static str, what: &str) -> Result<()> {
+        if !self.check_sizes {
+            return Ok(());
+        }
+        let p = path.to_path_buf();
+        let got = tokio::task::spawn_blocking(move || sha256_file(&p))
+            .await
+            .map_err(|e| DiarizeError::Engine(e.to_string()))??;
+        if got == sha256 {
+            return Ok(());
+        }
+        remove_if_exists(path).await?;
+        Err(DiarizeError::Download(format!(
+            "the {what} doesn't match its published checksum; deleted it, please try again"
+        )))
+    }
+
     /// Override download URLs (tests / mirrors).
     pub fn with_urls(
         mut self,
@@ -190,6 +216,12 @@ impl DiarizeModels {
                 },
             )
             .await?;
+            self.verify_hash(
+                &archive,
+                SEGMENTATION_ARCHIVE_SHA256,
+                "speaker segmentation download",
+            )
+            .await?;
             let dest = self.segmentation_path();
             let (archive2, dest2) = (archive.clone(), dest.clone());
             let extracted = tokio::task::spawn_blocking(move || {
@@ -211,6 +243,12 @@ impl DiarizeModels {
                     "the extracted speaker segmentation model has the wrong size; deleted it, please try again".into(),
                 ));
             }
+            self.verify_hash(
+                &dest,
+                SEGMENTATION_MODEL_SHA256,
+                "speaker segmentation model",
+            )
+            .await?;
         }
         base += SEGMENTATION_ARCHIVE_BYTES;
         if !st.embedding {
@@ -226,6 +264,12 @@ impl DiarizeModels {
                         total_bytes: total,
                     })
                 },
+            )
+            .await?;
+            self.verify_hash(
+                &self.embedding_path(),
+                EMBEDDING_SHA256,
+                "speaker embedding model",
             )
             .await?;
         }
@@ -244,6 +288,15 @@ impl DiarizeModels {
             Err(e) => Err(e.into()),
         }
     }
+}
+
+/// Lower-case hex SHA-256 of a file, streamed.
+fn sha256_file(path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut f = std::fs::File::open(path)?;
+    let mut h = Sha256::new();
+    std::io::copy(&mut f, &mut h)?;
+    Ok(format!("{:x}", h.finalize()))
 }
 
 async fn remove_if_exists(path: &Path) -> Result<()> {

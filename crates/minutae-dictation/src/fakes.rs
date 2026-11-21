@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use tokio::sync::watch;
 
 use crate::{
-    insert::{InsertOutcome, Inserter},
+    insert::{CopyReason, InsertOutcome, Inserter},
     source::{AudioSource, SpeechToText},
 };
 
@@ -124,17 +124,29 @@ impl SpeechToText for FakeSpeech {
 /// Records inserted text and returns a fixed outcome.
 pub struct FakeInserter {
     pub outcome: Mutex<InsertOutcome>,
-    pub app: Option<String>,
+    /// What `target_app` answers; change it to simulate the user switching apps.
+    pub app: Mutex<Option<String>>,
     pub inserted: Mutex<Vec<String>>,
+    /// Texts put on the clipboard only.
+    pub copied: Mutex<Vec<String>>,
 }
 
 impl FakeInserter {
     pub fn new(outcome: InsertOutcome) -> Arc<Self> {
         Arc::new(Self {
             outcome: Mutex::new(outcome),
-            app: Some("Notes".into()),
+            app: Mutex::new(Some("Notes".into())),
             inserted: Mutex::new(vec![]),
+            copied: Mutex::new(vec![]),
         })
+    }
+
+    pub fn set_app(&self, app: Option<&str>) {
+        *self.app.lock().unwrap() = app.map(String::from);
+    }
+
+    pub fn copied_texts(&self) -> Vec<String> {
+        self.copied.lock().unwrap().clone()
     }
 
     pub fn texts(&self) -> Vec<String> {
@@ -145,7 +157,12 @@ impl FakeInserter {
 #[async_trait]
 impl Inserter for FakeInserter {
     fn target_app(&self) -> Option<String> {
-        self.app.clone()
+        self.app.lock().unwrap().clone()
+    }
+
+    async fn copy(&self, text: &str, reason: CopyReason) -> InsertOutcome {
+        self.copied.lock().unwrap().push(text.to_owned());
+        InsertOutcome::Copied(reason)
     }
 
     async fn insert(&self, text: &str) -> InsertOutcome {

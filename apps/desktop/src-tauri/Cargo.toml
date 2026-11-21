@@ -32,6 +32,7 @@ minutae-diarize.workspace = true
 minutae-llm.workspace = true
 minutae-dictation.workspace = true
 minutae-search.workspace = true
+minutae-import.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
@@ -46,6 +47,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 arboard = { version = "3.7", default-features = false }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 hound = "3.5"
+tauri-plugin-updater = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+semver = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-nspanel = "2.1"

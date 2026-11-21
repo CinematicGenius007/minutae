@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Minutae",
-  "version": "0.4.0",
   "identifier": "com.nebula.minutae",
   "build": {
     "beforeDevCommand": "bun run dev",
@@ -74,7 +73,55 @@
     "macOS": {
       "minimumSystemVersion": "13.0",
       "entitlements": "./Entitlements.plist",
-      "infoPlist": "./Info.plist"
+      "infoPlist": "./Info.plist",
+      "hardenedRuntime": true
+    },
+    "createUpdaterArtifacts": false,
+    "publisher": "Nebula",
+    "homepage": "https://github.com/CinematicGenius007/minutae",
+    "license": "MIT",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libayatana-appindicator3-1",
+          "libasound2",
+          "libpulse0",
+          "libxkbcommon0",
+          "libdbus-1-3"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "libayatana-appindicator-gtk3",
+          "alsa-lib",
+          "pulseaudio-libs",
+          "libxkbcommon",
+          "dbus-libs"
+        ]
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://github.com/CinematicGenius007/minutae/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

@@ -150,8 +150,13 @@ export default function LiveScreen() {
     );
   }
 
+  // "Mic + Zoom audio" when only the call app is recorded (macOS), else all system audio.
   const sources =
-    state.systemAudio === "on" ? "Mic + system audio" : "Mic only";
+    state.systemAudio !== "on"
+      ? "Mic only"
+      : state.systemAudioScope === "app"
+        ? `Mic + ${state.sourceApp ?? "call app"} audio`
+        : "Mic + system audio";
   const stopping = state.phase === "stopping";
 
   return (
