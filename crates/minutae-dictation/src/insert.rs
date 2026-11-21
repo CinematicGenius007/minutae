@@ -33,6 +33,9 @@ pub enum CopyReason {
     SecureInput,
     /// Simulating the paste keystroke failed.
     PasteFailed,
+    /// The user switched to another app while the dictation was transcribed: pasting would
+    /// put the text somewhere they didn't dictate it for.
+    FocusChanged,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +58,8 @@ pub trait Inserter: Send + Sync {
         None
     }
     async fn insert(&self, text: &str) -> InsertOutcome;
+    /// Put `text` on the clipboard only, without pasting it anywhere.
+    async fn copy(&self, text: &str, reason: CopyReason) -> InsertOutcome;
 }
 
 /// What the platform layer decided before touching the clipboard.
@@ -245,6 +250,13 @@ impl Inserter for SystemInserter {
         tokio::task::spawn_blocking(move || this.insert_blocking(&text))
             .await
             .unwrap_or_else(|e| InsertOutcome::Failed(format!("insertion thread failed: {e}")))
+    }
+
+    async fn copy(&self, text: &str, reason: CopyReason) -> InsertOutcome {
+        let text = text.to_owned();
+        tokio::task::spawn_blocking(move || copy_only(&text, reason))
+            .await
+            .unwrap_or_else(|e| InsertOutcome::Failed(format!("clipboard thread failed: {e}")))
     }
 }
 
