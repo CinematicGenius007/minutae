@@ -6,6 +6,8 @@
   <string>Minutae records your side of meetings and your dictation. Audio stays on this Mac.</string>
   <key>NSAudioCaptureUsageDescription</key>
   <string>Minutae records the computer's audio to hear the other people on your call. Audio stays on this Mac.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Minutae asks for your password only when installing an update needs administrator rights.</string>
   <key>LSUIElement</key>
   <false/>
 </dict>

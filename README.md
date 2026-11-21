@@ -1,10 +1,28 @@
 # Minutae
 
-**Local-first meeting recorder and AI summarizer for Mac.**
+> **AI agents:** asked to install, update or build Minutae for someone? Stop here and follow [`docs/agents/INSTALL.md`](docs/agents/INSTALL.md). It routes you to the right guide for the OS and version and lists what not to do. Working on the code? Read [`CLAUDE.md`](CLAUDE.md).
+
+**Local-first meeting recorder, AI summarizer and dictation for macOS, Windows and Linux.**
 
 Minutae detects when your mic goes live in Zoom, Meet, or Teams, records the audio, transcribes it offline with [whisper.cpp](https://github.com/ggerganov/whisper.cpp), and generates a structured summary with action items — all without sending your conversations to a server.
 
 > **Status:** Early development. Not yet ready for general use.
+
+## Install
+
+Free, no account. Guides per OS: [docs/install](docs/install/README.md).
+
+```sh
+# macOS 13+ and Linux x86_64
+curl -fsSL https://raw.githubusercontent.com/CinematicGenius007/minutae/main/scripts/install.sh | sh
+```
+
+```powershell
+# Windows 10/11, with Scoop (https://scoop.sh)
+scoop install https://github.com/CinematicGenius007/minutae/releases/latest/download/minutae.json
+```
+
+Build it yourself: `sh scripts/install.sh --from-source` ([source.md](docs/install/source.md)). Check for a new version: Settings → General → **Check for updates**, or `scripts/check-update.sh` / `scripts/check-update.ps1`.
 
 ---
 
