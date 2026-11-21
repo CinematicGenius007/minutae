@@ -238,10 +238,20 @@ impl DictationController {
 
     /// The dictation hotkey went down (repeats while held are ignored).
     pub fn key_down(&self) {
+        self.press(None);
+    }
+
+    /// Starts or stops a dictation whatever the hotkey mode, like a press in toggle
+    /// mode (`--toggle-dictation` from a desktop shortcut).
+    pub fn toggle(&self) {
+        self.press(Some(HotkeyMode::Toggle));
+    }
+
+    fn press(&self, mode: Option<HotkeyMode>) {
         let shared = &self.shared;
         let now = Instant::now();
         let mut inner = shared.lock();
-        let mode = inner.config.mode;
+        let mode = mode.unwrap_or(inner.config.mode);
         let min_press = inner.config.min_press;
         let level = inner.level;
         match &mut inner.phase {

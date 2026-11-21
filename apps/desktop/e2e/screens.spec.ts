@@ -61,6 +61,21 @@ const SHOTS: Shot[] = [
     name: `settings-${s}`,
     route: `/settings/${s}`,
   })),
+  // Linux Wayland: shortcuts through the GlobalShortcuts portal, without key releases, and with no portal.
+  { name: "settings-dictation-wayland", route: "/settings/dictation", query: "os=linux&session=wayland", ready: "Change in system settings" },
+  {
+    name: "settings-dictation-wayland-press",
+    route: "/settings/dictation",
+    query: "os=linux&session=wayland&portal=press",
+    ready: "so each press starts or stops dictation",
+  },
+  {
+    name: "settings-dictation-wayland-noportal",
+    route: "/settings/dictation",
+    query: "os=linux&session=wayland&portal=none",
+    ready: "minutae --toggle-dictation",
+  },
+  { name: "settings-general-wayland", route: "/settings/general", query: "os=linux&session=wayland", ready: "Ctrl+Alt+R" },
   // Settings → Storage → Import from older Minutae: found, empty, scan error, running, done.
   { name: "settings-import", route: "/settings/storage", ready: "Minutae for Mac", act: showImport() },
   { name: "settings-import-empty", route: "/settings/storage", query: "import=none", ready: "Nothing to import", act: showImport() },
@@ -263,6 +278,8 @@ const A11Y_ROUTES: [string, string, string?][] = [
   ["settings-transcription", "/settings/transcription"],
   ["settings-summaries", "/settings/summaries"],
   ["settings-dictation", "/settings/dictation"],
+  ["settings-dictation-wayland", "/settings/dictation", "os=linux&session=wayland&portal=press"],
+  ["settings-dictation-wayland-noportal", "/settings/dictation", "os=linux&session=wayland&portal=none"],
   ["settings-storage", "/settings/storage"],
   ["settings-usage", "/settings/usage"],
   ["onboarding", "/onboarding"],

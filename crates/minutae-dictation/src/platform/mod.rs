@@ -8,6 +8,8 @@ use crate::insert::Preflight;
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "linux")]
+pub mod portal;
 #[cfg(target_os = "windows")]
 mod windows;
 

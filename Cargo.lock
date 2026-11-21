@@ -139,6 +139,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ashpd"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72e703b2bc5ba8e903b7845ae92657c281391116ccb8eef89cf6a0ee68d96d76"
+dependencies = [
+ "bitflags 2.13.2",
+ "futures-util",
+ "getrandom 0.4.3",
+ "serde",
+ "tokio",
+ "zbus 6.4.0",
+]
+
+[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3255,10 +3269,12 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "arboard",
+ "ashpd",
  "async-trait",
  "chrono",
  "core-foundation 0.10.1",
  "enigo",
+ "futures-util",
  "minutae-core",
  "objc2",
  "objc2-app-kit",
@@ -7963,6 +7979,7 @@ dependencies = [
  "serde",
  "serde_repr",
  "socket2",
+ "tokio",
  "uds_windows",
  "uuid",
  "windows-sys 0.61.2",

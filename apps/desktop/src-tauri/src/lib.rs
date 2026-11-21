@@ -8,6 +8,7 @@ pub mod dto;
 pub mod models;
 pub mod pipeline;
 pub mod platform;
+pub mod portal;
 pub mod recording;
 pub mod shell;
 pub mod state;
@@ -38,6 +39,8 @@ pub fn apply_settings(app: &AppHandle, old: &AppSettings, new: &AppSettings) {
     if old.record_shortcut != new.record_shortcut || old.dictation_hotkey != new.dictation_hotkey {
         shell::apply_shortcuts(app);
         shell::refresh_tray(app);
+    } else if old.dictation_mode != new.dictation_mode {
+        shell::refresh_tray(app); // "Hold …" / "Press …" hint
     }
     if old.auto_detect_meetings != new.auto_detect_meetings {
         calls::sync_monitor(app);
@@ -213,10 +216,13 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     shell::create_aux_windows(&handle)?;
     shell::create_tray(&handle)?;
     shell::refresh_tray(&handle);
-    shell::apply_shortcuts(&handle);
+    shell::init_shortcuts(&handle);
 
     let rt = tauri::async_runtime::block_on(async { tokio::runtime::Handle::current() });
     dictation::init(&handle, rt);
+    // `minutae --toggle-recording` when the app was not running yet.
+    let args: Vec<String> = std::env::args().collect();
+    portal::handle_cli(&handle, &args);
     calls::sync_monitor(&handle);
     let settings = handle.state::<AppState>().settings();
     sync_autostart(&handle, settings.launch_at_login);
@@ -273,8 +279,12 @@ pub fn run() {
         .try_init();
 
     let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            shell::show_main(app)
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // A second launch with --toggle-dictation / --toggle-recording acts on the
+            // running app (desktop-shortcut workaround); a plain launch shows the window.
+            if !portal::handle_cli(app, &args) {
+                shell::show_main(app)
+            }
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -310,6 +320,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::platform,
+            commands::shortcut_status,
+            commands::configure_shortcuts,
             commands::open_main,
             commands::tray_panel_hide,
             commands::tray_panel_resize,

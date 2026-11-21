@@ -12,3 +12,4 @@ export { errorText, type Load, useLoad } from "./useLoad";
 export { useDebounced } from "./useDebounced";
 export { useAppearance } from "./useAppearance";
 export { useFailureFix } from "./useFailureFix";
+export { useShortcutStatus } from "./useShortcutStatus";
