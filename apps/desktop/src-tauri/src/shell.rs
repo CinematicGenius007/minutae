@@ -1,4 +1,7 @@
-//! Windows (main, HUD, call prompt), tray menu and global shortcuts.
+//! Windows (main, HUD, call prompt, menu-bar panel), tray menu and global shortcuts.
+
+// tauri-nspanel's `panel_event!` requires the explicit `-> ()` on handler signatures.
+#![allow(clippy::unused_unit)]
 
 use std::str::FromStr;
 
@@ -19,10 +22,15 @@ use crate::util;
 pub const MAIN: &str = "main";
 pub const HUD: &str = "hud";
 pub const PROMPT: &str = "prompt";
+/// macOS menu-bar panel (route `#/tray`), anchored under the tray icon.
+pub const TRAY_PANEL: &str = "tray";
 const TRAY_ID: &str = "minutae";
 
 const HUD_SIZE: (f64, f64) = (320.0, 64.0);
 const PROMPT_SIZE: (f64, f64) = (380.0, 200.0);
+/// Width is fixed; the page reports its height via `tray_panel_resize`.
+const TRAY_PANEL_WIDTH: f64 = 320.0;
+const TRAY_PANEL_MAX_HEIGHT: f64 = 640.0;
 
 #[cfg(target_os = "macos")]
 tauri_nspanel::tauri_panel! {
@@ -32,6 +40,19 @@ tauri_nspanel::tauri_panel! {
             can_become_main_window: false,
             is_floating_panel: true
         }
+    })
+
+    panel!(TrayPanel {
+        config: {
+            // Becomes key (still non-activating) so a click elsewhere resigns key and closes it.
+            can_become_key_window: true,
+            can_become_main_window: false,
+            is_floating_panel: true
+        }
+    })
+
+    panel_event!(TrayPanelEvents {
+        window_did_resign_key(notification: &NSNotification) -> ()
     })
 }
 
@@ -77,7 +98,108 @@ pub fn create_aux_windows(app: &AppHandle) -> tauri::Result<()> {
         #[cfg(not(target_os = "macos"))]
         let _ = window;
     }
+    #[cfg(target_os = "macos")]
+    create_tray_panel(app)?;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn create_tray_panel(app: &AppHandle) -> tauri::Result<()> {
+    use tauri_nspanel::{CollectionBehavior, PanelLevel, StyleMask, WebviewWindowExt};
+    let window =
+        WebviewWindowBuilder::new(app, TRAY_PANEL, WebviewUrl::App("index.html#/tray".into()))
+            .title("Minutae")
+            .inner_size(TRAY_PANEL_WIDTH, 420.0)
+            .resizable(false)
+            .decorations(false)
+            .transparent(true)
+            .shadow(false)
+            .always_on_top(true)
+            .visible_on_all_workspaces(true)
+            .skip_taskbar(true)
+            .visible(false)
+            .build()?;
+    let panel = window.to_panel::<TrayPanel>()?;
+    panel.set_level(PanelLevel::PopUpMenu.value());
+    if let Err(e) = panel.add_style_mask(StyleMask::empty().nonactivating_panel().value()) {
+        tracing::warn!(?e, "tray panel nonactivating style");
+    }
+    panel.set_collection_behavior(
+        CollectionBehavior::new()
+            .can_join_all_spaces()
+            .full_screen_auxiliary()
+            .transient()
+            .value(),
+    );
+    panel.set_hides_on_deactivate(false);
+    let handler = TrayPanelEvents::new();
+    let a = app.clone();
+    handler.window_did_resign_key(move |_| hide_tray_panel(&a));
+    panel.set_event_handler(Some(handler.as_ref()));
+    Ok(())
+}
+
+/// Toggle the menu-bar panel under the tray icon. `anchor` is the icon's rect.
+#[cfg(target_os = "macos")]
+fn toggle_tray_panel(app: &AppHandle, anchor: tauri::Rect) {
+    use tauri_nspanel::ManagerExt;
+    let a = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Ok(panel) = a.get_webview_panel(TRAY_PANEL) else {
+            return;
+        };
+        if panel.is_visible() {
+            panel.hide();
+            return;
+        }
+        if let Some(w) = a.get_webview_window(TRAY_PANEL) {
+            let scale = w
+                .monitor_from_point(
+                    anchor.position.to_logical::<f64>(1.0).x,
+                    anchor.position.to_logical::<f64>(1.0).y,
+                )
+                .ok()
+                .flatten()
+                .map(|m| m.scale_factor())
+                .unwrap_or(1.0);
+            let pos = anchor.position.to_logical::<f64>(scale);
+            let size = anchor.size.to_logical::<f64>(scale);
+            let (x, y) = tray_panel_origin(pos.x, pos.y, size.width, size.height);
+            let _ = w.set_position(LogicalPosition::new(x, y));
+        }
+        let _ = a.emit_to(TRAY_PANEL, ev::TRAY_PANEL_SHOWN, ());
+        panel.show_and_make_key();
+    });
+}
+
+#[cfg(any(target_os = "macos", test))]
+/// Panel origin: centred under the icon, 6 pt below the menu bar, kept on screen.
+fn tray_panel_origin(icon_x: f64, icon_y: f64, icon_w: f64, icon_h: f64) -> (f64, f64) {
+    let x = (icon_x + icon_w / 2.0 - TRAY_PANEL_WIDTH / 2.0).max(8.0);
+    (x, icon_y + icon_h + 6.0)
+}
+
+pub fn hide_tray_panel(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_nspanel::ManagerExt;
+        let a = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Ok(p) = a.get_webview_panel(TRAY_PANEL) {
+                p.hide();
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
+
+/// The page measures itself and asks for a height (clamped).
+pub fn resize_tray_panel(app: &AppHandle, height: f64) {
+    if let Some(w) = app.get_webview_window(TRAY_PANEL) {
+        let h = height.clamp(120.0, TRAY_PANEL_MAX_HEIGHT);
+        let _ = w.set_size(LogicalSize::new(TRAY_PANEL_WIDTH, h));
+    }
 }
 
 fn place(app: &AppHandle, label: &str) {
@@ -165,37 +287,44 @@ pub fn navigate(app: &AppHandle, route: &str) {
 
 // ---- tray ----
 
-/// 32×32 template image: a ring (idle) or a filled dot (recording).
-fn tray_image(filled: bool) -> Image<'static> {
-    const N: u32 = 32;
-    let mut rgba = vec![0u8; (N * N * 4) as usize];
-    let c = (N as f32 - 1.0) / 2.0;
-    for y in 0..N {
-        for x in 0..N {
-            let d = ((x as f32 - c).powi(2) + (y as f32 - c).powi(2)).sqrt();
-            let outer = (11.0 - d).clamp(0.0, 1.0);
-            let alpha = if filled {
-                outer
-            } else {
-                outer * (d - 7.0).clamp(0.0, 1.0)
-            };
-            let i = ((y * N + x) * 4) as usize;
-            rgba[i + 3] = (alpha * 255.0) as u8;
-        }
-    }
-    Image::new_owned(rgba, N, N)
+/// Template images (monochrome, alpha only) generated from `assets/brand/tray-*.svg`:
+/// the "m●" mark when idle, a filled tile with the "m" knocked out while recording.
+fn tray_image(recording: bool) -> Image<'static> {
+    let bytes: &'static [u8] = if recording {
+        include_bytes!("../icons/tray/recording.png")
+    } else {
+        include_bytes!("../icons/tray/idle.png")
+    };
+    Image::from_bytes(bytes).expect("bundled tray PNG decodes")
 }
 
 pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_menu(app, &RecordingState::idle(true), &[])?;
-    TrayIconBuilder::with_id(TRAY_ID)
+    let builder = TrayIconBuilder::with_id(TRAY_ID)
         .icon(tray_image(false))
         .icon_as_template(true)
         .tooltip("Minutae")
         .menu(&menu)
-        .show_menu_on_left_click(true)
-        .on_menu_event(on_menu_event)
-        .build(app)?;
+        .on_menu_event(on_menu_event);
+    // macOS: left click opens the menu-bar panel, right click keeps the native menu.
+    // Windows/Linux keep the native menu on left click.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .show_menu_on_left_click(false)
+        .on_tray_icon_event(|tray, event| {
+            if let tauri::tray::TrayIconEvent::Click {
+                button: tauri::tray::MouseButton::Left,
+                button_state: tauri::tray::MouseButtonState::Up,
+                rect,
+                ..
+            } = event
+            {
+                toggle_tray_panel(tray.app_handle(), rect);
+            }
+        });
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.show_menu_on_left_click(true);
+    builder.build(app)?;
     Ok(())
 }
 
@@ -427,5 +556,28 @@ pub fn on_shortcut(app: &AppHandle, shortcut: &Shortcut, state: ShortcutState) {
     } else if Some(shortcut.id()) == record && state == ShortcutState::Pressed {
         let app = app.clone();
         tauri::async_runtime::spawn(async move { crate::recording::toggle(&app).await });
+    }
+}
+
+#[cfg(test)]
+mod tray_tests {
+    #[test]
+    fn tray_panel_sits_centred_under_the_icon_and_on_screen() {
+        assert_eq!(
+            super::tray_panel_origin(1000.0, 0.0, 24.0, 24.0),
+            (852.0, 30.0)
+        );
+        // An icon near the left edge never pushes the panel off screen.
+        assert_eq!(super::tray_panel_origin(10.0, 0.0, 24.0, 24.0).0, 8.0);
+    }
+
+    #[test]
+    fn tray_images_decode_as_square_templates() {
+        for recording in [false, true] {
+            let img = super::tray_image(recording);
+            assert_eq!((img.width(), img.height()), (64, 64));
+            // Template images carry shape in alpha only.
+            assert!(img.rgba().chunks(4).any(|p| p[3] > 0));
+        }
     }
 }
