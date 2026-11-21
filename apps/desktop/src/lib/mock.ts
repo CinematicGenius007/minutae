@@ -395,6 +395,8 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
       if (importing) return fail("An import is already running.");
       runImport();
       return r(undefined);
+    // Window plumbing (menu-bar panel): nothing to do in the browser.
+    case "open_main": case "quit_app": case "tray_panel_hide": case "tray_panel_resize": return r(undefined);
     default: return r(undefined);
   }
 }

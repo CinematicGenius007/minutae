@@ -570,6 +570,33 @@ pub fn dismiss_call_prompt(app: AppHandle, always: Option<bool>) {
     calls::dismiss(&app, always.unwrap_or(false));
 }
 
+/// Menu-bar panel: show the main window (optionally at a route) and close the panel.
+#[tauri::command]
+pub fn open_main(app: AppHandle, route: Option<String>) {
+    shell::hide_tray_panel(&app);
+    match route {
+        Some(r) => shell::navigate(&app, &r),
+        None => shell::show_main(&app),
+    }
+}
+
+#[tauri::command]
+pub fn tray_panel_hide(app: AppHandle) {
+    shell::hide_tray_panel(&app);
+}
+
+/// The panel page reports its content height (logical px).
+#[tauri::command]
+pub fn tray_panel_resize(app: AppHandle, height: f64) {
+    shell::resize_tray_panel(&app, height);
+}
+
+/// Quit for real (stops a recording first, same as the tray menu's Quit).
+#[tauri::command]
+pub fn quit_app(app: AppHandle) {
+    shell::quit(&app);
+}
+
 #[tauri::command]
 pub async fn list_input_devices() -> R<Vec<dto::InputDevice>> {
     let list = tokio::task::spawn_blocking(minutae_audio::list_input_devices)
@@ -1125,6 +1152,9 @@ pub async fn export_all(app: AppHandle) -> R<Option<String>> {
 #[tauri::command]
 pub async fn erase_all(app: AppHandle) -> R<()> {
     let st = app.state::<AppState>();
+    if st.importing.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("An import is running. Wait for it to finish, then erase.".into());
+    }
     recording::stop_and_wait(&app).await;
     if let Ok(runner) = st.runner() {
         let jobs = st
@@ -1202,24 +1232,29 @@ pub async fn erase_all(app: AppHandle) -> R<()> {
         .map_err(err)?;
     let (rec_root, sum_root) = (recordings_root(&settings), summaries_root(&settings));
     tokio::task::spawn_blocking(move || {
-        // Minutae's own folders go entirely (models too: "erase all" means all).
-        for d in [
-            paths::recordings_dir(),
-            paths::summaries_dir(),
-            paths::models_dir(),
-            paths::data_dir().join("dictations"),
-        ] {
+        // Folders only v4 writes go entirely (models too: "erase all" means all).
+        for d in [paths::models_dir(), paths::data_dir().join("dictations")] {
             let _ = std::fs::remove_dir_all(&d);
         }
-        // User-chosen folders may hold other files: only remove what Minutae wrote there.
+        // Recordings and summaries folders are shared: the older Swift app keeps its own
+        // recordings in ~/Library/Minutae/recordings, and custom folders may hold anything.
+        // Remove only what v4 wrote (one folder / one .md per meeting), in every root.
+        let mut rec_roots = vec![paths::recordings_dir()];
+        let mut sum_roots = vec![paths::summaries_dir()];
+        if rec_root != rec_roots[0] {
+            rec_roots.push(rec_root);
+        }
+        if sum_root != sum_roots[0] {
+            sum_roots.push(sum_root);
+        }
         for id in &meeting_ids {
-            if rec_root != paths::recordings_dir() {
-                let _ = std::fs::remove_dir_all(rec_root.join(id.to_string()));
+            for r in &rec_roots {
+                let _ = std::fs::remove_dir_all(r.join(id.to_string()));
             }
-            if sum_root != paths::summaries_dir()
-                && let Some(md) = find_summary_file(&sum_root, *id)
-            {
-                let _ = std::fs::remove_file(md);
+            for r in &sum_roots {
+                if let Some(md) = find_summary_file(r, *id) {
+                    let _ = std::fs::remove_file(md);
+                }
             }
         }
         let _ = std::fs::remove_file(crate::state::Flags::path());

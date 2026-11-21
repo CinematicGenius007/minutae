@@ -2,7 +2,7 @@
 
 Local-first meeting recorder + dictation app for **macOS, Windows and Linux**. It notices when a call starts, records your mic and the other people (computer audio) as two tracks, transcribes locally with Whisper, tells speakers apart, summarizes with AI (Codex / Ollama / Grok / API keys), and offers system-wide dictation. Everything stays on the machine by default.
 
-**Current version: v4 (Tauri 2 + Rust), branch `v4-tauri`.** The Swift app (`App/`, `Packages/`, `Minutae.xcodeproj`) and the old Tauri v1 app (`legacy/`) are kept only as reference until v4 reaches parity. Do not build new features there.
+**Current version: v4 (Tauri 2 + Rust), on `main` (merged PR #38). Next work: backlog in `docs/ROADMAP.md`.** The Swift app (`App/`, `Packages/`, `Minutae.xcodeproj`) and the old Tauri v1 app (`legacy/`) are kept only as reference until v4 reaches parity. Do not build new features there.
 
 ## Read before working
 

@@ -1,5 +1,5 @@
 // Route table (hash routing, so it works from a file:// or tauri:// origin).
-// Windows: "main" loads "/#/", "hud" loads "/#/hud", "prompt" loads "/#/prompt".
+// Windows: "main" loads "/#/", "hud" loads "/#/hud", "prompt" loads "/#/prompt", "tray" (macOS menu-bar panel) loads "/#/tray".
 import { lazy } from "react";
 
 export const screens = {
@@ -12,6 +12,7 @@ export const screens = {
   onboarding: lazy(() => import("./screens/onboarding")),
   hud: lazy(() => import("./screens/overlays/Hud")),
   prompt: lazy(() => import("./screens/overlays/CallPrompt")),
+  tray: lazy(() => import("./screens/overlays/TrayPanel")),
 };
 
 /** Path patterns (wouter syntax). */
@@ -26,4 +27,5 @@ export const paths = {
   gallery: "/gallery",
   hud: "/hud",
   prompt: "/prompt",
+  tray: "/tray",
 } as const;
