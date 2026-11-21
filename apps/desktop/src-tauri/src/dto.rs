@@ -581,6 +581,8 @@ pub mod ev {
     pub const HUD: &str = "dictation://hud";
     pub const MODEL_PROGRESS: &str = "model://progress";
     pub const SETTINGS_CHANGED: &str = "settings://changed";
+    /// macOS menu-bar panel was just opened (refresh its data). Payload: none.
+    pub const TRAY_PANEL_SHOWN: &str = "tray://shown";
     pub const NAVIGATE: &str = "nav://goto";
     pub const IMPORT_PROGRESS: &str = "import://progress";
     pub const IMPORT_FINISHED: &str = "import://finished";

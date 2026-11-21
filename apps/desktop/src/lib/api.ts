@@ -45,6 +45,14 @@ export const api = {
   },
   onboardingDone: () => call<boolean>("onboarding_done"),
   finishOnboarding: () => call<void>("finish_onboarding"),
+  /** Show the main window (at `route` if given) and close the menu-bar panel. */
+  openMain: (route?: Route) => call<void>("open_main", { route: route ?? null }),
+  quitApp: () => call<void>("quit_app"),
+
+  // macOS menu-bar panel (window "tray")
+  trayPanelHide: () => call<void>("tray_panel_hide"),
+  /** The panel reports its content height in logical px; the window is resized to fit. */
+  trayPanelResize: (height: number) => call<void>("tray_panel_resize", { height }),
 
   // meetings
   listMeetings: (limit = 200) => call<DayGroup[]>("list_meetings", { limit }),
@@ -127,4 +135,6 @@ export const events = {
   importProgress: (cb: (p: ImportProgress) => void) => on("import://progress", cb),
   /** One per `importLegacyRun`. Meetings/dictations changed events follow. */
   importFinished: (cb: (p: ImportFinished) => void) => on("import://finished", cb),
+  /** macOS menu-bar panel was just opened: refresh its data. */
+  trayShown: (cb: () => void) => on("tray://shown", cb),
 };
