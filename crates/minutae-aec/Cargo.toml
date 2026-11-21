@@ -1,0 +1,18 @@
+[package]
+name = "minutae-aec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+minutae-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+hound = "3.5"
+rustfft = "6.4"
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3"

@@ -23,11 +23,21 @@ pub const BLEED_MIN_OVERLAP: f64 = 0.5;
 /// …and whose words match that system speech at least this much (token Jaccard) is
 /// the remote audio picked up by the mic (laptop speakers), not the user, and is dropped.
 pub const BLEED_MIN_SIMILARITY: f64 = 0.6;
+/// Residual echo (e.g. after echo cancellation) is often transcribed only in part: a
+/// mic segment of at least [`BLEED_MIN_CONTAINED_WORDS`] words, this share of which
+/// occur *in the same order* in the overlapping system speech, is bleed too. Shorter ones ("yes", "okay
+/// thanks") are kept: the user really says those while the others talk.
+pub const BLEED_MIN_CONTAINMENT: f64 = 0.8;
+pub const BLEED_MIN_CONTAINED_WORDS: usize = 4;
+/// System segments are widened by this much when measuring overlap: the speaker sound
+/// reaches the mic tens to hundreds of ms late and the two transcripts cut sentences at
+/// slightly different points.
+pub const BLEED_TIME_SLACK_MS: u64 = 400;
 
 /// Two-track merge.
 ///
 /// - `mic` segments that are just the remote side leaking into the mic (see
-///   [`BLEED_MIN_OVERLAP`] / [`BLEED_MIN_SIMILARITY`]) are dropped;
+///   [`BLEED_MIN_OVERLAP`], [`BLEED_MIN_SIMILARITY`], [`BLEED_MIN_CONTAINMENT`]) are dropped;
 /// - every other `mic` segment → speaker **"You"** (track `Mic`);
 /// - every `system` segment → the diarized speaker with the most time overlap,
 ///   labelled "Speaker 1", "Speaker 2"… in order of first appearance;
@@ -128,9 +138,13 @@ fn is_bleed(mic: &Segment, system: &[Segment]) -> bool {
     let mut overlapping = 0u64;
     let mut text = String::new();
     for s in system {
-        let o = overlap(mic.start_ms, mic.end_ms, s.start_ms, s.end_ms);
+        let (s0, s1) = (
+            s.start_ms.saturating_sub(BLEED_TIME_SLACK_MS),
+            s.end_ms + BLEED_TIME_SLACK_MS,
+        );
+        let o = overlap(mic.start_ms, mic.end_ms, s0, s1);
         // A zero-length mic segment "overlaps" a system segment that contains it.
-        let touches = o > 0 || (dur == 0 && s.start_ms <= mic.start_ms && mic.start_ms < s.end_ms);
+        let touches = o > 0 || (dur == 0 && s0 <= mic.start_ms && mic.start_ms < s1);
         if touches {
             overlapping += o;
             text.push(' ');
@@ -140,17 +154,48 @@ fn is_bleed(mic: &Segment, system: &[Segment]) -> bool {
     let overlap_ok = if dur == 0 {
         !text.is_empty()
     } else {
-        overlapping as f64 > BLEED_MIN_OVERLAP * dur as f64
+        // Widened neighbours can overlap each other; never count more than the segment.
+        overlapping.min(dur) as f64 > BLEED_MIN_OVERLAP * dur as f64
     };
-    overlap_ok && jaccard(&mic.text, &text) >= BLEED_MIN_SIMILARITY
+    overlap_ok && (jaccard(&mic.text, &text) >= BLEED_MIN_SIMILARITY || contained(&mic.text, &text))
 }
 
-/// Lower-cased alphanumeric word set.
-fn tokens(text: &str) -> std::collections::HashSet<String> {
+/// Most words of a long enough `part` occur in `whole`, in the same order (longest common
+/// subsequence; see [`BLEED_MIN_CONTAINMENT`]). Order matters: a reply that reuses the
+/// remote speaker's words in its own sentence ("friday works, ship the beta") is the user
+/// talking, while echo repeats them as they were said.
+fn contained(part: &str, whole: &str) -> bool {
+    let (p, w) = (words(part), words(whole));
+    p.len() >= BLEED_MIN_CONTAINED_WORDS
+        && lcs_len(&p, &w) as f64 >= BLEED_MIN_CONTAINMENT * p.len() as f64
+}
+
+/// Lower-cased alphanumeric words, in order.
+fn words(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric() && c != '\'')
         .map(|w| w.trim_matches('\'').to_lowercase())
         .filter(|w| !w.is_empty())
         .collect()
+}
+
+/// Length of the longest common subsequence of two word lists (O(n·m), one row of memory;
+/// segments are a sentence or two).
+fn lcs_len(a: &[String], b: &[String]) -> usize {
+    let mut row = vec![0usize; b.len() + 1];
+    for x in a {
+        let mut diag = 0;
+        for (j, y) in b.iter().enumerate() {
+            let up = row[j + 1];
+            row[j + 1] = if x == y { diag + 1 } else { up.max(row[j]) };
+            diag = up;
+        }
+    }
+    row[b.len()]
+}
+
+/// Lower-cased alphanumeric word set.
+fn tokens(text: &str) -> std::collections::HashSet<String> {
+    words(text).into_iter().collect()
 }
 
 /// Token-set Jaccard similarity, 0.0 when either side has no words.
@@ -531,6 +576,97 @@ mod tests {
                 ("ship the beta on Friday", "You"),
             ]
         );
+    }
+
+    #[test]
+    fn partial_echo_of_a_longer_remote_sentence_is_dropped() {
+        let sys = [seg(
+            10_000,
+            16_000,
+            "Let's ship the beta on Friday unless anyone objects to that plan.",
+            Track::System,
+        )];
+        let mic = [
+            // What whisper made of the leftover echo: part of the sentence.
+            seg(11_000, 13_000, "ship the beta on friday", Track::Mic),
+            // Ends 300 ms after the system segment: still bleed with the time slack.
+            seg(14_500, 16_300, "anyone objects to that plan", Track::Mic),
+            // Short real replies over the remote speaker are kept even if the words match.
+            seg(12_000, 12_800, "the beta", Track::Mic),
+            seg(15_000, 15_600, "Friday, yes", Track::Mic),
+            // Real speech that shares a few words but mostly isn't in the remote sentence.
+            seg(
+                12_500,
+                15_500,
+                "Friday is too early for the beta honestly",
+                Track::Mic,
+            ),
+        ];
+        let (out, sp) = merge(&mic, &sys, &[], Uuid::new_v4());
+        assert_eq!(
+            out.iter()
+                .map(|s| (s.text.as_str(), label_of(s, &sp).unwrap()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "Let's ship the beta on Friday unless anyone objects to that plan.",
+                    "Speaker 1"
+                ),
+                ("the beta", "You"),
+                ("Friday is too early for the beta honestly", "You"),
+                ("Friday, yes", "You"),
+            ]
+        );
+    }
+
+    #[test]
+    fn same_words_long_after_the_remote_said_them_are_kept() {
+        // Outside the slack: the user quoting the others later, not echo.
+        let sys = [seg(0, 2_000, "we ship the beta on friday", Track::System)];
+        let mic = [seg(2_500, 4_500, "we ship the beta on friday", Track::Mic)];
+        let (out, _) = merge(&mic, &sys, &[], Uuid::new_v4());
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn reordered_reply_with_the_remote_words_is_kept() {
+        // The user answers during the remote sentence, reusing its words in a new order.
+        let sys = [seg(
+            10_000,
+            16_000,
+            "Let's ship the beta on Friday unless anyone objects to that plan.",
+            Track::System,
+        )];
+        let mic = [seg(
+            12_000,
+            15_000,
+            "Friday plan works, ship that beta",
+            Track::Mic,
+        )];
+        let (out, sp) = merge(&mic, &sys, &[], Uuid::new_v4());
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().any(|s| label_of(s, &sp) == Some("You")));
+        assert!(!contained(
+            "friday plan works ship that beta",
+            "lets ship the beta on friday unless anyone objects to that plan"
+        ));
+        assert_eq!(lcs_len(&words("a b c d"), &words("x a c y d")), 3);
+    }
+
+    #[test]
+    fn containment_needs_enough_words() {
+        assert!(contained(
+            "ship the beta friday",
+            "let's ship the beta on friday"
+        ));
+        assert!(!contained(
+            "the beta friday",
+            "let's ship the beta on friday"
+        ));
+        assert!(!contained(
+            "ship the beta next month instead",
+            "let's ship the beta on friday"
+        ));
     }
 
     #[test]

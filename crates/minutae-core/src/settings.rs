@@ -47,6 +47,16 @@ pub enum SummaryLength {
     Detailed,
 }
 
+/// Remove the other people's voices from the mic track when they came out of the
+/// speakers (no headphones). `Auto` runs it only when the speakers are heard in the mic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum EchoCancelMode {
+    #[default]
+    Auto,
+    Off,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum HotkeyMode {
@@ -77,6 +87,7 @@ pub struct AppSettings {
     pub label_speakers: bool,
     /// Live captions while recording (needs a downloaded Whisper model; best effort).
     pub live_captions: bool,
+    pub echo_cancellation: EchoCancelMode,
     // Summaries
     pub transport_order: Vec<Transport>,
     pub api_fallback_enabled: bool,
@@ -113,6 +124,7 @@ impl Default for AppSettings {
             language: None,
             label_speakers: true,
             live_captions: true,
+            echo_cancellation: EchoCancelMode::Auto,
             transport_order: vec![Transport::CodexCli, Transport::Ollama, Transport::GrokCli],
             api_fallback_enabled: false,
             summary_length: SummaryLength::Brief,
@@ -143,5 +155,14 @@ mod tests {
         let s: AppSettings = serde_json::from_str(r#"{"appearance":"dark"}"#).unwrap();
         assert_eq!(s.appearance, Appearance::Dark);
         assert_eq!(s.prompt_delay_seconds, 5);
+        assert_eq!(s.echo_cancellation, EchoCancelMode::Auto);
+    }
+
+    #[test]
+    fn echo_cancellation_wire_values() {
+        let s: AppSettings = serde_json::from_str(r#"{"echoCancellation":"off"}"#).unwrap();
+        assert_eq!(s.echo_cancellation, EchoCancelMode::Off);
+        let v = serde_json::to_value(AppSettings::default()).unwrap();
+        assert_eq!(v["echoCancellation"], "auto");
     }
 }

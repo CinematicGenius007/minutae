@@ -113,6 +113,11 @@ pub async fn run_retention(app: &AppHandle) {
             if std::fs::remove_file(&t.path).is_ok() {
                 removed += 1;
             }
+            if t.track == minutae_core::Track::Mic {
+                let clean =
+                    std::path::Path::new(&t.path).with_file_name(minutae_aec::CLEAN_MIC_FILE);
+                let _ = std::fs::remove_file(clean);
+            }
         }
     }
     if removed > 0 {

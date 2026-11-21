@@ -253,6 +253,12 @@ CREATE TABLE legacy_imports (
 CREATE INDEX legacy_imports_v4 ON legacy_imports(v4_id);
 "#;
 
+/// v4: `meetings.echo_cancel`, JSON `EchoCancelReport` of the last transcription
+/// (whether the mic track was echo-cancelled, and how much echo it removed).
+const V4: &str = r#"
+ALTER TABLE meetings ADD COLUMN echo_cancel TEXT;
+"#;
+
 /// One schema step: SQL, then an optional Rust data step in the same transaction.
 struct Migration {
     sql: &'static str,
@@ -270,6 +276,10 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         sql: V3,
+        data: None,
+    },
+    Migration {
+        sql: V4,
         data: None,
     },
 ];

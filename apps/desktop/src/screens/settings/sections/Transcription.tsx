@@ -226,6 +226,21 @@ export function TranscriptionSection({ settings, update }: SectionProps) {
             <Toggle id="s-captions" checked={settings.liveCaptions} onCheckedChange={(v) => update({ liveCaptions: v })} />
           }
         />
+        <SettingRow
+          title="Echo cancellation"
+          description="Removes speaker sound picked up by your mic, so no one is transcribed twice."
+          control={
+            <Segmented
+              aria-label="Echo cancellation"
+              value={settings.echoCancellation}
+              onValueChange={(v) => update({ echoCancellation: v })}
+              options={[
+                { value: "auto", label: "Auto" },
+                { value: "off", label: "Off" },
+              ]}
+            />
+          }
+        />
       </section>
 
       <section className={s.group} aria-labelledby="g-model">

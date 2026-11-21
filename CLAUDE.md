@@ -34,6 +34,7 @@ crates/
   minutae-detect         "another app is using the mic" per OS
   minutae-asr            whisper.cpp (whisper-rs), model manager
   minutae-diarize        sherpa-onnx diarization + two-track merge
+  minutae-aec            offline echo cancellation: mic.wav − speakers (system.wav) → mic.clean.wav
   minutae-llm            transport router (codex-cli, grok-cli, ollama, api), summaries, ask
   minutae-dictation      hotkey state machine, post-processing, text insertion
   minutae-search         retrieval for "Ask"

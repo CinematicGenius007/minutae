@@ -3,7 +3,7 @@
 //! Shared enums (`MeetingStatus`, `Track`, `Stage`, `FailureKind`, `AppSettings`…) come
 //! from `minutae-core`, which already uses the same wire names.
 
-use minutae_core::{Failure, MeetingStatus, Progress, Track, WhisperModel};
+use minutae_core::{EchoCancelReport, Failure, MeetingStatus, Progress, Track, WhisperModel};
 use serde::{Deserialize, Serialize};
 
 pub use minutae_core::{AppSettings, Moment};
@@ -162,6 +162,9 @@ pub struct MeetingDetail {
     pub moments: Vec<MomentDto>,
     pub audio: Option<AudioPaths>,
     pub progress: Option<Progress>,
+    /// What echo cancellation did before transcription; `None` for meetings
+    /// transcribed before it existed.
+    pub echo_cancel: Option<EchoCancelReport>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -882,6 +885,14 @@ mod tests {
             moments: vec![moment],
             audio: Some(audio),
             progress: None,
+            echo_cancel: Some(EchoCancelReport {
+                ran: true,
+                skipped: None,
+                erle_db: Some(28.0),
+                delay_ms: Some(40.0),
+                drift_ppm: Some(3.0),
+                elapsed_ms: 120,
+            }),
         };
         assert_keys(
             &detail,
@@ -895,8 +906,21 @@ mod tests {
                 "moments",
                 "audio",
                 "progress",
+                "echoCancel",
             ],
         );
+        let v = serde_json::to_value(&detail).unwrap();
+        assert_eq!(
+            v["echoCancel"],
+            serde_json::json!({
+                "ran": true, "skipped": null, "erleDb": 28.0, "delayMs": 40.0,
+                "driftPpm": 3.0, "elapsedMs": 120
+            })
+        );
+        let skipped =
+            serde_json::to_value(EchoCancelReport::skipped(minutae_core::EchoSkip::NoEcho))
+                .unwrap();
+        assert_eq!(skipped["skipped"], "noEcho");
     }
 
     #[test]
@@ -1070,6 +1094,7 @@ mod tests {
                 "language",
                 "labelSpeakers",
                 "liveCaptions",
+                "echoCancellation",
                 "transportOrder",
                 "apiFallbackEnabled",
                 "summaryLength",
