@@ -6,8 +6,8 @@
 # your own window if you piped it into `iex` directly.)
 #
 # Exit code: 0 up to date, 10 update available, 1 couldn't tell.
-# Finds the installed copy in Scoop (~\scoop\apps\minutae\current) or the NSIS install
-# (%LOCALAPPDATA%\Minutae\Minutae.exe), else the checkout this script sits in.
+# Finds the installed copy in Scoop (~\scoop\apps\minutae\current) or the current user's
+# NSIS uninstall registry entry, else the checkout this script sits in.
 param([string]$Current = "", [switch]$Json)
 $ErrorActionPreference = "Stop"
 $Repo = "CinematicGenius007/minutae"
@@ -27,11 +27,17 @@ if (-not $Current) {
     $Channel = "scoop"
   }
 }
-if (-not $Current) {
-  $exe = Join-Path $env:LOCALAPPDATA "Minutae\Minutae.exe"
-  if (Test-Path $exe) {
-    $Current = (Get-Item $exe).VersionInfo.ProductVersion
+if (-not $Current -and $env:OS -eq "Windows_NT") {
+  $uninstall = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Minutae'
+  if (Test-Path -LiteralPath $uninstall) {
+    $Current = (Get-ItemProperty -LiteralPath $uninstall -Name DisplayVersion).DisplayVersion
     $Channel = "direct"
+  } elseif ($env:LOCALAPPDATA) {
+    $exe = Join-Path $env:LOCALAPPDATA "Minutae\Minutae.exe"
+    if (Test-Path -LiteralPath $exe) {
+      $Current = (Get-Item -LiteralPath $exe).VersionInfo.ProductVersion
+      $Channel = "direct"
+    }
   }
 }
 $Src = $null
