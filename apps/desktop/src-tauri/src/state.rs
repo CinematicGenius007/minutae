@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use minutae_asr::{ModelManager, Transcriber, WhisperTranscriber};
@@ -136,8 +135,9 @@ pub struct AppState {
     pub calls: Mutex<CallState>,
     pub monitor: Mutex<Option<minutae_detect::MonitorHandle>>,
     pub dictation: OnceLock<DictationController>,
+    pub dictation_storage: tokio::sync::Mutex<()>,
     pub shortcuts: Mutex<crate::shell::Shortcuts>,
-    pub hud_generation: AtomicU64,
+    pub(crate) escape_registration: Mutex<crate::dictation::EscapeRegistration>,
     pub tray_record_item: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>,
     /// Folders the user chose with `pick_folder` this session: the only custom
     /// recordings/summaries folders `update_settings` accepts.
@@ -177,8 +177,9 @@ impl AppState {
             calls: Mutex::new(CallState::default()),
             monitor: Mutex::new(None),
             dictation: OnceLock::new(),
+            dictation_storage: Default::default(),
             shortcuts: Mutex::new(Default::default()),
-            hud_generation: AtomicU64::new(0),
+            escape_registration: Default::default(),
             tray_record_item: Mutex::new(None),
             picked_folders: Mutex::new(Default::default()),
             last_export: Mutex::new(None),

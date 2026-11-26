@@ -85,6 +85,7 @@ export const api = {
   // dictation
   listDictations: (limit = 100) => call<Dictation[]>("list_dictations", { limit }),
   dictationStats: () => call<DictationStats>("dictation_stats"),
+  deleteAllDictations: () => call<void>("delete_all_dictations"),
   deleteDictation: (id: Uuid) => call<void>("delete_dictation", { id }),
 
   // library

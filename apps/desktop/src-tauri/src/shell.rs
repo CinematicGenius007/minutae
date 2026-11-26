@@ -425,6 +425,10 @@ fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
 
 static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+pub fn is_quitting() -> bool {
+    QUITTING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Quit for real (tray, Cmd+Q, SIGTERM/SIGINT): stop a recording first so its audio is
 /// saved, park the job queue, free the whisper models, then exit. Idempotent.
 pub fn quit(app: &AppHandle) {
@@ -452,6 +456,9 @@ fn shutdown(app: &AppHandle, restart: bool) {
         }
         if let Some(c) = st.dictation.get() {
             c.cancel();
+            while c.state() == minutae_dictation::DictationState::Inserting {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
         }
         if let Some(h) = st.monitor.lock().unwrap_or_else(|e| e.into_inner()).take() {
             h.stop();
@@ -462,6 +469,7 @@ fn shutdown(app: &AppHandle, restart: bool) {
         let _ =
             tokio::task::spawn_blocking(move || cache.shutdown(std::time::Duration::from_secs(10)))
                 .await;
+        crate::dictation::release_escape(&app);
         tracing::info!(restart, "models unloaded; exiting");
         if restart {
             app.request_restart();
@@ -524,8 +532,8 @@ pub struct Shortcuts {
     pub dictate: Option<Shortcut>,
 }
 
-/// Register exactly the record + dictation shortcuts of `settings` (replacing any
-/// others). Returns the accelerators the OS refused (e.g. another app owns them).
+/// Replace the settings shortcuts without disturbing the active Escape binding.
+/// Returns the accelerators the OS refused (e.g. another app owns them).
 pub fn register_shortcuts(app: &AppHandle, settings: &AppSettings) -> Vec<String> {
     if crate::portal::use_portal() {
         // Wayland: the portal owns the keys (bound once by `portal::start`).
@@ -533,13 +541,21 @@ pub fn register_shortcuts(app: &AppHandle, settings: &AppSettings) -> Vec<String
     }
     let st = app.state::<AppState>();
     let gs = app.global_shortcut();
-    if let Err(e) = gs.unregister_all() {
-        tracing::debug!(error = %e, "unregister shortcuts");
+    let previous = {
+        let s = st.shortcuts.lock().unwrap_or_else(|e| e.into_inner());
+        [s.record, s.dictate]
+    };
+    for shortcut in previous.into_iter().flatten() {
+        if let Err(e) = gs.unregister(shortcut) {
+            tracing::debug!(error = %e, "unregister shortcut");
+        }
     }
+    let escape = crate::dictation::escape_shortcut();
     let parse = |s: &str| -> Option<Shortcut> {
         Shortcut::from_str(s)
             .map_err(|e| tracing::warn!(shortcut = s, error = %e, "invalid shortcut"))
             .ok()
+            .filter(|s| *s != escape)
     };
     let record = parse(&settings.record_shortcut);
     let dictate = parse(&settings.dictation_hotkey);

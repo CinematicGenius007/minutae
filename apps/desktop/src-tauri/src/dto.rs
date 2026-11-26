@@ -494,7 +494,11 @@ pub struct ShortcutStatus {
     pub hold_supported: Option<bool>,
     /// Why the portal is unavailable, or what went wrong binding (one sentence).
     pub detail: Option<String>,
+    /// Why global Escape cancellation is unavailable.
+    pub cancel_detail: Option<String>,
 }
+
+pub const PORTAL_CANCEL_DETAIL: &str = "Global Esc cancellation is unavailable on Wayland.";
 
 impl ShortcutStatus {
     pub fn native() -> Self {
@@ -505,6 +509,7 @@ impl ShortcutStatus {
             can_configure: false,
             hold_supported: Some(true),
             detail: None,
+            cancel_detail: None,
         }
     }
 }
@@ -1231,6 +1236,7 @@ mod tests {
             can_configure: true,
             hold_supported: None,
             detail: None,
+            cancel_detail: Some(PORTAL_CANCEL_DETAIL.into()),
         };
         assert_keys(
             &st,
@@ -1241,6 +1247,7 @@ mod tests {
                 "canConfigure",
                 "holdSupported",
                 "detail",
+                "cancelDetail",
             ],
         );
         assert_eq!(serde_json::to_value(&st).unwrap()["backend"], "portal");

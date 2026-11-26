@@ -423,6 +423,30 @@ async fn cancel_while_listening_and_while_processing() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn escape_while_inserting_does_not_paste_or_save() {
+    let mut r = rig("never typed");
+    *r.ins.insert_delay.lock().unwrap() = ms(500);
+    r.ctl.key_down();
+    sleep(ms(400)).await;
+    r.ctl.key_up();
+    sleep(ms(100)).await;
+    assert_eq!(r.ctl.state(), DictationState::Inserting);
+    assert!(r.ctl.request_cancel());
+    r.ctl.finish_cancel();
+    sleep(ms(500)).await;
+    assert_eq!(
+        r.drain().await,
+        vec![
+            DictationEvent::Hud(listening(false)),
+            DictationEvent::Hud(HudState::Processing),
+            DictationEvent::Hud(HudState::Idle)
+        ]
+    );
+    assert!(r.ins.texts().is_empty());
+    assert_eq!(r.ctl.state(), DictationState::Idle);
+}
+
+#[tokio::test(start_paused = true)]
 async fn forwards_mic_level_while_listening() {
     let mut r = rig("level");
     r.ctl.key_down();

@@ -134,7 +134,7 @@ export interface AppSettings {
   transportOrder: Transport[]; apiFallbackEnabled: boolean; summaryLength: "brief" | "detailed";
   summariesPath: string | null; codexModel: string | null; ollamaModel: string;
   dictationHotkey: string; dictationMode: "hold" | "toggle"; tidyDictation: boolean; keepDictationAudio: boolean;
-  vocabulary: string[]; deleteAudioAfterDays: number | null; recordingsPath: string | null;
+  dictationRetentionDays: number | null; vocabulary: string[]; deleteAudioAfterDays: number | null; recordingsPath: string | null;
 }
 
 export interface InputDevice { id: string; name: string; isDefault: boolean }
@@ -158,6 +158,7 @@ export interface ShortcutStatus {
   holdSupported: boolean | null;
   /** Why the portal is unavailable or binding failed. */
   detail: string | null;
+  cancelDetail: string | null;
 }
 /** "disabled": update checks are off (MINUTAE_UPDATE_CHECK=off). */
 export type UpdatePhase = "disabled" | "idle" | "checking" | "upToDate" | "available" | "installing" | "error";

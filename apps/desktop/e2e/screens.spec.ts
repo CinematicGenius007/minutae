@@ -46,6 +46,37 @@ const SHOTS: Shot[] = [
   { name: "detail-failed", route: `/meetings/${MEETING}`, query: "state=failed", ready: "Vendor call" },
   { name: "dictate", route: "/dictate", ready: "Running ten minutes late" },
   { name: "dictate-empty", route: "/dictate", query: "state=empty" },
+  { name: "dictate-wayland", route: "/dictate", query: "os=linux&session=wayland", ready: "Global Esc cancellation is unavailable on Wayland." },
+  {
+    name: "dictate-retention",
+    route: "/settings/dictation",
+    query: "oldDictations",
+    act: async (page) => {
+      await page.getByRole("combobox", { name: "Keep dictations for" }).click();
+      await page.getByRole("option", { name: "7 days" }).click();
+      await page.getByRole("link", { name: "Dictate", exact: true }).click();
+      await settle(page, "Keep for 7 days");
+      await expect(page.getByText("Standup: finished the model")).toHaveCount(0);
+      await expect(page.getByText("Running ten minutes late")).toBeVisible();
+    },
+  },
+  {
+    name: "settings-dictation-retention-menu",
+    route: "/settings/dictation",
+    act: async (page) => {
+      await page.getByRole("combobox", { name: "Keep dictations for" }).click();
+      await expect(page.getByRole("option", { name: "Forever" })).toBeVisible();
+      await expect(page.getByRole("option", { name: "90 days" })).toBeVisible();
+    },
+  },
+  {
+    name: "settings-dictation-delete-confirm",
+    route: "/settings/dictation",
+    act: async (page) => {
+      await page.getByRole("button", { name: "Delete all dictations…" }).click();
+      await expect(page.getByRole("dialog", { name: "Delete all dictations?" })).toBeVisible();
+    },
+  },
   { name: "library", route: "/library" },
   {
     name: "library-answer",
@@ -230,6 +261,36 @@ test("⌘K on Dictate opens Library search", async ({ page, browserName }) => {
   await page.keyboard.press(browserName === "webkit" ? "Meta+k" : "Control+k");
   await expect(page).toHaveURL(/#\/library/);
   await expect(page.getByRole("searchbox").first()).toBeFocused();
+});
+
+test("deleting dictations updates history after confirmation", async ({ page }) => {
+  await page.goto(url("/dictate"));
+  const dictate = page.getByRole("link", { name: "Dictate", exact: true });
+  const settings = page.getByRole("link", { name: "Settings", exact: true });
+  await expect(page.getByText("Running ten minutes late")).toBeVisible();
+  await expect(page.getByText(/(?:Keep for|Kept) \d+ days/)).toHaveCount(0);
+
+  const firstRow = page.getByRole("listitem").filter({ hasText: "Thanks for the notes" });
+  await firstRow.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Delete…" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Delete dictation" }).click();
+  await expect(firstRow).toHaveCount(0);
+
+  await settings.click();
+  await page.getByRole("link", { name: "Dictation", exact: true }).click();
+  const remove = page.getByRole("button", { name: "Delete all dictations…" });
+  const dialog = page.getByRole("dialog", { name: "Delete all dictations?" });
+  await remove.click();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await dictate.click();
+  await expect(page.getByText("Running ten minutes late")).toBeVisible();
+  await settings.click();
+  await page.getByRole("link", { name: "Dictation", exact: true }).click();
+  await remove.click();
+  await dialog.getByRole("button", { name: "Delete all dictations", exact: true }).click();
+  await expect(page.getByText("Dictations deleted", { exact: true })).toBeVisible();
+  await dictate.click();
+  await expect(page.getByText("No dictations yet.")).toBeVisible();
 });
 
 test("keyboard: Meetings → Detail → Settings, visible focus, esc closes menus", async ({ page, browserName }) => {

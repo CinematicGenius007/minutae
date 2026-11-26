@@ -1,13 +1,11 @@
 .stack { display: flex; flex-direction: column; gap: 48px; }
 .body { display: flex; flex-direction: column; gap: var(--s-10); }
 
-/* How-to strip: the one surface on the page (it is a demo of a control). */
+/* How-to strip and shortcut. */
 .howto {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--s-7);
-  padding: var(--s-8) 32px;
+  padding: var(--s-8);
   border-radius: var(--radius-md);
   background: var(--surface);
 }
@@ -33,23 +31,6 @@
   color: var(--ink);
 }
 .howtoBody { font-size: var(--fs-body-sm); line-height: var(--lh-body-sm); color: var(--muted); }
-
-/* Static picture of the listening HUD (decorative). */
-.hudPreview {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s-4);
-  flex-shrink: 0;
-  height: var(--s-10);
-  padding-inline: 14px 18px;
-  border-radius: var(--radius-full);
-  background: var(--hud);
-  color: var(--on-hud);
-}
-.hudDot { width: var(--s-3); height: var(--s-3); border-radius: var(--radius-full); background: var(--onair); }
-.hudBars { display: flex; align-items: center; gap: var(--s-1); height: var(--s-6); }
-.hudBar { width: 2px; min-height: 5px; border-radius: var(--s-1); background: var(--on-hud); }
-.hudTime { font-family: var(--font-mono); font-size: var(--fs-meta); line-height: var(--lh-meta); color: var(--on-hud-muted); font-variant-numeric: tabular-nums; }
 
 /* Recent list: fixed lanes (time 64 · text · app 120 · words 64 · actions). */
 .list { display: flex; flex-direction: column; }
