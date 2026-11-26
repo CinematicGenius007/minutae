@@ -1154,12 +1154,14 @@ mod tests {
                 "dictationMode",
                 "tidyDictation",
                 "keepDictationAudio",
+                "dictationRetentionDays",
                 "vocabulary",
                 "deleteAudioAfterDays",
                 "recordingsPath",
             ],
         );
         let v = serde_json::to_value(AppSettings::default()).unwrap();
+        assert!(v["dictationRetentionDays"].is_null());
         assert_eq!(
             v["transportOrder"],
             serde_json::json!(["codexCli", "ollama", "grokCli"])
