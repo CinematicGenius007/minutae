@@ -37,7 +37,7 @@
 .trigger[data-state="active"]::after { opacity: 1; }
 .trigger:focus-visible { box-shadow: none; }
 .trigger:focus-visible .text { border-radius: var(--s-1); box-shadow: var(--focus-ring); }
-.trigger:disabled { color: var(--control-edge); cursor: default; }
+.trigger:disabled { color: var(--faint); cursor: default; }
 
 /* Reserve bold width so tabs don't shift when activated. */
 .text { display: inline-grid; }

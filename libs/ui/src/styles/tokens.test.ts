@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const CSS = readFileSync(resolve(import.meta.dir, "tokens.css"), "utf8");
@@ -188,8 +188,8 @@ describe("tokens.css WCAG contrast", () => {
       }
 
       const uiPairs: [string, string, string][] = [
-        ["--control-edge on --bg (control boundary)", "--control-edge", "--bg"],
-        ["--control-edge on --surface (control boundary / disabled text)", "--control-edge", "--surface"],
+        ["--control-edge on --bg (off toggle track, unchecked checkbox/radio, player scrubber)", "--control-edge", "--bg"],
+        ["--control-edge on --surface (planned pill border on segmented track)", "--control-edge", "--surface"],
         ["--toggle-knob-off on --control-edge (off toggle knob)", "--toggle-knob-off", "--control-edge"],
         ["--on-ink on --ink (on toggle knob)", "--on-ink", "--ink"],
         ["focus ring --ink on --bg", "--ink", "--bg"],
@@ -234,6 +234,23 @@ describe("tokens.css WCAG contrast", () => {
       const moreLine = contrastRatio(resolveColor(more, "var(--line)"), bg);
       expect(moreLine).toBeGreaterThan(baseLine);
       expect(moreLine).toBeGreaterThanOrEqual(3.0);
+      expect(contrastRatio(resolveColor(more, "var(--line)"), surface)).toBeGreaterThanOrEqual(3.0);
+
+      const baseLineStrong = contrastRatio(resolveColor(base, "var(--line-strong)"), bg);
+      const moreLineStrong = contrastRatio(resolveColor(more, "var(--line-strong)"), bg);
+      expect(moreLineStrong).toBeGreaterThan(baseLineStrong);
+      expect(moreLineStrong).toBeGreaterThanOrEqual(3.0);
+      expect(contrastRatio(resolveColor(more, "var(--line-strong)"), raised)).toBeGreaterThanOrEqual(3.0);
     });
   }
+
+  test("--control-edge is never used as a text colour in kit components", () => {
+    const dir = resolve(import.meta.dir, "../components");
+    for (const file of readdirSync(dir)) {
+      if (!file.endsWith(".css")) continue;
+      const src = readFileSync(resolve(dir, file), "utf8");
+      const textColorUse = /(?:^|[{;\s])color\s*:\s*[^;]*var\(--control-edge\)/i.exec(src);
+      expect(textColorUse, `${file} must not use --control-edge as a text colour`).toBeNull();
+    }
+  });
 });

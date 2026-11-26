@@ -63,14 +63,12 @@ export function Segmented<V extends string = string>({
               disabled={o.disabled}
               aria-describedby={reasonId}
               title={o.disabled && o.disabledReason ? o.disabledReason : undefined}
-              className={s.item}
+              className={cx(s.item, o.tag && s.itemTagged)}
             >
               <span>{o.label}</span>
               {o.tag ? (
                 <>
-                  <span className={s.sep} aria-hidden>
-                    ·
-                  </span>
+                  {" "}
                   <span className={s.tag}>{o.tag}</span>
                 </>
               ) : null}

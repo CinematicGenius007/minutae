@@ -98,7 +98,7 @@
   color: var(--ink);
   cursor: pointer;
 }
-.row[data-disabled] { color: var(--control-edge); cursor: default; }
+.row[data-disabled] { color: var(--faint); cursor: default; }
 .forceFocus { box-shadow: var(--focus-ring); }
 
 @media (forced-colors: active) {

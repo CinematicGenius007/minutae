@@ -34,16 +34,16 @@
 .primary:hover, .primary[data-force="hover"] { background: var(--ink-hover); }
 .primary:active, .primary[data-force="pressed"] { background: var(--ink-pressed); }
 
-/* secondary: control-edge border for 3:1 boundary */
-.secondary { border-color: var(--control-edge); color: var(--ink); background: transparent; }
+/* secondary: hairline (--line strengthens under prefers-contrast: more) */
+.secondary { border-color: var(--line); color: var(--ink); background: transparent; }
 .secondary:hover, .secondary[data-force="hover"] { background: var(--surface); }
 .secondary:active, .secondary[data-force="pressed"] { background: var(--surface-pressed); }
 
-/* disabled fill buttons: readable text via --control-edge */
+/* disabled fill buttons */
 .primary:disabled, .secondary:disabled, .primary[aria-disabled="true"], .secondary[aria-disabled="true"] {
   background: var(--surface);
-  border-color: var(--line);
-  color: var(--control-edge);
+  border-color: transparent;
+  color: var(--faint);
   cursor: default;
 }
 
@@ -78,7 +78,7 @@
   text-decoration-thickness: 2px;
 }
 .quiet:active, .destructive:active, .quiet[data-force="pressed"], .destructive[data-force="pressed"] { opacity: .65; }
-.quiet:disabled, .destructive:disabled { color: var(--control-edge); cursor: default; text-decoration-thickness: var(--hairline); }
+.quiet:disabled, .destructive:disabled { color: var(--faint); cursor: default; text-decoration-thickness: var(--hairline); }
 
 .loading { cursor: progress; }
 .loading .label { opacity: .9; }
@@ -93,7 +93,7 @@
 }
 
 @media (forced-colors: active) {
-  .primary { border-color: ButtonText; }
+  .primary, .secondary { border-color: ButtonText; }
   .primary:disabled, .secondary:disabled, .primary[aria-disabled="true"], .secondary[aria-disabled="true"] {
     border-color: GrayText;
     color: GrayText;

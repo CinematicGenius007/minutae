@@ -145,7 +145,7 @@
   transition: background-color var(--t-fast);
 }
 .addBtn:hover { background: var(--ink-hover); }
-.addBtn:disabled { background: var(--surface); color: var(--control-edge); }
+.addBtn:disabled { background: var(--surface); color: var(--faint); }
 .tags { display: flex; flex-wrap: wrap; gap: var(--s-3); }
 
 /* Shortcut recorder keycap */
@@ -157,10 +157,10 @@
   height: 32px;
   min-width: 56px;
   padding-inline: 14px;
-  border: var(--hairline) solid var(--control-edge);
+  border: var(--hairline) solid var(--line-strong);
   border-radius: var(--radius-sm);
   background: var(--raised);
-  box-shadow: 0 1.5px 0 var(--control-edge);
+  box-shadow: 0 1.5px 0 var(--line-strong);
   font-family: var(--font-mono);
   font-size: var(--fs-body-sm);
   line-height: var(--lh-body-sm);
@@ -171,7 +171,7 @@
 .capButton:hover { border-color: var(--muted); }
 .capRecording { border-color: var(--ink); box-shadow: var(--halo); color: var(--muted); }
 .capInvalid, .capInvalid:hover { border-color: var(--destructive); }
-.capButton:disabled { color: var(--control-edge); cursor: default; }
+.capButton:disabled { color: var(--faint); cursor: default; }
 .fieldError { display: block; margin-top: var(--s-1); color: var(--destructive); }
 
 /* Storage */

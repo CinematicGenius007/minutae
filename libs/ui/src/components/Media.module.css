@@ -31,7 +31,7 @@
 }
 .play:hover { background: var(--ink-hover); }
 .play:active { background: var(--ink-pressed); }
-.play:disabled { background: var(--surface); color: var(--control-edge); cursor: default; }
+.play:disabled { background: var(--surface); color: var(--faint); cursor: default; }
 .time {
   flex-shrink: 0;
   font-family: var(--font-mono);
@@ -92,7 +92,7 @@
   min-width: 52px;
   height: 28px;
   padding-inline: 10px;
-  border: var(--hairline) solid var(--control-edge);
+  border: var(--hairline) solid var(--line);
   border-radius: var(--radius-full);
   background: transparent;
   color: var(--ink);
@@ -104,7 +104,7 @@
   transition: background-color var(--t-fast), box-shadow var(--t-fast);
 }
 .speed:hover { background: var(--surface); }
-.speed:disabled { color: var(--control-edge); border-color: var(--line); cursor: default; }
+.speed:disabled { color: var(--faint); cursor: default; }
 .extra { display: flex; align-items: center; gap: var(--s-4); flex-shrink: 0; }
 
 @media (forced-colors: active) {
@@ -114,5 +114,6 @@
   .scrub::-moz-range-track { border: var(--hairline) solid ButtonText; background: Canvas; forced-color-adjust: none; }
   .scrub::-webkit-slider-thumb { forced-color-adjust: none; background: Highlight; border: var(--hairline) solid ButtonText; }
   .scrub::-moz-range-thumb { forced-color-adjust: none; background: Highlight; border: var(--hairline) solid ButtonText; }
+  .speed { border-color: ButtonText; }
   .speed:disabled { border-color: GrayText; color: GrayText; }
 }

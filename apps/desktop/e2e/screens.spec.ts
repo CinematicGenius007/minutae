@@ -541,6 +541,7 @@ test("Settings → Transcription: Cloud is visibly disabled, planned, unreachabl
   await expect(cloud).toBeVisible();
   await expect(cloud).toBeDisabled();
   await expect(cloud).toHaveAttribute("aria-checked", "false");
+  await expect(cloud).not.toContainText("·");
 
   // Reason is exposed to screen readers via aria-describedby (accessible description).
   await expect(cloud).toHaveAccessibleDescription(/Cloud transcription is planned for a future release/);

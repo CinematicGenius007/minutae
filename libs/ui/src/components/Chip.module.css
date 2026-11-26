@@ -4,7 +4,7 @@
   gap: 6px;
   height: var(--h-chip);
   padding-inline: var(--s-4);
-  border: var(--hairline) solid var(--control-edge);
+  border: var(--hairline) solid var(--line);
   border-radius: var(--radius-full);
   background: transparent;
   color: var(--ink);
@@ -21,7 +21,7 @@
 .chip[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--on-ink); }
 .chip[aria-pressed="true"]:hover { background: var(--ink-hover); border-color: var(--ink-hover); }
 .chip:focus-visible, .chip[data-force="focus"] { box-shadow: var(--focus-ring); }
-.chip:disabled { color: var(--control-edge); border-color: var(--line); background: transparent; cursor: default; }
+.chip:disabled { color: var(--faint); background: transparent; cursor: default; }
 .count { font-family: var(--font-mono); font-size: var(--fs-meta-sm); opacity: .7; font-variant-numeric: tabular-nums; }
 
 /* Tag: surface fill with a × (22 visual, 28x28 hit target) */
@@ -71,6 +71,7 @@
 }
 
 @media (forced-colors: active) {
+  .chip { border-color: ButtonText; }
   .chip[aria-pressed="true"] {
     forced-color-adjust: none;
     background: Highlight;

@@ -37,7 +37,7 @@
   white-space: nowrap;
 }
 .item[data-highlighted], .item[data-force="hover"] { background: var(--ink); color: var(--on-ink); }
-.item[data-disabled] { color: var(--control-edge); }
+.item[data-disabled] { color: var(--faint); }
 .muted { color: var(--muted); }
 .danger { color: var(--destructive); }
 .item.muted[data-highlighted], .item.danger[data-highlighted] { color: var(--on-ink); }
@@ -49,7 +49,7 @@
 
 .separator { height: var(--hairline); margin-block: var(--s-2); background: var(--line); }
 
-/* Select trigger: 32 px, surface, control-edge border, 10 px chevron */
+/* Select trigger: 32 px, surface, 10 px chevron */
 .trigger {
   display: inline-flex;
   align-items: center;
@@ -57,8 +57,8 @@
   gap: var(--s-3);
   height: var(--h-select);
   max-width: 100%;
-  padding-inline: calc(var(--s-4) - var(--hairline));
-  border: var(--hairline) solid var(--control-edge);
+  padding-inline: var(--s-4);
+  border: 0;
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--ink);
@@ -67,12 +67,12 @@
   line-height: var(--lh-body-sm);
   white-space: nowrap;
   cursor: default;
-  transition: background-color var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
+  transition: background-color var(--t-fast), box-shadow var(--t-fast);
 }
 .trigger:hover, .trigger[data-force="hover"] { background: var(--surface-hover); }
 .trigger[data-state="open"], .trigger:active { background: var(--surface-pressed); }
 .trigger:focus-visible { box-shadow: var(--focus-ring); }
-.trigger:disabled { color: var(--control-edge); border-color: var(--line); background: var(--surface); }
+.trigger:disabled { color: var(--faint); background: var(--surface); }
 .trigger[data-placeholder] { color: var(--muted); }
 .full { width: 100%; }
 .value { overflow: hidden; text-overflow: ellipsis; }
@@ -82,6 +82,13 @@
 /* Highlight is the focus indicator inside menus. */
 .item:focus-visible { box-shadow: none; }
 .content:focus-visible { box-shadow: var(--shadow-2); }
+
+@media (prefers-contrast: more) {
+  .trigger {
+    border: var(--hairline) solid var(--line);
+    padding-inline: calc(var(--s-4) - var(--hairline));
+  }
+}
 
 @media (forced-colors: active) {
   .content { border-color: CanvasText; }
@@ -94,6 +101,9 @@
   }
   .item[data-highlighted] .itemShortcut { color: HighlightText; }
   .item[data-disabled] { color: GrayText; }
-  .trigger { border-color: ButtonText; }
+  .trigger {
+    border: var(--hairline) solid ButtonText;
+    padding-inline: calc(var(--s-4) - var(--hairline));
+  }
   .trigger:disabled { border-color: GrayText; color: GrayText; }
 }
