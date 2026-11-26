@@ -8,6 +8,7 @@ export interface ConfirmDialogProps {
   trigger?: ReactNode;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  onCloseAutoFocus?: (event: Event) => void;
   title: string;
   description?: ReactNode;
   /** A verb: "Delete meeting". */
@@ -23,6 +24,7 @@ export function ConfirmDialog({
   trigger,
   open,
   onOpenChange,
+  onCloseAutoFocus,
   title,
   description,
   confirmLabel,
@@ -35,7 +37,7 @@ export function ConfirmDialog({
       {trigger ? <RD.Trigger asChild>{trigger}</RD.Trigger> : null}
       <RD.Portal>
         <RD.Overlay className={s.overlay} />
-        <RD.Content className={s.content}>
+        <RD.Content className={s.content} onCloseAutoFocus={onCloseAutoFocus}>
           <RD.Title className={s.title}>{title}</RD.Title>
           {description ? <RD.Description className={s.description}>{description}</RD.Description> : null}
           {!description ? <RD.Description className="mn-sr-only">{title}</RD.Description> : null}

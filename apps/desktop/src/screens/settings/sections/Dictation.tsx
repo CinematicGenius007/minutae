@@ -24,6 +24,7 @@ import type { SectionProps } from "./types";
 
 const TOGGLE_DICTATION = "minutae --toggle-dictation";
 const TOGGLE_RECORDING = "minutae --toggle-recording";
+const RETENTION_SELECT_ID = "s-dictation-retention";
 const RETENTION_OPTIONS = [
   { value: "forever", label: "Forever" },
   ...[7, 30, 90].map((days) => ({ value: String(days), label: `${days} days` })),
@@ -145,6 +146,17 @@ export function DictationSection({ settings, update }: SectionProps) {
   // Inline error under the shortcut control: local validation or the backend's refusal.
   const [shortcutError, setShortcutError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [pendingRetention, setPendingRetention] = useState<number | null>(null);
+
+  const changeRetention = (value: string) => {
+    const days = value === "forever" ? null : Number(value);
+    if (days === settings.dictationRetentionDays) return;
+    if (days !== null && days < (settings.dictationRetentionDays ?? Infinity)) {
+      setPendingRetention(days);
+      return;
+    }
+    void update({ dictationRetentionDays: days });
+  };
 
   // Shortcut recorder: click the keycap, press the new combination; esc cancels.
   useEffect(() => {
@@ -256,16 +268,32 @@ export function DictationSection({ settings, update }: SectionProps) {
         />
         <SettingRow
           title="Keep dictations for"
-          htmlFor="s-dictation-retention"
+          htmlFor={RETENTION_SELECT_ID}
           description="Minutae deletes older dictation text and any saved audio."
           control={
             <Select
-              id="s-dictation-retention"
+              id={RETENTION_SELECT_ID}
               options={RETENTION_OPTIONS}
               value={settings.dictationRetentionDays?.toString() ?? "forever"}
-              onValueChange={(value) => update({ dictationRetentionDays: value === "forever" ? null : Number(value) })}
+              onValueChange={changeRetention}
             />
           }
+        />
+        <ConfirmDialog
+          open={pendingRetention !== null}
+          onOpenChange={(open) => {
+            if (!open) setPendingRetention(null);
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            document.getElementById(RETENTION_SELECT_ID)?.focus();
+          }}
+          title="Shorten dictation retention?"
+          description={`Minutae will permanently delete dictations older than ${pendingRetention} days, along with any saved audio. Text already typed into other apps stays.`}
+          confirmLabel="Shorten retention"
+          onConfirm={() => {
+            if (pendingRetention !== null) void update({ dictationRetentionDays: pendingRetention });
+          }}
         />
         <SettingRow
           title="Delete all dictations"

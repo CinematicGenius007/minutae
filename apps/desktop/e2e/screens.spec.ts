@@ -35,6 +35,14 @@ const liveMask = (page: Page) => [page.locator("canvas"), page.locator("[role=ti
 
 const TRAY_VIEWPORT = { width: 320, height: 520 };
 
+const retentionSelect = (page: Page) => page.getByRole("combobox", { name: "Keep dictations for" });
+const retentionDialog = (page: Page) => page.getByRole("dialog", { name: "Shorten dictation retention?" });
+
+async function chooseRetention(page: Page, name: string) {
+  await retentionSelect(page).click();
+  await page.getByRole("option", { name, exact: true }).click();
+}
+
 const SHOTS: Shot[] = [
   { name: "meetings", route: "/", ready: "Q2 Design Sync" },
   { name: "meetings-empty", route: "/", query: "state=empty" },
@@ -52,8 +60,9 @@ const SHOTS: Shot[] = [
     route: "/settings/dictation",
     query: "oldDictations",
     act: async (page) => {
-      await page.getByRole("combobox", { name: "Keep dictations for" }).click();
-      await page.getByRole("option", { name: "7 days" }).click();
+      await chooseRetention(page, "7 days");
+      await retentionDialog(page).getByRole("button", { name: "Shorten retention" }).click();
+      await expect(retentionSelect(page)).toHaveText("7 days");
       await page.getByRole("link", { name: "Dictate", exact: true }).click();
       await settle(page, "Keep for 7 days");
       await expect(page.getByText("Standup: finished the model")).toHaveCount(0);
@@ -64,9 +73,20 @@ const SHOTS: Shot[] = [
     name: "settings-dictation-retention-menu",
     route: "/settings/dictation",
     act: async (page) => {
-      await page.getByRole("combobox", { name: "Keep dictations for" }).click();
+      await retentionSelect(page).click();
       await expect(page.getByRole("option", { name: "Forever" })).toBeVisible();
       await expect(page.getByRole("option", { name: "90 days" })).toBeVisible();
+    },
+  },
+  {
+    name: "settings-dictation-retention-confirm",
+    route: "/settings/dictation",
+    act: async (page) => {
+      await chooseRetention(page, "7 days");
+      await expect(retentionDialog(page)).toHaveAccessibleDescription(
+        "Minutae will permanently delete dictations older than 7 days, along with any saved audio. Text already typed into other apps stays.",
+      );
+      await expect(retentionDialog(page).getByRole("button", { name: "Cancel" })).toBeFocused();
     },
   },
   {
@@ -261,6 +281,43 @@ test("⌘K on Dictate opens Library search", async ({ page, browserName }) => {
   await page.keyboard.press(browserName === "webkit" ? "Meta+k" : "Control+k");
   await expect(page).toHaveURL(/#\/library/);
   await expect(page.getByRole("searchbox").first()).toBeFocused();
+});
+
+test("cancel and Escape keep dictation retention and return focus to the select", async ({ page }) => {
+  await open(page, "light", "/settings/dictation", "oldDictations");
+  await chooseRetention(page, "7 days");
+  await retentionDialog(page).getByRole("button", { name: "Cancel" }).click();
+  await expect(retentionDialog(page)).toHaveCount(0);
+  await expect(retentionSelect(page)).toHaveText("Forever");
+  await expect(retentionSelect(page)).toBeFocused();
+
+  await chooseRetention(page, "7 days");
+  await expect(retentionDialog(page)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(retentionDialog(page)).toHaveCount(0);
+  await expect(retentionSelect(page)).toHaveText("Forever");
+  await expect(retentionSelect(page)).toBeFocused();
+
+  await page.getByRole("link", { name: "Dictate", exact: true }).click();
+  await expect(page.getByText("Standup: finished the model")).toBeVisible();
+});
+
+test("lengthening dictation retention saves immediately", async ({ page }) => {
+  await open(page, "light", "/settings/dictation");
+  await chooseRetention(page, "30 days");
+  await retentionDialog(page).getByRole("button", { name: "Shorten retention" }).click();
+  await expect(retentionSelect(page)).toHaveText("30 days");
+
+  await chooseRetention(page, "7 days");
+  await expect(retentionDialog(page)).toBeVisible();
+  await retentionDialog(page).getByRole("button", { name: "Cancel" }).click();
+  await expect(retentionSelect(page)).toHaveText("30 days");
+
+  for (const longer of ["90 days", "Forever"]) {
+    await chooseRetention(page, longer);
+    await expect(retentionSelect(page)).toHaveText(longer);
+    await expect(retentionDialog(page)).toHaveCount(0);
+  }
 });
 
 test("deleting dictations updates history after confirmation", async ({ page }) => {
