@@ -51,7 +51,8 @@ impl LineBreaks {
 
 /// A preset with editable rules. Verbatim and Code & commit preserve wording
 /// and case by bypassing prose cleanup and vocabulary substitution. They
-/// interpret explicit punctuation and line break phrases only when enabled.
+/// interpret spoken punctuation and line breaks only when enabled and prefixed
+/// with "insert", e.g. "insert colon" or "insert new line".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Shape {

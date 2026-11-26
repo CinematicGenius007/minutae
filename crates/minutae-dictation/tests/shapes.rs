@@ -143,12 +143,16 @@ fn literal_presets_protect_identifiers_and_shell_syntax() {
         ..ShapePreset::CodeAndCommit.shape()
     };
     assert_eq!(
-        process_with_shape("fix colon flush audio chunks every 30s", &code, &vocab),
+        process_with_shape(
+            "fix insert colon flush audio chunks every 30s",
+            &code,
+            &vocab
+        ),
         "fix: flush audio chunks every 30s"
     );
     assert_eq!(
-        process_with_shape("let [comma] = sys::fn_name", &code, &vocab),
-        "let [comma] = sys::fn_name"
+        process_with_shape("let comma = sys::fn_name", &code, &vocab),
+        "let comma = sys::fn_name"
     );
 }
 

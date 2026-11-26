@@ -375,6 +375,13 @@ fn match_command(
     shape: &Shape,
     literal: bool,
 ) -> Option<(usize, Command)> {
+    // Literal presets need an explicit cue so an identifier such as
+    // "comma" is still a word, even with spoken punctuation enabled.
+    if literal && !tokens.get(at)?.eq_ignore_ascii_case("insert") {
+        return None;
+    }
+    let prefix = usize::from(literal);
+    let start = at + prefix;
     COMMANDS.iter().find_map(|(words, command)| {
         let enabled = match command {
             Command::Break(_) => shape.line_breaks.honors_spoken_breaks(),
@@ -383,11 +390,11 @@ fn match_command(
         if !enabled {
             return None;
         }
-        let end = at + words.len();
+        let end = start + words.len();
         if end > tokens.len() {
             return None;
         }
-        let window = &tokens[at..end];
+        let window = &tokens[start..end];
         let hit = window.iter().zip(words.iter()).all(|(t, w)| {
             if literal {
                 t.eq_ignore_ascii_case(w)
@@ -399,7 +406,7 @@ fn match_command(
         let joined = window[..window.len() - 1]
             .iter()
             .all(|t| affixes(t).2.is_empty());
-        (hit && joined).then_some((words.len(), *command))
+        (hit && joined).then_some((prefix + words.len(), *command))
     })
 }
 
