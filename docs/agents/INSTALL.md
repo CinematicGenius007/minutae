@@ -21,13 +21,15 @@ Each release's notes link their own copy. Otherwise use `main`.
 
 ## 3. Pick the route
 
+No release has been published yet. Use [the source build guide](../install/source.md) until release assets are available.
+
 | Machine | Route | Follow |
 |---|---|---|
-| macOS 13+, arm64 or x86_64 | `install.sh` | [docs/install/macos.md](../install/macos.md) |
-| Windows 10/11 x64 | Scoop | [docs/install/windows.md](../install/windows.md) |
+| macOS 13+, arm64 or x86_64 | `install.sh` by default, Homebrew once the tap is available, or manual DMG | [docs/install/macos.md](../install/macos.md) |
+| Windows 10/11 x64 | Scoop when available, otherwise `install.ps1` | [docs/install/windows.md](../install/windows.md) |
 | Linux x86_64 | `install.sh` | [docs/install/linux.md](../install/linux.md) |
 | Linux arm64, or the person wants a build from code | from source | [docs/install/source.md](../install/source.md) |
-| Already installed | update through the **same** channel it came from | `check-update` prints the command (`scoop update minutae`, `install.sh`, or `git pull && … --from-source`) |
+| Already installed | update through the **same** channel it came from | Use `brew upgrade --cask minutae`, `scoop update minutae`, the original install script, or `git pull` and rebuild, as appropriate |
 
 Commands, exactly:
 
@@ -41,17 +43,19 @@ curl -fsSL https://raw.githubusercontent.com/CinematicGenius007/minutae/main/scr
 ```
 
 ```powershell
-# Windows (Scoop must be installed: https://scoop.sh)
+# Windows with Scoop
 scoop install https://github.com/CinematicGenius007/minutae/releases/latest/download/minutae.json
 scoop update minutae
+# Windows without Scoop (also updates an existing setup EXE install)
+irm https://raw.githubusercontent.com/CinematicGenius007/minutae/main/scripts/install.ps1 | iex
 ```
 
-Read `scripts/install.sh` before you run it if your rules ask you to review downloaded scripts; it's short and commented.
+Read the installer script first if your rules ask you to review downloaded scripts. For a Homebrew install, the person must approve the first launch in System Settings → Privacy & Security → Open Anyway. Windows 11 Smart App Control can block unsigned apps on either Windows route.
 
 ## 4. Verify
 
 - `check-update` reports `upToDate` with the version you installed.
-- macOS: `ls /Applications/Minutae.app ~/Applications/Minutae.app` (one exists). Linux: `ls ~/.local/bin/minutae`. Windows: `scoop list minutae`.
+- macOS: check for `Minutae.app` in `/Applications` or `~/Applications`, or use `brew list --cask minutae`. Linux: `ls ~/.local/bin/minutae`. Windows: `scoop list minutae` or check **Settings → Apps** for an EXE install.
 
 That's enough. **Don't launch Minutae to test it**: it asks for the microphone and system audio, and opening those is the person's choice. Tell them it's installed and that the first launch will ask for permissions.
 

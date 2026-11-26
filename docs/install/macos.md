@@ -1,49 +1,48 @@
 # Install on macOS
 
-Needs macOS 13 or later. Other people's audio is captured with a Core Audio process tap on macOS 14.4+, and with screen-capture audio (ScreenCaptureKit, needs Screen Recording) on 13.0–14.3.
+Needs macOS 13 or later on Apple silicon or Intel. Minutae uses a Core Audio process tap for meeting audio on macOS 14.4 and later and ScreenCaptureKit audio on macOS 13.0–14.3.
 
-## Install or update
+Release installs become available once the first release is published. For now, see [Build from source](source.md).
+
+## 1. Install with the shell script
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/CinematicGenius007/minutae/main/scripts/install.sh | sh
 ```
 
-The script:
+The script downloads the right DMG for your chip and verifies it against `SHA256SUMS.txt`. If you have a signed-in GitHub CLI, it also verifies the build attestation. It installs to `/Applications` or `~/Applications` if the former isn't writable. The script clears quarantine on `Minutae.app` so it opens without a Gatekeeper prompt.
 
-1. Asks GitHub for the latest release and downloads the `.dmg` for your chip (`aarch64` or `x64`).
-2. Checks it against the release's `SHA256SUMS.txt`. A mismatch stops the install. This catches a broken download, not a tampered release: the checksums come from the same page.
-3. If the GitHub CLI (`gh`) is installed and signed in, also runs `gh attestation verify`, which proves GitHub Actions built the file from this repository. A failure stops the install.
-4. Copies `Minutae.app` to `/Applications`, or `~/Applications` when `/Applications` isn't writable. It never uses `sudo`.
-5. Clears the download quarantine flag on the app. The new copy goes next to the old one first and replaces it only once it's complete, so a failed update leaves the old version in place.
+To update, quit Minutae and rerun the command. If the release includes updater signatures, you can also use **Settings → General → Check for updates** and choose **Install and restart**. The script accepts `--version 0.5.0`, `--dir <folder>` and `--dry-run` after `sh -s --`.
 
-Options: `--version 0.5.0` installs a specific release, `--dir <folder>` picks the folder, `--dry-run` only prints what would happen. Quit Minutae before updating.
+## 2. Install with Homebrew
 
-### Why the quarantine step
-
-Minutae isn't notarized by Apple (that needs a paid developer account). macOS blocks un-notarized apps that a browser downloaded. The script downloads the app itself and clears the flag only on `Minutae.app`; it doesn't change any system security setting.
-
-If you'd rather download the `.dmg` by hand from [Releases](https://github.com/CinematicGenius007/minutae/releases): drag Minutae to Applications, open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**.
-
-## Permissions
-
-On first use Minutae asks for:
-
-- **Microphone**: your side of a meeting, and dictation.
-- **System audio** (Screen & System Audio Recording): the other people on the call.
-- **Accessibility**: typing dictated text into other apps. Without it, dictation goes to the clipboard.
-
-When a release is signed with the project's certificate (set up once by the maintainer, see `docs/RELEASE.md`), macOS keeps these permissions across updates. A release built without it is signed ad hoc, and macOS asks again after that update. Builds from source are always ad hoc.
-
-## Check for updates
-
-Settings → General → **Check for updates**, or:
+This route becomes available when the maintainers publish the cask to their tap. With Homebrew 7.0.16 or later, run:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/CinematicGenius007/minutae/main/scripts/check-update.sh | sh
+brew tap CinematicGenius007/tap
+brew trust --cask CinematicGenius007/tap/minutae
+brew install --cask CinematicGenius007/tap/minutae
 ```
 
-It prints the installed and latest versions and the command to update. It installs nothing.
+Homebrew quarantines the new app. Try to open Minutae once, then go to **System Settings → Privacy & Security → Open Anyway** and confirm. Update and uninstall through Homebrew:
 
-## Uninstall
+```sh
+brew upgrade --cask minutae
+brew uninstall --cask minutae
+```
 
-Quit Minutae, then delete `Minutae.app` from Applications. To remove your data too, delete `~/Library/Minutae`.
+Homebrew carries the approval forward when the new bundle satisfies the old bundle's signing requirement. This works across releases signed with the project's same certificate. Use `brew upgrade` even if Minutae's settings offer the in-app updater. `brew uninstall --cask --zap minutae` removes app caches and saved window state and preserves `~/Library/Minutae/`.
+
+## 3. Download the DMG manually
+
+Download the matching DMG and `SHA256SUMS.txt` from [Releases](https://github.com/CinematicGenius007/minutae/releases). Compare `shasum -a 256 <downloaded-dmg>` with its checksum. Open the DMG, drag `Minutae.app` to Applications, and try opening the app. After the blocked launch, choose **System Settings → Privacy & Security → Open Anyway** and confirm.
+
+To update, use **Install and restart** if Settings offers it, or quit Minutae, verify the next DMG and replace the app. A manual replacement may require **Open Anyway** again.
+
+## Permissions and data
+
+On use, macOS can ask for microphone access for meetings and dictation, system audio access for the other people on a call, and Accessibility to paste dictated text. On macOS 13.0–14.3, system audio capture uses the Screen Recording permission. Without Accessibility, dictation goes to the clipboard.
+
+Releases signed with the same project certificate retain these permissions across updates. When a build is signed ad hoc, macOS can ask again after an update.
+
+For shell-script or DMG installs, quit Minutae and delete `Minutae.app` to uninstall. Your recordings and other data stay in `~/Library/Minutae/` by default.
