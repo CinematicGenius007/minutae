@@ -1,6 +1,6 @@
 # Build from source
 
-Free, needs no release, and nothing is downloaded from GitHub Releases. The first build takes 10–20 minutes (whisper.cpp and onnxruntime compile and link statically).
+You can build Minutae without a published app release. The first build compiles native dependencies and can take several minutes.
 
 ## Tools
 

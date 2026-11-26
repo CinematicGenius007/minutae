@@ -25,6 +25,7 @@ on:
       - "package.json"
       - "bun.lock"
       - ".cargo/**"
+      - "scripts/**"
       - ".github/workflows/v4.yml"
   pull_request:
     paths:
@@ -36,6 +37,7 @@ on:
       - "package.json"
       - "bun.lock"
       - ".cargo/**"
+      - "scripts/**"
       - ".github/workflows/v4.yml"
   workflow_dispatch:
 
@@ -128,18 +130,20 @@ jobs:
       - name: Desktop typecheck
         run: bun --cwd apps/desktop typecheck
 
-      # install.sh / check-update.sh / check-update.ps1 ship to users; keep them parseable.
+      # Install and release setup scripts should stay parseable.
       - name: Install scripts (shellcheck)
         if: runner.os == 'Linux'
-        run: shellcheck scripts/install.sh scripts/check-update.sh scripts/macos-self-signed-cert.sh
+        run: shellcheck scripts/install.sh scripts/check-update.sh scripts/macos-self-signed-cert.sh scripts/release-setup.sh
 
       - name: Install scripts (PowerShell parse + version compare)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/scripts/check-update.ps1", [ref]$null, [ref]$errors) | Out-Null
-          if ($errors) { $errors; exit 1 }
+          foreach ($scriptPath in 'scripts/check-update.ps1', 'scripts/install.ps1') {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile("$PWD/$scriptPath", [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { $errors; exit 1 }
+          }
           # No release may exist yet: 0 / 10 / 1 are all valid answers; anything else is a bug.
           pwsh -NoProfile -File scripts/check-update.ps1 -Current 0.0.1 -Json
           if ($LASTEXITCODE -notin 0, 1, 10) { exit 1 }
@@ -165,5 +169,34 @@ jobs:
         with:
           name: minutae-macos-debug-app
           path: target/debug/bundle/macos/*.app
+          if-no-files-found: warn
+          retention-days: 7
+
+  e2e:
+    name: Playwright (Chromium and WebKit)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      E2E_PORT: "14801"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.0"
+      - run: bun install --frozen-lockfile
+      - name: Install Playwright browsers
+        working-directory: apps/desktop
+        run: bunx --no-install playwright install chromium webkit
+      - name: Run desktop browser tests
+        run: bun run --cwd apps/desktop test:e2e
+      - name: Upload Playwright report and screenshot diffs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-macos-failure
+          path: |
+            apps/desktop/e2e/.report/
+            apps/desktop/e2e/.results/
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7

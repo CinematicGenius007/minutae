@@ -1,24 +1,25 @@
 # Releasing Minutae v4
 
-`.github/workflows/release.yml` builds macOS (Apple silicon + Intel `.dmg`), Windows (NSIS `-setup.exe`, `.msi`, and a portable `.zip` for Scoop) and Linux (`.AppImage`, `.deb`, `.rpm` on Ubuntu 22.04) and attaches them to a **draft** GitHub Release with `SHA256SUMS.txt` and the Scoop manifest `minutae.json`. You publish the draft by hand.
+`.github/workflows/release.yml` builds macOS (Apple silicon + Intel `.dmg`), Windows (NSIS `-setup.exe`, `.msi`, and a portable `.zip` for Scoop) and Linux (`.AppImage`, `.deb`, `.rpm` on Ubuntu 22.04). It attaches them to a **draft** GitHub Release along with `SHA256SUMS.txt`, `minutae.json` for Scoop, `minutae.rb` for Homebrew and the install and update-check scripts. Publish the draft by hand.
 
 **Releasing costs nothing.** There is no Apple Developer membership and no Windows code-signing certificate. What that means for users, and how we get around it:
 
 | Without | Effect | Our free answer |
 |---|---|---|
-| Apple notarization ($99/yr) | A `.dmg` downloaded in a browser is blocked by Gatekeeper | `scripts/install.sh` downloads the release itself and clears the quarantine flag, so Gatekeeper never sees it |
-| A paid signing identity | Ad-hoc signatures change every build, so macOS forgets mic / system-audio / accessibility permissions after each update | A **self-signed certificate** (`scripts/macos-self-signed-cert.sh`) used for every release keeps one identity |
-| Windows code signing | SmartScreen warns on the installer | Windows installs go through **Scoop**, which doesn't trigger SmartScreen |
+| Apple notarization | Gatekeeper blocks the first launch of a quarantined app | `scripts/install.sh` verifies the download and clears quarantine for Minutae. Homebrew and manual DMG installs use **Open Anyway** |
+| Stable macOS signing | With ad-hoc signing, macOS can ask for permissions again on each update | Use the same **self-signed certificate** for every release |
+| Windows code signing | A browser-downloaded installer can trigger SmartScreen | Scoop and PowerShell installs usually avoid the browser's download mark. Windows 11 Smart App Control can still block unsigned code |
 
 It works today with no secrets at all: macOS is ad-hoc signed and the app checks GitHub for new versions but can't install them itself. Each group of secrets below switches one thing on.
 
 ## Updates per install channel
 
-The app works out how it was installed (`apps/desktop/src-tauri/src/updater.rs`) and only ever shows one way to update:
+The app distinguishes direct releases, Scoop and source builds (`apps/desktop/src-tauri/src/updater.rs`). Homebrew installs use the same binary as direct releases. Update those copies with Homebrew:
 
 | Installed with | Detected by | Settings → Updates |
 |---|---|---|
-| Release download / `install.sh` | built with `MINUTAE_CHANNEL=release` | **Install and restart** when the updater key exists; otherwise shows the `install.sh` command (macOS/Linux) or the releases link (Windows) |
+| Release download / `install.sh` / `install.ps1` | built with `MINUTAE_CHANNEL=release` | **Install and restart** when the release includes updater signatures. Otherwise rerun your installer or download the next release |
+| Homebrew | app shows the same controls as a direct release | use `brew upgrade --cask minutae` so Homebrew tracks the installed version |
 | Scoop | exe under `…\scoop\apps\` | shows `scoop update minutae` |
 | Source build | anything else | shows `git pull && ./scripts/install.sh --from-source` |
 
@@ -42,16 +43,22 @@ The legacy Tauri v1 app has its own workflow, `release-legacy.yml`, on `legacy-v
 3. The `prepare` job fails if the tag and `Cargo.toml` disagree.
 4. When all jobs pass, open the draft release, write the notes, and **Publish**. The updater only sees published (non-draft, non-prerelease) releases: `releases/latest/download/latest.json`.
 
+After publishing the first stable release, update the install status in the README and install guides.
+
 Versions with a suffix (`0.5.0-beta.1`) are marked prerelease. MSI needs a plain `x.y.z` version; for a prerelease, expect only the NSIS installer on Windows.
 
-## What to create (all free)
+## Set up signing and the updater (free)
 
-| For | What | How |
-|---|---|---|
-| Stable macOS identity (permissions survive updates) | Self-signed code-signing certificate | `sh scripts/macos-self-signed-cert.sh` → three secrets (below) |
-| In-app "Install and restart" | Updater key pair | `bun --cwd apps/desktop tauri signer generate -w ~/.tauri/minutae.key` |
+On a Mac with the workspace dependencies installed and `gh` signed in with repository write access, run:
 
-Keep both in a password manager. Losing the certificate means users grant permissions once more; losing the updater key means installed copies can't self-update and users reinstall with `install.sh`.
+```sh
+sh scripts/release-setup.sh --dry-run
+sh scripts/release-setup.sh
+```
+
+The script asks before generating the certificate and updater key, and before writing each GitHub Actions secret or variable. It stores signing files under `~/minutae-signing` by default and reuses files already there. You can pass a different directory. If you have already released with either key, reuse the original signing material. The run summary identifies missing signing configuration and its effect on users.
+
+Back up the signing files and passwords. Losing the certificate means users grant permissions once more. Losing the updater key means existing installations need to update through their original installer.
 
 ### Hand-test once (owner)
 
@@ -69,8 +76,8 @@ Repository → Settings → Secrets and variables → Actions.
 
 | Secret | Value |
 |---|---|
-| `APPLE_CERTIFICATE` | base64 of the `.p12` from `scripts/macos-self-signed-cert.sh` (it copies it to the clipboard) |
-| `APPLE_CERTIFICATE_PASSWORD` | The password the script prints |
+| `APPLE_CERTIFICATE` | Base64 of the `.p12` from the certificate helper |
+| `APPLE_CERTIFICATE_PASSWORD` | The `.p12` password from the helper's private password file when run through `release-setup.sh` |
 | `APPLE_SIGNING_IDENTITY` | `Minutae Self-Signed` (required: the certificate isn't trusted by macOS, so Tauri can't find it on its own) |
 
 Checked locally: `codesign` signs with the untrusted self-signed identity, and the designated requirement is `identifier "com.nebula.minutae" and certificate leaf = H"<cert hash>"`, the same for every build.
@@ -112,9 +119,9 @@ When all six are set, the workflow installs `trusted-signing-cli` and adds `bund
 
 | Kind | Name | Value |
 |---|---|---|
-| Secret | `TAURI_SIGNING_PRIVATE_KEY` | Contents of `~/.tauri/minutae.key` |
+| Secret | `TAURI_SIGNING_PRIVATE_KEY` | Contents of the updater private key (`minutae.key`) |
 | Secret | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Its password (omit if none) |
-| Variable | `TAURI_UPDATER_PUBKEY` | Contents of `~/.tauri/minutae.key.pub` |
+| Variable | `TAURI_UPDATER_PUBKEY` | Contents of the updater public key (`minutae.key.pub`) |
 
 Instead of the variable you can commit the public key to `apps/desktop/src-tauri/tauri.conf.json` → `plugins.updater.pubkey` (it is public). Committing it also turns updates on for local release builds.
 
@@ -134,6 +141,12 @@ scoop install https://github.com/CinematicGenius007/minutae/releases/latest/down
 
 Scoop remembers that URL and re-reads it on `scoop update minutae`. The manifest has `checkver` / `autoupdate`, so it can move into a bucket repo later (`scoop bucket add minutae <repo>`) without changes. Generated by `scripts/scoop-manifest.ts`.
 
+### Homebrew
+
+Create `CinematicGenius007/homebrew-tap` as a public repository before offering Homebrew installs. After publishing each stable release, copy its `minutae.rb` asset to `Casks/minutae.rb` in that tap and push the change. This is a manual step. `brew livecheck` reports a newer stable release, and `brew upgrade` uses the version and checksums from the tap.
+
+Homebrew 7.0.16 requires trust for non-official casks and quarantines them on install. The [macOS install guide](install/macos.md) shows how to trust this cask and approve its first launch. Homebrew checks the new bundle against the old bundle's designated signing requirement before carrying that approval forward. Use the same self-signed certificate from the first release onward.
+
 ## How it fits together
 
 | Piece | Where |
@@ -141,7 +154,9 @@ Scoop remembers that URL and re-reads it on `scoop update minutae`. The manifest
 | Release workflow | `.github/workflows/release.yml` |
 | Per-build config overlay (updater on, Windows signCommand) | `scripts/release-config.ts` → `tauri build --config src-tauri/tauri.release.conf.json` |
 | Self-signed macOS certificate | `scripts/macos-self-signed-cert.sh` |
+| Interactive GitHub signing setup | `scripts/release-setup.sh` |
 | Scoop manifest | `scripts/scoop-manifest.ts` (run by the `checksums` job) |
+| Homebrew cask | `scripts/homebrew-cask.ts` (run by the `checksums` job) |
 | Version check / bump | `scripts/version.ts` |
 | Hardened runtime, entitlements, usage strings | `tauri.conf.json` `bundle.macOS`, `Entitlements.plist`, `Info.plist` |
 | Linux runtime packages | `tauri.conf.json` `bundle.linux.deb.depends` / `rpm.depends` (WebKitGTK and GTK are added by Tauri) |
@@ -153,7 +168,7 @@ Native libraries: whisper.cpp and sherpa-onnx/onnxruntime are linked **staticall
 
 - Every action in `release.yml` and `v4.yml` is pinned to a commit SHA (the tag is in a comment). To update one, resolve the new tag with `gh api repos/<owner>/<action>/commits/<tag> --jq .sha`.
 - Workflows are read-only by default. Only the `build` and `checksums` jobs get `contents: write`, to upload release files.
-- Signing secrets are exported only in the step right before the Tauri build, and cleared right after it. Earlier steps (tool installs, the config overlay) never see them. Dependency build scripts still run in that build step; that can't be avoided without splitting compile and signing.
+- The config overlay sees only a flag indicating whether the updater private key is present. Signing secrets are exported in the step before the Tauri build and cleared immediately after it. Dependency build scripts still run in the Tauri build step.
 - The `checksums` job attests build provenance for every file in `SHA256SUMS.txt` (free on public repos). Anyone can check a download with `gh attestation verify <file> --repo CinematicGenius007/minutae`. `install.sh` does this automatically when `gh` is signed in. `SHA256SUMS.txt` on its own only catches corrupt downloads, because it sits on the same release page as the files.
 - Updates waiting to restart: on macOS and Linux the installed update waits for any recording or dictation to finish before the app restarts. On Windows the installer closes the app itself, so the app checks for a recording only before the download starts.
 
@@ -171,4 +186,4 @@ APPLE_SIGNING_IDENTITY=- TAURI_SIGNING_PRIVATE_KEY="$(cat /tmp/k.key)" TAURI_SIG
   bun --cwd apps/desktop tauri build --debug --bundles app,dmg --config /tmp/release.conf.json
 ```
 
-`actionlint .github/workflows/release.yml` checks the workflow syntax.
+`actionlint .github/workflows/release.yml .github/workflows/v4.yml` checks workflow syntax. The `v4` workflow runs Playwright's Chromium and WebKit suites on `macos-latest` and uploads the report and screenshot diffs on failure. macOS image or browser rendering changes can affect screenshots made on a different Mac.
