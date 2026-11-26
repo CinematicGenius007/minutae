@@ -5,10 +5,10 @@
   height: 24px;
   min-width: 24px;
   padding-inline: 7px;
-  border: var(--hairline) solid var(--line-strong);
+  border: var(--hairline) solid var(--control-edge);
   border-radius: calc(var(--radius-sm) - 1px);
   background: var(--raised);
-  box-shadow: 0 1.5px 0 var(--line-strong);
+  box-shadow: 0 1.5px 0 var(--control-edge);
   color: var(--ink);
   font-family: var(--font-mono);
   font-size: var(--fs-meta);

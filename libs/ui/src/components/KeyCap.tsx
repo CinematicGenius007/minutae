@@ -13,7 +13,20 @@ export function KeyCap({ size = "md", className, ...rest }: KeyCapProps) {
   return <kbd className={cx(s.cap, size === "lg" && s.lg, className)} {...rest} />;
 }
 
-const SPOKEN: Record<string, string> = { "⌘": "Command", "⌥": "Option", "⌃": "Control", "⇧": "Shift", "⏎": "Return" };
+const SPOKEN: Record<string, string> = {
+  "⌘": "Command",
+  "⌥": "Option",
+  "⌃": "Control",
+  "⇧": "Shift",
+  "⏎": "Return",
+  "↑": "Up",
+  "↓": "Down",
+  "←": "Left",
+  "→": "Right",
+  "⌫": "Backspace",
+  "⌦": "Delete",
+  esc: "Escape",
+};
 
 export interface ShortcutProps {
   /** Platform-neutral shortcut: "mod+k", "alt+space", "mod+,". */

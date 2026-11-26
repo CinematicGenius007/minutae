@@ -37,7 +37,7 @@
 .trigger[data-state="active"]::after { opacity: 1; }
 .trigger:focus-visible { box-shadow: none; }
 .trigger:focus-visible .text { border-radius: var(--s-1); box-shadow: var(--focus-ring); }
-.trigger:disabled { color: var(--faint); cursor: default; }
+.trigger:disabled { color: var(--control-edge); cursor: default; }
 
 /* Reserve bold width so tabs don't shift when activated. */
 .text { display: inline-grid; }
@@ -57,4 +57,11 @@
   font-weight: var(--fw-regular);
   color: var(--muted);
 }
-.content:focus-visible { outline: none; border-radius: var(--radius-sm); box-shadow: var(--focus-ring); }
+.content:focus-visible { outline: 2px solid transparent; outline-offset: 2px; border-radius: var(--radius-sm); box-shadow: var(--focus-ring); }
+
+@media (forced-colors: active) {
+  .trigger[data-state="active"] { forced-color-adjust: none; color: Highlight; }
+  .trigger[data-state="active"]::after { forced-color-adjust: none; background: Highlight; }
+  .trigger:disabled { color: GrayText; }
+  .content:focus-visible { outline-color: Highlight; }
+}

@@ -42,8 +42,14 @@ function EditableTitle({ id, title, onRenamed }: { id: string; title: string; on
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(title);
   const cancelled = useRef(false);
+  const restoreFocus = useRef(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
   const commit = async () => {
     setEditing(false);
+    if (restoreFocus.current) {
+      restoreFocus.current = false;
+      requestAnimationFrame(() => btnRef.current?.focus());
+    }
     const next = value.trim();
     if (cancelled.current || !next || next === title) return;
     onRenamed(next);
@@ -67,20 +73,26 @@ function EditableTitle({ id, title, onRenamed }: { id: string; title: string; on
           onFocus={(e) => e.currentTarget.select()}
           onBlur={() => void commit()}
           onKeyDown={(e) => {
-            if (e.key === "Enter") e.currentTarget.blur();
+            if (e.key === "Enter") {
+              restoreFocus.current = true;
+              e.currentTarget.blur();
+            }
             if (e.key === "Escape") {
               cancelled.current = true;
+              restoreFocus.current = true;
               e.currentTarget.blur();
             }
           }}
         />
       ) : (
         <button
+          ref={btnRef}
           type="button"
           className={s.titleButton}
           title="Rename"
           onClick={() => {
             cancelled.current = false;
+            restoreFocus.current = false;
             setValue(title);
             setEditing(true);
           }}

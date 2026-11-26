@@ -1,4 +1,4 @@
-import { type ButtonHTMLAttributes, type Ref, useMemo } from "react";
+import { type ButtonHTMLAttributes, type Ref, useEffect, useRef, useState } from "react";
 import { cx } from "../lib/cx";
 import { formatDuration } from "../lib/format";
 import { formatShortcut, type Platform } from "../lib/platform";
@@ -43,10 +43,17 @@ export function RecordPill({
   ...rest
 }: RecordPillProps) {
   const minutes = Math.floor(elapsedMs / 60_000);
-  const announcement = useMemo(
-    () => (live ? `Recording, ${minutes} ${minutes === 1 ? "minute" : "minutes"}` : ""),
-    [live, minutes],
-  );
+  const wasLive = useRef(live);
+  const [announcement, setAnnouncement] = useState("");
+  useEffect(() => {
+    if (live) {
+      if (!wasLive.current || minutes === 0) setAnnouncement("Recording started");
+      else setAnnouncement(`Recording, ${minutes} ${minutes === 1 ? "minute" : "minutes"}`);
+    } else if (wasLive.current) {
+      setAnnouncement("Recording stopped");
+    }
+    wasLive.current = live;
+  }, [live, minutes]);
   // The accessible name is the visible label (WCAG 2.5.3), plus an optional hidden hint.
   // The minute announcement sits outside the button so it doesn't change the name.
   return (

@@ -37,6 +37,26 @@ export function DropdownMenu({ trigger, items, align = "start", platform }: Drop
             it === "separator" ? (
               // biome-ignore lint/suspicious/noArrayIndexKey: separators have no identity
               <DM.Separator key={`sep-${i}`} className={m.separator} />
+            ) : it.checked !== undefined ? (
+              <DM.CheckboxItem
+                key={it.label}
+                className={cx(m.item, it.destructive && m.danger)}
+                checked={it.checked}
+                disabled={it.disabled}
+                onCheckedChange={() => it.onSelect?.()}
+              >
+                <span className={m.check} aria-hidden>
+                  <DM.ItemIndicator>
+                    <Check size={12} strokeWidth={3} aria-hidden />
+                  </DM.ItemIndicator>
+                </span>
+                <span className={m.itemText}>{it.label}</span>
+                {it.shortcut ? (
+                  <span className={m.itemShortcut} aria-hidden>
+                    {formatShortcut(it.shortcut, platform)}
+                  </span>
+                ) : null}
+              </DM.CheckboxItem>
             ) : (
               <DM.Item
                 key={it.label}
@@ -44,9 +64,13 @@ export function DropdownMenu({ trigger, items, align = "start", platform }: Drop
                 disabled={it.disabled}
                 onSelect={it.onSelect}
               >
-                {hasChecks ? <span className={m.check}>{it.checked ? <Check size={12} strokeWidth={3} /> : null}</span> : null}
+                {hasChecks ? <span className={m.check} aria-hidden /> : null}
                 <span className={m.itemText}>{it.label}</span>
-                {it.shortcut ? <span className={m.itemShortcut}>{formatShortcut(it.shortcut, platform)}</span> : null}
+                {it.shortcut ? (
+                  <span className={m.itemShortcut} aria-hidden>
+                    {formatShortcut(it.shortcut, platform)}
+                  </span>
+                ) : null}
               </DM.Item>
             ),
           )}

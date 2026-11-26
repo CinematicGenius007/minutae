@@ -19,8 +19,8 @@
 .pill:hover, .pill[data-force="hover"] { background: var(--ink-hover); }
 .pill:active, .pill[data-force="pressed"] { background: var(--ink-pressed); }
 .pill:focus-visible, .pill[data-force="focus"] { box-shadow: var(--focus-ring); }
-.pill:disabled { background: var(--surface); color: var(--faint); cursor: default; }
-.pill:disabled .dot { background: var(--faint); }
+.pill:disabled { background: var(--surface); color: var(--control-edge); cursor: default; }
+.pill:disabled .dot { background: var(--control-edge); }
 
 .live { background: var(--onair-fill); color: var(--on-onair); }
 .live:hover, .live[data-force="hover"] { background: color-mix(in srgb, var(--onair-fill) 90%, black); }
@@ -39,3 +39,13 @@
 }
 .shortcut { color: var(--on-ink-muted); }
 .timer { color: var(--on-onair); }
+
+@media (forced-colors: active) {
+  .pill { border: var(--hairline) solid ButtonText; }
+  .dot { forced-color-adjust: none; background: ButtonText; }
+  .live { forced-color-adjust: none; background: Highlight; color: HighlightText; border: 2px solid Highlight; }
+  .live .timer { color: HighlightText; }
+  .stop { forced-color-adjust: none; background: HighlightText; }
+  .pill:disabled { border-color: GrayText; color: GrayText; }
+  .pill:disabled .dot { background: GrayText; }
+}

@@ -21,6 +21,7 @@
 .links { display: flex; flex-direction: column; gap: var(--s-4); }
 .links li { display: flex; }
 .link {
+  position: relative;
   display: inline-flex;
   font-size: var(--fs-body);
   line-height: var(--lh-body);
@@ -28,6 +29,11 @@
   text-decoration: none;
   border-radius: var(--s-2);
   transition: color var(--t-fast);
+}
+.link::after {
+  content: "";
+  position: absolute;
+  inset: -4px 0;
 }
 /* Reserve the bold width so the column never shifts. */
 .link span { display: inline-flex; flex-direction: column; }
@@ -83,7 +89,8 @@
 .modelRow:hover .reveal, .reveal:focus-within { opacity: 1; }
 .modelRow:hover .installedHides, .modelState:focus-within .installedHides { visibility: hidden; }
 .progressCaption { font-family: var(--font-mono); font-size: var(--fs-meta-sm); line-height: var(--lh-meta-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
-.progressCaption button { font: inherit; color: inherit; text-decoration: underline; text-underline-offset: 2px; border-radius: var(--s-1); }
+.progressCaption button { position: relative; font: inherit; color: inherit; text-decoration: underline; text-underline-offset: 2px; border-radius: var(--s-1); }
+.progressCaption button::after { content: ""; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); min-width: 28px; min-height: 28px; width: 100%; height: 100%; }
 .progressCaption button:hover { color: var(--ink); }
 
 /* Provider list (Summaries) */
@@ -99,6 +106,7 @@
 .provider[data-dragging] { opacity: .5; }
 .provider[data-over] { box-shadow: inset 0 2px 0 var(--ink); }
 .handle {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -106,10 +114,11 @@
   height: 28px;
   margin-inline: calc(var(--s-1) * -1);
   border-radius: var(--s-2);
-  color: var(--faint);
+  color: var(--muted);
   cursor: grab;
 }
-.handle:hover { color: var(--muted); background: var(--surface); }
+.handle::after { content: ""; position: absolute; inset: 0 -4px; }
+.handle:hover { color: var(--ink); background: var(--surface); }
 .handle:active { cursor: grabbing; }
 .providerNo { flex-shrink: 0; width: var(--s-6); font-family: var(--font-mono); font-size: var(--fs-meta-lg); line-height: var(--lh-body-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
 .providerText { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: var(--s-1); }
@@ -136,7 +145,7 @@
   transition: background-color var(--t-fast);
 }
 .addBtn:hover { background: var(--ink-hover); }
-.addBtn:disabled { background: var(--surface); color: var(--faint); }
+.addBtn:disabled { background: var(--surface); color: var(--control-edge); }
 .tags { display: flex; flex-wrap: wrap; gap: var(--s-3); }
 
 /* Shortcut recorder keycap */
@@ -148,10 +157,10 @@
   height: 32px;
   min-width: 56px;
   padding-inline: 14px;
-  border: var(--hairline) solid var(--line-strong);
+  border: var(--hairline) solid var(--control-edge);
   border-radius: var(--radius-sm);
   background: var(--raised);
-  box-shadow: 0 1.5px 0 var(--line-strong);
+  box-shadow: 0 1.5px 0 var(--control-edge);
   font-family: var(--font-mono);
   font-size: var(--fs-body-sm);
   line-height: var(--lh-body-sm);
@@ -162,7 +171,7 @@
 .capButton:hover { border-color: var(--muted); }
 .capRecording { border-color: var(--ink); box-shadow: var(--halo); color: var(--muted); }
 .capInvalid, .capInvalid:hover { border-color: var(--destructive); }
-.capButton:disabled { color: var(--faint); cursor: default; }
+.capButton:disabled { color: var(--control-edge); cursor: default; }
 .fieldError { display: block; margin-top: var(--s-1); color: var(--destructive); }
 
 /* Storage */
@@ -244,4 +253,15 @@
   .layout { flex-direction: column; gap: var(--s-9); }
   .index { position: static; width: auto; }
   .links { flex-direction: row; flex-wrap: wrap; gap: var(--s-5); }
+}
+
+@media (forced-colors: active) {
+  .linkActive { forced-color-adjust: none; color: Highlight; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; }
+  .bar { border: var(--hairline) solid CanvasText; }
+  .segRec { forced-color-adjust: none; background: Highlight; }
+  .segModels { forced-color-adjust: none; background: CanvasText; }
+  .segIndex { forced-color-adjust: none; background: GrayText; }
+  .day { forced-color-adjust: none; background: CanvasText; }
+  .dayFuture { forced-color-adjust: none; background: GrayText; }
+  .addBtn:disabled, .capButton:disabled { color: GrayText; border-color: GrayText; }
 }

@@ -31,12 +31,13 @@ Every UI decision has to pass all seven.
 |---|---|---|---|
 | `--bg` | `#FFFFFF` | `#0D0D0C` | Window and sidebar ground |
 | `--ink` | `#111111` | `#EDEDE8` | Primary text, primary fills, group rules, icons |
-| `--muted` | `#6B6B6B` | `#8E8E88` | Secondary text, metadata, inactive nav |
-| `--faint` | `#B5B5B0` | `#4A4A47` | Disabled text, placeholder tails, drag handles |
+| `--muted` | `#6B6B6B` | `#9A9A94` | Secondary text, metadata, inactive nav, placeholders, live partial captions |
+| `--faint` | `#B5B5B0` | `#4A4A47` | Disabled fills and purely decorative elements (unplayed waveform bars, off dots) — never readable text |
 | `--surface` | `#F4F4F2` | `#181817` | Fields, selected nav item, side panes |
 | `--raised` | `#FFFFFF` | `#2A2A28` | Menus, segmented thumb, keycaps, toggle knob track contrast |
 | `--line` | `#E6E6E3` | `#262624` | Row hairlines, secondary borders |
-| `--line-strong` | `#D9D9D5` | `#3A3A38` | Keycap borders, off-toggle track, radio outline |
+| `--line-strong` | `#D9D9D5` | `#3A3A38` | Scrollbar thumbs, subtle dividers, dark elevation hairlines |
+| `--control-edge` | `#8A8A85` | `#6E6E69` | Control boundaries that must reach 3:1 (off toggle track, checkbox/radio outlines, fields, keycaps, secondary button/chip/select borders) and readable disabled text |
 | `--on-ink` | `#FFFFFF` | `#0D0D0C` | Text and icons on an `--ink` fill |
 | `--onair` | `#FF3B1F` | `#FF4A2E` | Recording state only |
 | `--onair-fill` | `#DB2F17` | `#DB2F17` | Filled recording surfaces that carry text or icons (live record pill, record button). White on it is 4.74:1 |
@@ -50,7 +51,7 @@ Every UI decision has to pass all seven.
 - **The ratio is 90 / 9 / 1.** About 90% `--bg` and `--surface`, 9% `--ink` and `--muted` text, at most 1% `--onair` (and only while recording).
 - **No other colours.** No gradients and no tints of the accent. A screen that needs another colour needs a different design.
 - **Dark mode is not inverted light mode.** Both palettes are tuned by hand. Always use tokens, never raw hex values in components.
-- **Contrast.** Body text must reach WCAG AA (4.5:1) on its background in both modes. Mono labels at 11 px also need 4.5:1, which is why `--muted` is not lighter.
+- **Contrast.** Body text must reach WCAG AA (4.5:1) on its background in both modes; non-text control boundaries and focus indicators must reach 3:1 (`--control-edge`). Mono labels at 11 px also need 4.5:1, which is why `--muted` is not lighter. Under `prefers-contrast: more`, hairlines (`--line`), control edges (`--control-edge`) and `--muted` are strengthened via tokens. Under `forced-colors: active` (Windows Contrast Themes), focus rings survive via a 2 px transparent outline and selected/checked/on states use system `Highlight`/`HighlightText`.
 - **Status = dot + word.** Never colour alone (●Ready, ●On air, ●Off).
 
 ---
@@ -164,24 +165,24 @@ Minimum window size: 960 × 640.
 
 **Every interactive component has six states:** default, hover, pressed, focus-visible, disabled, and loading where it applies.
 
-**Focus ring:** `0 0 0 2px --bg, 0 0 0 4px --ink` (offset ring). Never remove an outline without replacing it.
+**Focus ring:** `0 0 0 2px --bg, 0 0 0 4px --ink` (offset ring) paired with `outline: 2px solid transparent; outline-offset: 2px` so the ring survives `forced-colors: active`. Never remove an outline without replacing it.
 
 | Component | Height | Spec | Notes |
 |---|---|---|---|
 | Button / primary | 36 (52 hero) | `--ink` fill, `--on-ink` text 14/500, pill | One per view. Hover lightens 15% |
-| Button / secondary | 36 | 1 px `--line` border, `--ink` text | |
+| Button / secondary | 36 | 1 px `--control-edge` border, `--ink` text | |
 | Button / quiet | — | Underlined text | "Change", "Retry", "Show in Finder" |
 | Button / destructive | — | Underlined `--destructive` text plus a confirm dialog | Never filled |
 | Record pill | 48 | Idle: `--ink` fill with an `--onair` dot. Live: `--onair` fill, stop square, mono timer | Always bottom of the sidebar |
-| Text field | 40 | `--surface` fill, radius 6, 15 px. Focus: `--raised` fill, 1.5 px `--ink` border plus a 4 px 6%-ink halo | Label above (13/500), help or error below (13) |
-| Search | 36 | `--surface`, leading icon, trailing shortcut in mono | ⌘K / Ctrl+K anywhere |
-| Select | 32 | `--surface`, chevron 10 px; the menu is `--raised`, radius 10, `--shadow-2`, rows 32, checkmark lane 14 | Keyboard: ↑↓ ⏎ esc, type-ahead |
-| Segmented | 34 | `--surface` track, 3 px padding; `--raised` thumb with `--shadow-1` | 2–4 options. Use a select for more |
+| Text field | 40 | `--surface` fill, 1 px `--control-edge` border, radius 6, 15 px. Focus: `--raised` fill, 1.5 px `--ink` border plus a 4 px 6%-ink halo | Label above (13/500), help or error below (13) |
+| Search | 36 | `--surface`, 1 px `--control-edge` border, leading icon, trailing shortcut in mono | ⌘K / Ctrl+K anywhere |
+| Select | 32 | `--surface`, 1 px `--control-edge` border, chevron 10 px; the menu is `--raised`, radius 10, `--shadow-2`, rows 32, checkmark lane 14 | Keyboard: ↑↓ ⏎ esc, type-ahead |
+| Segmented | 34 | `--surface` track with 1 px `--control-edge` border; `--raised` thumb with `--shadow-1` | 2–4 options. Use a select for more |
 | Tabs | 32 | Text 15; active is 600 weight with a 2 px `--ink` underline; the row has a 1 px `--line` base | Switch views, never values |
-| Toggle | 24 × 40 | On: `--ink` track. Off: `--line-strong` | Applies instantly. No Save buttons |
-| Checkbox / radio | 18 | 1.5 px `--ink` outline; checked is an `--ink` fill with an `--on-ink` check | |
-| Chip / filter | 30 | Selected: `--ink` fill. Unselected: 1 px `--line` | Tags: `--surface` fill with a × |
-| Keycap | 24–32 | `--raised`, 1 px `--line-strong` plus a 1.5 px bottom shadow, mono | |
+| Toggle | 24 × 40 | On: `--ink` track. Off: `--control-edge` | Applies instantly. No Save buttons |
+| Checkbox / radio | 18 | 1.5 px `--control-edge` outline; checked is an `--ink` fill/ring with an `--on-ink` check | |
+| Chip / filter | 30 | Selected: `--ink` fill. Unselected: 1 px `--control-edge` | Tags: `--surface` fill with a × (28 × 28 hit target) |
+| Keycap | 24–32 | `--raised`, 1 px `--control-edge` plus a 1.5 px bottom shadow, mono | |
 | Status dot | 6 | Colour plus word | |
 | Progress | 3 | `--line` track, `--ink` fill, mono caption | Never a spinner if progress is known |
 | Toast | 44 | `--hud`, white text, optional Undo, bottom-centre, 4 s | One at a time |
@@ -264,6 +265,7 @@ Shortcut mapping: ⌘ → Ctrl, ⌥ → Alt everywhere except the dictation hold
   /* colour, light */
   --bg: #FFFFFF; --ink: #111111; --muted: #6B6B6B; --faint: #B5B5B0;
   --surface: #F4F4F2; --raised: #FFFFFF; --line: #E6E6E3; --line-strong: #D9D9D5;
+  --control-edge: #8A8A85;
   --on-ink: #FFFFFF; --onair: #FF3B1F; --onair-fill: #DB2F17; --on-onair: #FFFFFF;
   --destructive: #C8321F; --ok: #2BB673; --hud: #111111;
 
@@ -291,16 +293,35 @@ Shortcut mapping: ⌘ → Ctrl, ⌥ → Alt everywhere except the dictation hold
 }
 
 :root[data-theme="dark"] {
-  --bg: #0D0D0C; --ink: #EDEDE8; --muted: #8E8E88; --faint: #4A4A47;
+  --bg: #0D0D0C; --ink: #EDEDE8; --muted: #9A9A94; --faint: #4A4A47;
   --surface: #181817; --raised: #2A2A28; --line: #262624; --line-strong: #3A3A38;
+  --control-edge: #6E6E69;
   --on-ink: #0D0D0C; --onair: #FF4A2E; --onair-fill: #DB2F17; --destructive: #F0624D; --hud: #262624;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0D0D0C; --ink: #EDEDE8; --muted: #8E8E88; --faint: #4A4A47;
+    --bg: #0D0D0C; --ink: #EDEDE8; --muted: #9A9A94; --faint: #4A4A47;
     --surface: #181817; --raised: #2A2A28; --line: #262624; --line-strong: #3A3A38;
+    --control-edge: #6E6E69;
     --on-ink: #0D0D0C; --onair: #FF4A2E; --onair-fill: #DB2F17; --destructive: #F0624D; --hud: #262624;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --muted: #4A4A47; --line: #8A8A85; --line-strong: #6B6B6B;
+    --control-edge: #595956; --destructive: #A62212;
+  }
+  :root[data-theme="dark"] {
+    --muted: #BDBDB7; --line: #6E6E69; --line-strong: #8E8E88;
+    --control-edge: #9A9A94; --destructive: #FF7A66;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --muted: #BDBDB7; --line: #6E6E69; --line-strong: #8E8E88;
+      --control-edge: #9A9A94; --destructive: #FF7A66;
+    }
   }
 }
 ```

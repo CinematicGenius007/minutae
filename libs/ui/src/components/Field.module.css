@@ -21,8 +21,8 @@
   align-items: center;
   gap: var(--s-3);
   height: var(--h-field);
-  padding-inline: calc(var(--s-4) - var(--rule-strong));
-  border: var(--rule-strong) solid transparent;
+  padding-inline: calc(var(--s-4) - var(--hairline));
+  border: var(--hairline) solid var(--control-edge);
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--ink);
@@ -33,14 +33,17 @@
 .box:focus-within, .box[data-force="focus"] {
   background: var(--raised);
   border-color: var(--ink);
-  box-shadow: var(--halo);
+  box-shadow: inset 0 0 0 0.5px var(--ink), var(--halo);
+  outline: 2px solid transparent;
+  outline-offset: 2px;
 }
 .invalid, .invalid:hover, .invalid:focus-within {
   background: var(--raised);
   border-color: var(--destructive);
+  box-shadow: inset 0 0 0 0.5px var(--destructive);
 }
-.invalid:focus-within { box-shadow: 0 0 0 4px color-mix(in srgb, var(--destructive) 10%, transparent); }
-.disabled, .disabled:hover { background: var(--surface); color: var(--faint); cursor: not-allowed; }
+.invalid:focus-within { box-shadow: inset 0 0 0 0.5px var(--destructive), 0 0 0 4px color-mix(in srgb, var(--destructive) 10%, transparent); }
+.disabled, .disabled:hover { background: var(--surface); border-color: var(--line); color: var(--control-edge); cursor: not-allowed; }
 
 .input {
   flex: 1;
@@ -56,10 +59,10 @@
   line-height: var(--lh-body);
   caret-color: var(--ink);
 }
-.input:focus-visible { box-shadow: none; }
+.input:focus-visible { box-shadow: none; outline: none; }
 .input::placeholder { color: var(--placeholder); opacity: 1; }
-.input:disabled { cursor: not-allowed; color: var(--faint); }
-.input:disabled::placeholder { color: var(--faint); }
+.input:disabled { cursor: not-allowed; color: var(--control-edge); }
+.input:disabled::placeholder { color: var(--control-edge); }
 .mono { font-family: var(--font-mono); font-size: var(--fs-body-sm); }
 
 .adornment { display: inline-flex; align-items: center; color: var(--muted); flex-shrink: 0; }
@@ -69,3 +72,8 @@
 .search .input { font-size: var(--fs-body-sm); line-height: var(--lh-body-sm); }
 .search .input::-webkit-search-cancel-button { appearance: none; display: none; }
 .search .input::-webkit-search-decoration { appearance: none; }
+
+@media (forced-colors: active) {
+  .box:focus-within, .box[data-force="focus"] { outline-color: Highlight; border-color: Highlight; }
+  .disabled, .input:disabled { border-color: GrayText; color: GrayText; }
+}

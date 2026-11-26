@@ -521,3 +521,121 @@ test("search params live in the hash and don't come back from the sidebar", asyn
   await expect(page).toHaveURL(/#\/library$/);
   await expect(page.getByRole("searchbox", { name: "Search or ask" })).toHaveValue("");
 });
+
+// ── Accessibility pass: cloud planned + forced-colors focus visibility ──────
+
+test("Settings → Transcription: Cloud is visibly disabled, planned, unreachable, and exposes its reason", async ({ page }) => {
+  await page.goto(url("/settings/transcription"));
+  await settle(page, "Where it runs");
+
+  await expect(page.getByText(/Runs on this (Mac|PC|computer), free, private and offline\. Cloud transcription is planned for a future release\./)).toBeVisible();
+
+  const group = page.getByRole("radiogroup", { name: "Where transcription runs" });
+  const local = group.getByRole("radio", { name: /On this (Mac|PC|computer)/ });
+  const cloud = group.getByRole("radio", { name: /Cloud.*Planned/i });
+
+  await expect(local).toBeVisible();
+  await expect(local).toBeEnabled();
+  await expect(local).toHaveAttribute("aria-checked", "true");
+
+  await expect(cloud).toBeVisible();
+  await expect(cloud).toBeDisabled();
+  await expect(cloud).toHaveAttribute("aria-checked", "false");
+
+  // Reason is exposed to screen readers via aria-describedby (accessible description).
+  await expect(cloud).toHaveAccessibleDescription(/Cloud transcription is planned for a future release/);
+
+  // Mouse click (even forced) and keyboard arrows cannot select Cloud.
+  await cloud.click({ force: true });
+  await expect(local).toHaveAttribute("aria-checked", "true");
+  await expect(cloud).toHaveAttribute("aria-checked", "false");
+
+  await local.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(local).toBeFocused();
+  await expect(local).toHaveAttribute("aria-checked", "true");
+  await expect(cloud).toHaveAttribute("aria-checked", "false");
+
+  // AI summary providers (Codex, Grok, Ollama, API keys) remain enabled and usable.
+  await page.goto(url("/settings/summaries"));
+  await settle(page, "Summarize with");
+  await expect(page.getByRole("button", { name: "Add key" }).first()).toBeEnabled();
+  await expect(page.getByRole("switch", { name: "Use API keys as last resort" })).toBeEnabled();
+});
+
+test("forced-colors: focus outline survives on buttons, tabs, selects, segments, fields and rows", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit", "WebKit does not emulate Windows forced-colors");
+  await page.emulateMedia({ forcedColors: "active", reducedMotion: "reduce" });
+
+  const hasOutline = () =>
+    page.evaluate(() => {
+      const el = document.activeElement as HTMLElement | null;
+      if (!el) return false;
+      const check = (node: Element | null) => {
+        if (!node) return false;
+        const cs = getComputedStyle(node);
+        return cs.outlineStyle !== "none" && Number.parseFloat(cs.outlineWidth) >= 1;
+      };
+      // Inputs draw their focus outline on their containing .box / form field wrapper.
+      return check(el) || check(el.parentElement) || check(el.closest("form"));
+    });
+
+  // Meetings: search field and lane row button
+  await page.goto(url("/"));
+  await settle(page, "Q2 Design Sync");
+  await page.getByRole("searchbox").focus();
+  expect(await hasOutline(), "SearchField focus outline in forced-colors").toBe(true);
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: "Q2 Design Sync" })).toBeFocused();
+  expect(await hasOutline(), "LaneRow button focus outline in forced-colors").toBe(true);
+
+  // Detail: tabs
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(new RegExp(`#/meetings/${MEETING}$`));
+  await settle(page, "Share updated mockups");
+  await page.getByRole("tab", { name: "Summary" }).focus();
+  expect(await hasOutline(), "TabsTrigger focus outline in forced-colors").toBe(true);
+
+  // Settings: select, toggle, segmented control
+  await page.goto(url("/settings/transcription"));
+  await settle(page, "Where it runs");
+  await page.getByRole("radio", { name: /On this (Mac|PC|computer)/ }).focus();
+  expect(await hasOutline(), "Segmented item focus outline in forced-colors").toBe(true);
+  await page.getByRole("combobox", { name: "Language" }).focus();
+  expect(await hasOutline(), "Select trigger focus outline in forced-colors").toBe(true);
+  await page.getByRole("switch", { name: "Label speakers" }).focus();
+  expect(await hasOutline(), "Toggle focus outline in forced-colors").toBe(true);
+});
+
+test("live captions partial differs from final by more than colour, and provider handles do not trap Tab", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit", "WebKit skips non-form controls on Tab by default");
+  await page.goto(url("/live", "state=recording"));
+  await settle(page, "Great, I'll move it on the roadmap today.");
+  await page.evaluate(() => {
+    const emit = (window as unknown as { __minutaeMockEmit: (e: string, p: unknown) => void }).__minutaeMockEmit;
+    emit("recording://caption", {
+      meetingId: "00000000-0000-4000-8000-000000000009",
+      id: 9501,
+      track: "mic",
+      speaker: "You",
+      atMs: 910000,
+      endMs: 0,
+      text: "Partial thought in progress",
+      final: false,
+    });
+  });
+  const partialP = page.locator('[data-final="false"] p').last();
+  const finalP = page.locator('[data-final="true"] p').first();
+  await expect(partialP).toContainText("Partial thought in progress…");
+  expect(await partialP.evaluate((el) => getComputedStyle(el).fontStyle)).toBe("italic");
+  expect(await finalP.evaluate((el) => getComputedStyle(el).fontStyle)).toBe("normal");
+
+  // Summaries: Tab leaves the reorder handle instead of trapping focus.
+  await page.goto(url("/settings/summaries"));
+  await settle(page, "Summarize with");
+  const firstHandle = page.locator('button[id^="handle-"]').first();
+  await firstHandle.focus();
+  await expect(firstHandle).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(firstHandle).not.toBeFocused();
+});

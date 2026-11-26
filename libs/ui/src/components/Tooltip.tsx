@@ -23,7 +23,11 @@ export function Tooltip({ children, content, shortcut, side = "top", platform }:
       <RT.Portal>
         <RT.Content side={side} sideOffset={6} className={s.tooltip}>
           {content}
-          {shortcut ? <span className={s.tooltipShortcut}>{formatShortcut(shortcut, platform)}</span> : null}
+          {shortcut ? (
+            <span className={s.tooltipShortcut} aria-hidden>
+              {formatShortcut(shortcut, platform)}
+            </span>
+          ) : null}
         </RT.Content>
       </RT.Portal>
     </RT.Root>

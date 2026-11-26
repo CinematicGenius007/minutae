@@ -64,13 +64,12 @@
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--ink);
-  outline: none;
   text-overflow: ellipsis;
   transition: background-color var(--t-fast);
 }
 .titleInput:hover { background: var(--surface); }
-.titleInput:focus { background: var(--surface); box-shadow: 0 0 0 var(--rule-strong) var(--ink); }
-.titleInput::placeholder { color: var(--faint); }
+.titleInput:focus { background: var(--surface); box-shadow: 0 0 0 var(--rule-strong) var(--ink); outline: 2px solid transparent; outline-offset: 2px; }
+.titleInput::placeholder { color: var(--placeholder); }
 .edit {
   display: inline-flex;
   align-items: center;
@@ -143,7 +142,8 @@
 .speaker { text-transform: uppercase; }
 .lineText { font-size: var(--fs-body); line-height: var(--lh-body-loose); color: var(--ink); }
 .lineOld { color: var(--muted); }
-.partial { color: var(--faint); }
+/* Partial captions differ from final by colour (--muted), italic style, and trailing ellipsis. */
+.partial { color: var(--muted); font-style: italic; }
 .placeholder {
   display: flex;
   flex-direction: column;
@@ -182,4 +182,10 @@
   .capture { padding: var(--s-6) var(--page-pad) var(--s-9); gap: var(--s-11); }
   .pane { width: auto; height: auto; min-height: var(--rail-w); padding: var(--s-7) var(--page-pad) 0; }
   .feed { overflow: visible; }
+}
+
+@media (forced-colors: active) {
+  .dot { forced-color-adjust: none; background: Highlight; border: var(--hairline) solid Highlight; }
+  .dotOff { forced-color-adjust: none; background: Canvas; border: var(--hairline) solid GrayText; }
+  .titleInput:focus { outline-color: Highlight; }
 }

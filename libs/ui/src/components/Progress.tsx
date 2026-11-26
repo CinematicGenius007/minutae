@@ -29,7 +29,7 @@ export function Progress({ value, caption, label, width, align = "start", classN
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(v * 100)}
-        aria-label={label ?? (typeof caption === "string" ? caption : undefined)}
+        aria-label={label ?? (typeof caption === "string" ? caption : "Progress")}
         style={width !== undefined ? { width: "100%" } : undefined}
       >
         <div className={s.fill} style={{ width: `${v * 100}%` }} />

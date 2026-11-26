@@ -34,20 +34,20 @@
 .primary:hover, .primary[data-force="hover"] { background: var(--ink-hover); }
 .primary:active, .primary[data-force="pressed"] { background: var(--ink-pressed); }
 
-/* secondary: hairline */
-.secondary { border-color: var(--line); color: var(--ink); background: transparent; }
+/* secondary: control-edge border for 3:1 boundary */
+.secondary { border-color: var(--control-edge); color: var(--ink); background: transparent; }
 .secondary:hover, .secondary[data-force="hover"] { background: var(--surface); }
 .secondary:active, .secondary[data-force="pressed"] { background: var(--surface-pressed); }
 
-/* disabled fill buttons */
+/* disabled fill buttons: readable text via --control-edge */
 .primary:disabled, .secondary:disabled, .primary[aria-disabled="true"], .secondary[aria-disabled="true"] {
   background: var(--surface);
-  border-color: transparent;
-  color: var(--faint);
+  border-color: var(--line);
+  color: var(--control-edge);
   cursor: default;
 }
 
-/* quiet + destructive: underlined text, never filled */
+/* quiet + destructive: underlined text, never filled; >= 28x28 hit target */
 .quiet, .destructive {
   height: auto;
   min-height: var(--h-button);
@@ -60,6 +60,17 @@
   text-underline-offset: 3px;
   background: transparent;
 }
+.quiet::after, .destructive::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  min-width: 28px;
+  min-height: 28px;
+  width: 100%;
+  height: 100%;
+}
 .hero.quiet, .hero.destructive { min-height: var(--h-button-hero); }
 .quiet { color: var(--ink); }
 .destructive { color: var(--destructive); }
@@ -67,7 +78,7 @@
   text-decoration-thickness: 2px;
 }
 .quiet:active, .destructive:active, .quiet[data-force="pressed"], .destructive[data-force="pressed"] { opacity: .65; }
-.quiet:disabled, .destructive:disabled { color: var(--faint); cursor: default; text-decoration-thickness: var(--hairline); }
+.quiet:disabled, .destructive:disabled { color: var(--control-edge); cursor: default; text-decoration-thickness: var(--hairline); }
 
 .loading { cursor: progress; }
 .loading .label { opacity: .9; }
@@ -79,4 +90,13 @@
   line-height: var(--lh-meta);
   font-weight: var(--fw-regular);
   opacity: .6;
+}
+
+@media (forced-colors: active) {
+  .primary { border-color: ButtonText; }
+  .primary:disabled, .secondary:disabled, .primary[aria-disabled="true"], .secondary[aria-disabled="true"] {
+    border-color: GrayText;
+    color: GrayText;
+  }
+  .quiet:disabled, .destructive:disabled { color: GrayText; }
 }

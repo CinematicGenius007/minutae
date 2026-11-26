@@ -61,3 +61,13 @@
 .itemShortcut { font-family: var(--font-mono); font-size: var(--fs-meta); line-height: var(--lh-meta); color: var(--muted); }
 
 .mic { padding-inline: 10px; }
+
+@media (forced-colors: active) {
+  .active, .active:hover {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+  .active .itemShortcut { color: HighlightText; }
+  .wordmarkDot { forced-color-adjust: none; background: CanvasText; }
+}

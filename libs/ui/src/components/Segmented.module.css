@@ -2,7 +2,8 @@
   display: inline-flex;
   align-items: center;
   height: var(--h-segmented);
-  padding: 3px;
+  padding: 2px;
+  border: var(--hairline) solid var(--control-edge);
   border-radius: var(--radius-sm);
   background: var(--surface);
 }
@@ -10,6 +11,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 5px;
   height: 28px;
   padding-inline: var(--s-4);
   border: 0;
@@ -32,6 +34,24 @@
   box-shadow: var(--shadow-1);
 }
 .item:focus-visible { box-shadow: var(--focus-ring); }
-.item:disabled { color: var(--faint); cursor: default; }
+/* Disabled segments remain readable (>= 3:1) while clearly non-interactive. */
+.item:disabled, .item:disabled:hover { color: var(--control-edge); cursor: not-allowed; }
+.sep { opacity: .8; }
+.tag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta-sm);
+  line-height: var(--lh-meta-sm);
+}
 .full { display: flex; width: 100%; }
 .full .item { flex: 1; }
+
+@media (forced-colors: active) {
+  .track { border-color: ButtonText; }
+  .item[data-state="on"] {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+    border: var(--hairline) solid Highlight;
+  }
+  .item:disabled, .item:disabled:hover { color: GrayText; }
+}
