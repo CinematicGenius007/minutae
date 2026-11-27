@@ -1,7 +1,7 @@
 //! Dictation wiring: mic capture (minutae-audio) + whisper (minutae-asr) + system paste,
 //! driven by `DictationController`; HUD events go to the `hud` window.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -11,11 +11,15 @@ use minutae_asr::{ModelManager, TranscribeOptions, Transcriber};
 use minutae_audio::{CaptureConfig, Recorder, RecordingHandle};
 use minutae_core::{AppSettings, WhisperModel};
 use minutae_dictation::{
-    AudioSource, DictationConfig, DictationController, DictationDeps, DictationEvent, HudState,
-    SpeechToText, SystemInserter,
+    AudioSource, DictationConfig, DictationController, DictationDeps, DictationEvent,
+    FinishedDictation, HudState, SpeechToText, SystemInserter,
 };
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::watch;
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutState};
+use tokio::{
+    sync::{mpsc, watch},
+    time::Instant,
+};
 
 use crate::dto::{self, ev};
 use crate::state::{AppState, TranscriberCache};
@@ -123,7 +127,12 @@ pub fn dictation_model(models: &ModelManager, preferred: WhisperModel) -> Option
 
 #[async_trait]
 impl SpeechToText for WhisperStt {
-    async fn transcribe(&self, samples: &[f32], vocabulary: &[String]) -> anyhow::Result<String> {
+    async fn transcribe(
+        &self,
+        samples: &[f32],
+        vocabulary: &[String],
+        cancel: Arc<AtomicBool>,
+    ) -> anyhow::Result<String> {
         let settings = self
             .settings
             .read()
@@ -137,6 +146,7 @@ impl SpeechToText for WhisperStt {
             .get(&self.models, model)
             .map_err(|f| anyhow::anyhow!(f.message))?;
         let opts = TranscribeOptions {
+            cancel: Some(cancel),
             language: settings
                 .language
                 .clone()
@@ -168,31 +178,177 @@ pub fn init(app: &AppHandle, rt: tokio::runtime::Handle) {
     spawn_key_worker(app);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        while let Some(event) = rx.recv().await {
+        let mut deadline = None;
+        while let Some(event) = next_event(&mut rx, &mut deadline).await {
             match event {
-                DictationEvent::Hud(h) => on_hud(&app, &h),
+                DictationEvent::Hud(h) => {
+                    sync_escape(&app, hud_is_active(&h));
+                    on_hud(&app, &h);
+                }
                 DictationEvent::Finished(f) => {
-                    let st = app.state::<AppState>();
-                    if let Some(samples) = f.audio.as_ref().filter(|a| !a.is_empty()) {
-                        let path = dictation_audio_path(f.dictation.id);
-                        let samples = samples.clone();
-                        let r = tokio::task::spawn_blocking(move || {
-                            save_dictation_audio(&path, &samples)
-                        })
-                        .await;
-                        if let Ok(Err(e)) | Err(e) = r.map_err(std::io::Error::other) {
-                            tracing::warn!(error = %e, "saving dictation audio failed");
-                        }
-                    }
-                    let d = f.dictation.clone();
-                    if let Err(e) = st.store.call(move |s| s.insert_dictation(&d)).await {
-                        tracing::warn!(error = %e, "saving dictation failed");
-                    }
-                    let _ = app.emit(ev::DICTATIONS_CHANGED, ());
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move { persist(&app, *f).await });
                 }
             }
         }
+        sync_escape(&app, false);
     });
+}
+
+fn hud_is_active(hud: &HudState) -> bool {
+    matches!(hud, HudState::Listening { .. } | HudState::Processing)
+}
+
+fn hud_duration(hud: &HudState) -> Option<Duration> {
+    Some(Duration::from_millis(match hud {
+        HudState::Inserted { .. } => 1500,
+        HudState::Copied { .. } => 4000,
+        HudState::Error { .. } => 6000,
+        _ => return None,
+    }))
+}
+
+/// HUD events and expiry run serially. A newer event takes precedence over a
+/// previous HUD's timer, even if they become ready at the same time.
+async fn next_event(
+    events: &mut mpsc::UnboundedReceiver<DictationEvent>,
+    deadline: &mut Option<Instant>,
+) -> Option<DictationEvent> {
+    let event = tokio::select! {
+        biased;
+        event = events.recv() => event,
+        () = wait_for_expiry(*deadline) => Some(DictationEvent::Hud(HudState::Idle)),
+    };
+    if let Some(DictationEvent::Hud(hud)) = &event {
+        *deadline = hud_duration(hud).map(|duration| Instant::now() + duration);
+    }
+    event
+}
+
+async fn wait_for_expiry(deadline: Option<Instant>) {
+    match deadline {
+        Some(time) => tokio::time::sleep_until(time).await,
+        None => std::future::pending().await,
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct EscapeRegistration {
+    active: bool,
+    bindings: Vec<Shortcut>,
+}
+
+impl EscapeRegistration {
+    fn transition(
+        &mut self,
+        active: bool,
+        bind: impl FnOnce(&mut Vec<Shortcut>) -> Option<String>,
+        mut release: impl FnMut(Shortcut) -> bool,
+    ) -> Option<Option<String>> {
+        let was_active = std::mem::replace(&mut self.active, active);
+        if !active {
+            self.bindings.retain(|&key| !release(key));
+        }
+        if active && !was_active {
+            return Some(bind(&mut self.bindings));
+        }
+        None
+    }
+}
+
+fn sync_escape(app: &AppHandle, active: bool) {
+    let st = app.state::<AppState>();
+    let mut escape = st
+        .escape_registration
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(detail) = escape.transition(
+        active && !crate::shell::is_quitting(),
+        |bindings| register_escape(app, bindings),
+        |key| {
+            app.global_shortcut()
+                .unregister(key)
+                .map_err(|e| {
+                    tracing::warn!(%key, error = %e, "could not release Escape");
+                })
+                .is_ok()
+        },
+    ) {
+        let status = {
+            let mut status = st.shortcut_status.lock().unwrap_or_else(|e| e.into_inner());
+            if status.cancel_detail == detail {
+                return;
+            }
+            status.cancel_detail = detail;
+            status.clone()
+        };
+        let _ = app.emit(ev::SHORTCUTS_CHANGED, status);
+    }
+}
+
+pub fn escape_shortcut() -> Shortcut {
+    Shortcut::new(None, Code::Escape)
+}
+
+fn register_escape(app: &AppHandle, bindings: &mut Vec<Shortcut>) -> Option<String> {
+    if crate::portal::use_portal() {
+        return Some(dto::PORTAL_CANCEL_DETAIL.into());
+    }
+    let st = app.state::<AppState>();
+    // In hold mode the modifier can still be down when the user presses Escape.
+    let held = st
+        .shortcuts
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .dictate
+        .filter(|key| {
+            !key.mods.is_empty() && st.settings().dictation_mode == minutae_core::HotkeyMode::Hold
+        })
+        .map(|key| Shortcut::new(Some(key.mods), Code::Escape));
+    let shortcuts = app.global_shortcut();
+    let mut bind = |key: Shortcut| {
+        if bindings.contains(&key) {
+            return true;
+        }
+        if shortcuts.is_registered(key) {
+            return false;
+        }
+        match shortcuts.on_shortcut(key, |app, _, event| {
+            if event.state == ShortcutState::Pressed
+                && app
+                    .state::<AppState>()
+                    .dictation
+                    .get()
+                    .is_some_and(|c| c.request_cancel())
+            {
+                send_key(app, DictationKey::Cancel);
+            }
+        }) {
+            Ok(()) => {
+                bindings.push(key);
+                true
+            }
+            Err(e) => {
+                tracing::warn!(%key, error = %e, "could not bind Escape");
+                false
+            }
+        }
+    };
+
+    let plain_ok = bind(escape_shortcut());
+    let held_ok = held.map(&mut bind);
+    match (plain_ok, held_ok) {
+        (true, Some(false)) => Some("Release the dictation shortcut before pressing Esc.".into()),
+        (false, Some(true)) => {
+            Some("Esc is available only while holding the dictation shortcut.".into())
+        }
+        (false, _) => Some("The system couldn't register Esc to cancel dictation.".into()),
+        _ => None,
+    }
+}
+
+pub fn release_escape(app: &AppHandle) {
+    sync_escape(app, false);
 }
 
 /// A dictation key event from a global shortcut (plugin or portal) or the CLI.
@@ -200,6 +356,7 @@ pub fn init(app: &AppHandle, rt: tokio::runtime::Handle) {
 pub enum DictationKey {
     Down,
     Up,
+    Cancel,
     /// `--toggle-dictation`: start or stop whatever the hotkey mode.
     Toggle,
 }
@@ -221,11 +378,15 @@ fn spawn_key_worker(app: &AppHandle) {
         .name("minutae-dictation-keys".into())
         .spawn(move || {
             while let Ok(key) = rx.recv() {
+                if crate::shell::is_quitting() {
+                    break;
+                }
                 if let Some(c) = a.state::<AppState>().dictation.get() {
                     match key {
                         DictationKey::Down => c.key_down(),
                         DictationKey::Up => c.key_up(),
                         DictationKey::Toggle => c.toggle(),
+                        DictationKey::Cancel => c.finish_cancel(),
                     }
                 }
             }
@@ -238,11 +399,121 @@ fn spawn_key_worker(app: &AppHandle) {
     }
 }
 
-/// `<data_dir>/dictations/<id>.wav` (kept when "Keep dictation audio" is on).
-pub fn dictation_audio_path(id: uuid::Uuid) -> PathBuf {
-    minutae_core::paths::data_dir()
-        .join("dictations")
-        .join(format!("{id}.wav"))
+fn audio_path(dir: &Path, id: uuid::Uuid) -> PathBuf {
+    dir.join(format!("{id}.wav"))
+}
+
+/// Only use the app's own dictations directory. In particular, reject a symlink
+/// (or Windows junction) to another place, even if it contains matching filenames.
+fn checked_audio_dir(data_dir: &Path) -> std::io::Result<PathBuf> {
+    let expected = data_dir.canonicalize()?.join("dictations");
+    let actual = expected.canonicalize()?;
+    if actual != expected {
+        return Err(std::io::Error::other(
+            "dictations directory points outside its expected path",
+        ));
+    }
+    Ok(actual)
+}
+
+fn remove_audio(data_dir: &Path, id: uuid::Uuid) -> std::io::Result<()> {
+    let result =
+        checked_audio_dir(data_dir).and_then(|dir| std::fs::remove_file(audio_path(&dir, id)));
+    match result {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
+async fn persist(app: &AppHandle, finished: FinishedDictation) {
+    let st = app.state::<AppState>();
+    let _guard = st.dictation_storage.lock().await;
+    let r = st
+        .store
+        .call(move |store| {
+            let data_dir = minutae_core::paths::data_dir();
+            let id = finished.dictation.id;
+            store.insert_dictation(&finished.dictation)?;
+            if let Some(samples) = finished.audio.filter(|a| !a.is_empty()) {
+                let result = std::fs::create_dir_all(data_dir.join("dictations"))
+                    .and_then(|()| checked_audio_dir(&data_dir))
+                    .and_then(|dir| save_dictation_audio(&audio_path(&dir, id), &samples));
+                if let Err(e) = result {
+                    let _ = remove_audio(&data_dir, id);
+                    tracing::warn!(error = %e, "saving dictation audio failed");
+                }
+            }
+            Ok(())
+        })
+        .await;
+    match r {
+        Ok(()) => {
+            let _ = app.emit(ev::DICTATIONS_CHANGED, ());
+        }
+        Err(e) => tracing::warn!(error = %e, "saving dictation failed"),
+    }
+}
+
+pub enum DeleteDictations {
+    One(uuid::Uuid),
+    All,
+    Expired,
+}
+
+pub async fn delete(app: &AppHandle, selection: DeleteDictations) -> Result<(), String> {
+    let st = app.state::<AppState>();
+    let _guard = st.dictation_storage.lock().await;
+    let cutoff = match selection {
+        DeleteDictations::Expired => {
+            let Some(days) = st.settings().dictation_retention_days else {
+                return Ok(());
+            };
+            Some(chrono::Utc::now() - chrono::Duration::days(i64::from(days)))
+        }
+        _ => None,
+    };
+    let result = st
+        .store
+        .call(move |store| {
+            let ids = match selection {
+                DeleteDictations::One(id) => vec![id],
+                _ => store.dictation_ids_before(cutoff)?,
+            };
+            delete_files_and_rows(store, &minutae_core::paths::data_dir(), ids)
+        })
+        .await;
+    if !matches!(result, Ok(false)) {
+        let _ = app.emit(ev::DICTATIONS_CHANGED, ());
+    }
+    result.map(|_| ()).map_err(|e| e.to_string())
+}
+
+fn delete_files_and_rows(
+    store: &minutae_store::Store,
+    data_dir: &Path,
+    ids: Vec<uuid::Uuid>,
+) -> minutae_store::Result<bool> {
+    let mut changed = false;
+    let mut failure = None;
+    for id in ids {
+        match remove_audio(data_dir, id) {
+            Ok(()) => changed |= store.delete_dictation(id)?,
+            Err(e) => {
+                tracing::warn!(%id, error = %e, "deleting dictation audio failed");
+                failure = Some(minutae_store::StoreError::Invalid(
+                    "Couldn't delete saved dictation audio.".into(),
+                ));
+            }
+        }
+    }
+    // Leave rows whose WAV couldn't be removed so cleanup can be retried.
+    failure.map_or(Ok(changed), Err)
+}
+
+pub async fn prune(app: &AppHandle) {
+    if let Err(e) = delete(app, DeleteDictations::Expired).await {
+        tracing::warn!(error = %e, "pruning dictations failed");
+    }
 }
 
 /// 16 kHz mono 16-bit PCM.
@@ -265,27 +536,11 @@ pub fn save_dictation_audio(path: &std::path::Path, samples: &[f32]) -> std::io:
 }
 
 fn on_hud(app: &AppHandle, h: &HudState) {
-    let st = app.state::<AppState>();
-    let generation = st.hud_generation.fetch_add(1, Ordering::SeqCst) + 1;
     let _ = app.emit(ev::HUD, dto::HudState::from(h));
     match h {
         HudState::Idle => crate::shell::hide_aux(app, crate::shell::HUD),
-        HudState::Listening { level, .. } if *level > 0.0 => {} // already visible; avoid 30 Hz show calls
-        HudState::Listening { .. } | HudState::Processing => {
-            crate::shell::show_aux(app, crate::shell::HUD)
-        }
-        HudState::Inserted { .. } | HudState::Copied { .. } | HudState::Error { .. } => {
-            crate::shell::show_aux(app, crate::shell::HUD);
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(1200)).await;
-                let st = app.state::<AppState>();
-                if st.hud_generation.load(Ordering::SeqCst) == generation {
-                    crate::shell::hide_aux(&app, crate::shell::HUD);
-                    let _ = app.emit(ev::HUD, dto::HudState::Idle);
-                }
-            });
-        }
+        HudState::Listening { level, .. } if *level > 0.0 => {} // already visible; avoid meter-rate show calls
+        _ => crate::shell::show_aux(app, crate::shell::HUD),
     }
 }
 
@@ -320,6 +575,224 @@ mod tests {
         assert_eq!(config_for(&s, Some(true)).mode, HotkeyMode::Hold);
         assert_eq!(config_for(&s, None).mode, HotkeyMode::Hold);
         assert_eq!(config_for(&s, Some(false)).mode, HotkeyMode::Toggle);
+    }
+
+    #[test]
+    fn escape_is_registered_only_during_an_active_dictation() {
+        let mut escape = EscapeRegistration::default();
+        let changes = std::cell::RefCell::new(Vec::new());
+        for hud in [
+            HudState::Listening {
+                level: 0.0,
+                hands_free: false,
+            },
+            HudState::Listening {
+                level: 0.5,
+                hands_free: true,
+            },
+            HudState::Processing,
+            HudState::Idle,
+            HudState::Listening {
+                level: 0.0,
+                hands_free: false,
+            },
+            HudState::Inserted { words: 1 },
+            HudState::Listening {
+                level: 0.0,
+                hands_free: false,
+            },
+            HudState::Error {
+                message: "no speech".into(),
+            },
+            HudState::Listening {
+                level: 0.0,
+                hands_free: false,
+            },
+            HudState::Copied {
+                words: 1,
+                reason: minutae_dictation::CopyReason::Wayland,
+            },
+        ] {
+            escape.transition(
+                hud_is_active(&hud),
+                |bindings| {
+                    changes.borrow_mut().push(true);
+                    bindings.push(escape_shortcut());
+                    None
+                },
+                |_| {
+                    changes.borrow_mut().push(false);
+                    true
+                },
+            );
+        }
+        assert_eq!(
+            changes.into_inner(),
+            [true, false, true, false, true, false, true, false]
+        );
+    }
+
+    #[test]
+    fn unavailable_escape_is_reported_and_retried_on_the_next_dictation() {
+        let mut escape = EscapeRegistration::default();
+        assert_eq!(
+            escape.transition(
+                true,
+                |_| Some(dto::PORTAL_CANCEL_DETAIL.into()),
+                |_| unreachable!()
+            ),
+            Some(Some(dto::PORTAL_CANCEL_DETAIL.into()))
+        );
+        assert_eq!(
+            escape.transition(true, |_| panic!("meter update"), |_| unreachable!()),
+            None
+        );
+        assert_eq!(
+            escape.transition(false, |_| unreachable!(), |_| panic!("unregistered")),
+            None
+        );
+        assert_eq!(
+            escape.transition(true, |_| None, |_| unreachable!()),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn hud_outcomes_have_distinct_timeouts() {
+        assert_eq!(
+            hud_duration(&HudState::Inserted { words: 1 }),
+            Some(Duration::from_millis(1500))
+        );
+        assert_eq!(
+            hud_duration(&HudState::Copied {
+                words: 1,
+                reason: minutae_dictation::CopyReason::NoTextField
+            }),
+            Some(Duration::from_secs(4))
+        );
+        assert_eq!(
+            hud_duration(&HudState::Error {
+                message: "no speech".into()
+            }),
+            Some(Duration::from_secs(6))
+        );
+        assert_eq!(hud_duration(&HudState::Processing), None);
+        assert_eq!(hud_duration(&HudState::Idle), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn old_timeout_cannot_hide_a_new_dictation() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut deadline = None;
+        let inserted = DictationEvent::Hud(HudState::Inserted { words: 1 });
+        tx.send(inserted.clone()).unwrap();
+        assert_eq!(next_event(&mut rx, &mut deadline).await, Some(inserted));
+
+        tokio::time::advance(Duration::from_millis(1500)).await;
+        let listening = DictationEvent::Hud(HudState::Listening {
+            level: 0.0,
+            hands_free: false,
+        });
+        tx.send(listening.clone()).unwrap();
+        assert_eq!(next_event(&mut rx, &mut deadline).await, Some(listening));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), next_event(&mut rx, &mut deadline))
+                .await
+                .is_err()
+        );
+
+        let error = DictationEvent::Hud(HudState::Error {
+            message: "no speech".into(),
+        });
+        tx.send(error.clone()).unwrap();
+        assert_eq!(next_event(&mut rx, &mut deadline).await, Some(error));
+        assert_eq!(
+            next_event(&mut rx, &mut deadline).await,
+            Some(DictationEvent::Hud(HudState::Idle))
+        );
+        assert!(deadline.is_none());
+    }
+
+    fn dictation_with_audio(
+        store: &minutae_store::Store,
+        root: &Path,
+        created_at: chrono::DateTime<chrono::Utc>,
+    ) -> (uuid::Uuid, PathBuf) {
+        let id = uuid::Uuid::new_v4();
+        let path = audio_path(&root.join("dictations"), id);
+        store
+            .insert_dictation(&minutae_core::Dictation {
+                id,
+                created_at,
+                text: "test".into(),
+                raw_text: "test".into(),
+                target_app: None,
+                word_count: 1,
+                duration_ms: 500,
+                inserted: false,
+            })
+            .unwrap();
+        save_dictation_audio(&path, &[0.0, 0.5]).unwrap();
+        (id, path)
+    }
+
+    #[test]
+    fn prune_single_delete_and_bulk_delete_remove_audio_with_the_rows() {
+        let store = minutae_store::Store::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let now = chrono::Utc::now();
+        let cutoff = now - chrono::Duration::days(7);
+        let (old, old_wav) =
+            dictation_with_audio(&store, dir.path(), cutoff - chrono::Duration::days(1));
+        let (boundary, boundary_wav) = dictation_with_audio(&store, dir.path(), cutoff);
+        let (recent, recent_wav) = dictation_with_audio(&store, dir.path(), now);
+
+        let expired = store.dictation_ids_before(Some(cutoff)).unwrap();
+        assert_eq!(expired, [old]);
+        assert!(delete_files_and_rows(&store, dir.path(), expired).unwrap());
+        assert!(store.get_dictation(old).unwrap().is_none());
+        assert!(!old_wav.exists());
+        assert!(boundary_wav.exists());
+        assert!(recent_wav.exists());
+
+        assert!(delete_files_and_rows(&store, dir.path(), vec![recent]).unwrap());
+        assert!(store.get_dictation(recent).unwrap().is_none());
+        assert!(!recent_wav.exists());
+
+        assert_eq!(store.dictation_ids_before(None).unwrap(), [boundary]);
+        assert!(
+            delete_files_and_rows(
+                &store,
+                dir.path(),
+                store.dictation_ids_before(None).unwrap()
+            )
+            .unwrap()
+        );
+        assert!(store.dictation_ids_before(None).unwrap().is_empty());
+        assert!(!boundary_wav.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_rejects_redirected_dictation_directory_and_preserves_external_files() {
+        let store = minutae_store::Store::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let (id, wav) = dictation_with_audio(&store, dir.path(), chrono::Utc::now());
+        let external = audio_path(outside.path(), id);
+        std::fs::rename(&wav, &external).unwrap();
+        std::fs::remove_dir(wav.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(outside.path(), wav.parent().unwrap()).unwrap();
+        assert!(delete_files_and_rows(&store, dir.path(), vec![id]).is_err());
+        assert!(external.exists());
+        assert!(store.get_dictation(id).unwrap().is_some());
+
+        std::fs::remove_file(wav.parent().unwrap()).unwrap();
+        std::fs::create_dir(wav.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&external, &wav).unwrap();
+        assert!(delete_files_and_rows(&store, dir.path(), vec![id]).unwrap());
+        assert!(external.exists());
+        assert!(!wav.exists());
     }
 
     #[test]

@@ -1,7 +1,10 @@
 //! In-memory stand-ins for tests and UI development.
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -9,7 +12,7 @@ use async_trait::async_trait;
 use tokio::sync::watch;
 
 use crate::{
-    insert::{CopyReason, InsertOutcome, Inserter},
+    insert::{CopyReason, InsertOutcome, Inserter, InsertionControl},
     source::{AudioSource, SpeechToText},
 };
 
@@ -105,7 +108,12 @@ impl FakeSpeech {
 
 #[async_trait]
 impl SpeechToText for FakeSpeech {
-    async fn transcribe(&self, samples: &[f32], vocabulary: &[String]) -> anyhow::Result<String> {
+    async fn transcribe(
+        &self,
+        samples: &[f32],
+        vocabulary: &[String],
+        cancel: Arc<AtomicBool>,
+    ) -> anyhow::Result<String> {
         self.calls
             .lock()
             .unwrap()
@@ -113,6 +121,7 @@ impl SpeechToText for FakeSpeech {
         if !self.delay.is_zero() {
             tokio::time::sleep(self.delay).await;
         }
+        anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled");
         self.result
             .lock()
             .unwrap()
@@ -127,6 +136,7 @@ pub struct FakeInserter {
     /// What `target_app` answers; change it to simulate the user switching apps.
     pub app: Mutex<Option<String>>,
     pub inserted: Mutex<Vec<String>>,
+    pub insert_delay: Mutex<Duration>,
     /// Texts put on the clipboard only.
     pub copied: Mutex<Vec<String>>,
 }
@@ -137,6 +147,7 @@ impl FakeInserter {
             outcome: Mutex::new(outcome),
             app: Mutex::new(Some("Notes".into())),
             inserted: Mutex::new(vec![]),
+            insert_delay: Mutex::new(Duration::ZERO),
             copied: Mutex::new(vec![]),
         })
     }
@@ -160,13 +171,30 @@ impl Inserter for FakeInserter {
         self.app.lock().unwrap().clone()
     }
 
-    async fn copy(&self, text: &str, reason: CopyReason) -> InsertOutcome {
-        self.copied.lock().unwrap().push(text.to_owned());
-        InsertOutcome::Copied(reason)
+    async fn copy(
+        &self,
+        text: &str,
+        reason: CopyReason,
+        control: Arc<InsertionControl>,
+    ) -> InsertOutcome {
+        control
+            .commit(|| {
+                self.copied.lock().unwrap().push(text.to_owned());
+                InsertOutcome::Copied(reason)
+            })
+            .unwrap_or(InsertOutcome::Cancelled)
     }
 
-    async fn insert(&self, text: &str) -> InsertOutcome {
-        self.inserted.lock().unwrap().push(text.to_owned());
-        self.outcome.lock().unwrap().clone()
+    async fn insert(&self, text: &str, control: Arc<InsertionControl>) -> InsertOutcome {
+        let delay = *self.insert_delay.lock().unwrap();
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+        control
+            .commit(|| {
+                self.inserted.lock().unwrap().push(text.to_owned());
+                self.outcome.lock().unwrap().clone()
+            })
+            .unwrap_or(InsertOutcome::Cancelled)
     }
 }
