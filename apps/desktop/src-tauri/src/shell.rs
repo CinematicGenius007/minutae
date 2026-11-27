@@ -114,10 +114,30 @@ pub fn create_aux_windows(app: &AppHandle) -> tauri::Result<()> {
         // The HUD floats over other apps: it starts click-through everywhere.
         if label == HUD {
             set_hud_pointer(&window, false)?;
+            #[cfg(target_os = "windows")]
+            show_layered_hud(&window)?;
         }
     }
     #[cfg(target_os = "macos")]
     create_tray_panel(app)?;
+    Ok(())
+}
+
+/// Click-through on Windows makes the window layered (`WS_EX_LAYERED`), and Windows
+/// does not draw a layered window until its attributes are set. Full opacity here;
+/// the page's own transparency is unaffected. Must run on the main thread, after the
+/// window has been made click-through.
+#[cfg(target_os = "windows")]
+fn show_layered_hud(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{LWA_ALPHA, SetLayeredWindowAttributes};
+    let hwnd = window.hwnd()?;
+    // SAFETY: this is the live HUD HWND, on its UI thread.
+    if unsafe { SetLayeredWindowAttributes(hwnd.0.cast(), 0, u8::MAX, LWA_ALPHA) } == 0 {
+        tracing::warn!(
+            error = %std::io::Error::last_os_error(),
+            "HUD layered window attributes"
+        );
+    }
     Ok(())
 }
 
