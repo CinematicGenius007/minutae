@@ -1159,6 +1159,73 @@ test("interactive HUD dismisses a persistent error through the backend", async (
   expect(state).toBe("idle");
 });
 
+for (const query of ["os=windows", "os=linux&session=x11", "os=linux&session=wayland"]) {
+  test(`passive HUD has no controls (${query})`, async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 64 });
+    await open(page, "light", "/hud", `${query}&hud=error`);
+    await settle(page);
+    await expect(page.getByRole("alert")).toHaveText("Microphone is off");
+    await expect(page.getByRole("button")).toHaveCount(0);
+  });
+}
+
+test("HUD Dismiss racing a new dictation leaves it running", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 64 });
+  await open(page, "light", "/hud", "os=macos&hud=error");
+  await settle(page);
+  await expect(page.getByRole("button", { name: "Dismiss", exact: true })).toBeVisible();
+  const state = await page.evaluate(async () => {
+    const path = "/src/lib/api.ts";
+    const { api } = await import(path);
+    const button = document.querySelector("button");
+    // Same task: the backend has moved on, but the error button is still on screen.
+    (window as unknown as { __minutaeMockEmit: (e: string, p: unknown) => void }).__minutaeMockEmit("dictation://hud", {
+      state: "listening", level: 0.5, handsFree: false, app: "Slack", shape: "tidy", shortcutPresets: [],
+    });
+    button?.click();
+    await new Promise((done) => setTimeout(done, 400));
+    return (await api.getDictationHud()).state;
+  });
+  expect(state).toBe("listening");
+});
+
+test("HUD interaction does not hold a later result open", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 64 });
+  await page.clock.install();
+  await open(page, "light", "/hud", "os=macos&hud=inserted");
+  await settle(page);
+  await page.evaluate(async () => {
+    const path = "/src/lib/api.ts";
+    const { api } = await import(path);
+    const emit = (window as unknown as { __minutaeMockEmit: (e: string, p: unknown) => void }).__minutaeMockEmit;
+    const hovered = api.setDictationHudInteraction(true, false);
+    await Promise.resolve();
+    emit("dictation://hud", { state: "processing" });
+    void hovered;
+  });
+  await page.clock.fastForward(1000);
+  await page.evaluate(() => {
+    (window as unknown as { __minutaeMockEmit: (e: string, p: unknown) => void }).__minutaeMockEmit("dictation://hud", {
+      state: "inserted", words: 2, undoAvailable: false, resultId: null,
+    });
+  });
+  await expect(page.getByRole("status")).toContainText("Inserted");
+  await page.clock.fastForward(7000);
+  await expect(page.getByRole("status")).toHaveCount(0);
+});
+
+test("settings patches drop edits for identifier-preserving shapes", async ({ page }) => {
+  await open(page, "light", "/dictate");
+  const keys = await page.evaluate(async () => {
+    const path = "/src/lib/api.ts";
+    const { api } = await import(path);
+    const edits = { capitals: "sentence", dropFinalPeriod: true };
+    await api.updateSettings({ dictationShapeEdits: { verbatim: edits, codeAndCommit: edits, email: edits } });
+    return Object.keys((await api.getSettings()).dictationShapeEdits);
+  });
+  expect(keys).toEqual(["email"]);
+});
+
 test("Dictate describes cursor insertion on X11", async ({ page }) => {
   await open(page, "light", "/dictate", "os=linux&session=x11");
   await settle(page);

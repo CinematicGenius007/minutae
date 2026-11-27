@@ -85,6 +85,7 @@ pub fn create_aux_windows(app: &AppHandle) -> tauri::Result<()> {
             use tauri_nspanel::{CollectionBehavior, PanelLevel, StyleMask, WebviewWindowExt};
             let panel = window.to_panel::<MinutaePanel>()?;
             panel.set_level(PanelLevel::Status.value());
+            // Only a natively non-activating HUD may ever take the pointer.
             match panel.add_style_mask(StyleMask::empty().nonactivating_panel().value()) {
                 Ok(()) if label == HUD => app
                     .state::<AppState>()
@@ -101,21 +102,6 @@ pub fn create_aux_windows(app: &AppHandle) -> tauri::Result<()> {
                     .value(),
             );
             panel.set_hides_on_deactivate(false);
-            if label == HUD && !hud_interactive(app) {
-                window.set_ignore_cursor_events(true)?;
-            }
-        }
-        #[cfg(target_os = "windows")]
-        if label == HUD {
-            let interactive = window
-                .hwnd()
-                .is_ok_and(|hwnd| windows_hud::enable_clicks(hwnd.0.cast()));
-            app.state::<AppState>()
-                .hud_interactive
-                .store(interactive, std::sync::atomic::Ordering::Relaxed);
-            if !interactive {
-                window.set_ignore_cursor_events(true)?;
-            }
         }
         #[cfg(target_os = "linux")]
         if label == HUD {
@@ -124,7 +110,10 @@ pub fn create_aux_windows(app: &AppHandle) -> tauri::Result<()> {
             gtk_window.set_focus_on_map(false);
             gtk_window.set_accept_focus(false);
             gtk_window.realize();
-            gtk_window.input_shape_combine_region(Some(&gtk::cairo::Region::create()));
+        }
+        // The HUD floats over other apps: it starts click-through everywhere.
+        if label == HUD {
+            set_hud_pointer(&window, false)?;
         }
     }
     #[cfg(target_os = "macos")]
@@ -265,39 +254,57 @@ pub fn hud_interactive(app: &AppHandle) -> bool {
         .load(std::sync::atomic::Ordering::Relaxed)
 }
 
-#[cfg(target_os = "windows")]
-mod windows_hud {
-    use windows_sys::Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
-        UI::{
-            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
-            WindowsAndMessaging::{MA_NOACTIVATE, WM_MOUSEACTIVATE, WM_NCDESTROY},
-        },
-    };
+/// Whether the HUD window takes the pointer: only where the window is natively
+/// non-activating (a click cannot take focus from the app being dictated into), and
+/// only while the state renders a control the user can press. Everywhere else clicks
+/// pass through to the app underneath.
+fn hud_accepts_pointer(non_activating: bool, hud: &minutae_dictation::HudState) -> bool {
+    use minutae_dictation::HudState;
+    non_activating
+        && match hud {
+            HudState::Error { .. } => true,
+            HudState::Idle
+            | HudState::Listening { .. }
+            | HudState::Processing
+            | HudState::Inserted { .. }
+            | HudState::Copied { .. } => false,
+        }
+}
 
-    unsafe extern "system" fn no_activate(
-        hwnd: HWND,
-        msg: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-        id: usize,
-        _: usize,
-    ) -> LRESULT {
-        if msg == WM_MOUSEACTIVATE {
-            return MA_NOACTIVATE as LRESULT;
-        }
-        // SAFETY: the subclass is installed on this HWND and runs on its owning UI thread.
-        unsafe {
-            if msg == WM_NCDESTROY {
-                RemoveWindowSubclass(hwnd, Some(no_activate), id);
-            }
-            DefSubclassProc(hwnd, msg, wparam, lparam)
-        }
+/// Must run on the main thread.
+fn set_hud_pointer(window: &tauri::WebviewWindow, accepts: bool) -> tauri::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::*;
+        // An empty input region; tao's `set_ignore_cursor_events` leaves one pixel.
+        let region = (!accepts).then(gtk::cairo::Region::create);
+        window
+            .gtk_window()?
+            .input_shape_combine_region(region.as_ref());
+        Ok(())
     }
+    // On Windows the HUD never accepts, so the flag never changes after creation. That
+    // matters: tao would hide a window it did not show itself when its flags change.
+    #[cfg(not(target_os = "linux"))]
+    window.set_ignore_cursor_events(!accepts)
+}
 
-    pub(super) fn enable_clicks(hwnd: HWND) -> bool {
-        // SAFETY: called at window creation on the owning UI thread; no callback data.
-        unsafe { SetWindowSubclass(hwnd, Some(no_activate), 1, 0) != 0 }
+/// Apply a HUD state to its window and the tray: pointer policy first, then visibility.
+pub(crate) fn present_hud(app: &AppHandle, hud: &minutae_dictation::HudState) {
+    sync_tray_dictation_error(app, hud);
+    let accepts = hud_accepts_pointer(hud_interactive(app), hud);
+    let a = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(w) = a.get_webview_window(HUD)
+            && let Err(e) = set_hud_pointer(&w, accepts)
+        {
+            tracing::warn!(error = %e, "HUD pointer handling");
+        }
+    });
+    if matches!(hud, minutae_dictation::HudState::Idle) {
+        hide_aux(app, HUD);
+    } else {
+        show_aux(app, HUD);
     }
 }
 
@@ -614,7 +621,7 @@ pub fn update_tray_recording(app: &AppHandle, rec: &RecordingState) {
 }
 
 /// Offer a native tray action when the HUD cannot receive clicks.
-pub(crate) fn sync_tray_dictation_error(app: &AppHandle, hud: &minutae_dictation::HudState) {
+fn sync_tray_dictation_error(app: &AppHandle, hud: &minutae_dictation::HudState) {
     let show = passive_dictation_error(hud_interactive(app), hud);
     let previous = app
         .state::<AppState>()
@@ -765,6 +772,53 @@ mod tray_tests {
         ] {
             assert!(!super::passive_dictation_error(false, &state));
         }
+    }
+
+    #[test]
+    fn hud_takes_the_pointer_only_for_a_control_on_a_non_activating_window() {
+        use minutae_dictation::{CopyReason, HudFixAction, HudState};
+
+        let error = HudState::Error {
+            message: "No speech detected".into(),
+            fix_action: HudFixAction::Retry,
+        };
+        let listening = HudState::Listening {
+            level: 0.0,
+            hands_free: false,
+            hotkey_held: true,
+            app: None,
+            shape: Default::default(),
+        };
+        // An error replaced by a new dictation, then dismissed from the tray.
+        let states = [
+            HudState::Idle,
+            listening.clone(),
+            HudState::Processing,
+            HudState::Inserted {
+                words: 1,
+                undo_available: false,
+                result_id: None,
+            },
+            HudState::Copied {
+                words: 1,
+                reason: CopyReason::NoTextField,
+            },
+            error.clone(),
+            listening,
+            error,
+            HudState::Idle,
+        ];
+        let accepts = |non_activating| {
+            states
+                .iter()
+                .map(|hud| super::hud_accepts_pointer(non_activating, hud))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            accepts(true),
+            [false, false, false, false, false, true, false, true, false]
+        );
+        assert_eq!(accepts(false), [false; 9]);
     }
 
     #[test]

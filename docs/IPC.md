@@ -78,18 +78,31 @@ default. A quick switch applies to the current dictation only. History keeps the
 | `preview_dictation_shape(sample, preset, edits)` | Runs the Rust rules and current vocabulary. Omit edits or pass null to use saved edits. Pass an object for a draft (empty object for factory rules). |
 | `get_dictation_hud` / `dictation://hud` | Snapshot and event stream, both `HudState`. Listening has the app label and preset. `shortcutPresets` lists successful temporary bindings for the current modifier combination and can be empty. Use `quickPresets` for the digit order (Verbatim, Chat message, Email, Notes and lists, Code & commit). |
 | `switch_dictation_shape(preset)` | Switch to a quick preset during listening. Option/Alt+1–5 is registered only during listening on native shortcut backends. While the dictation hotkey is down, its modifiers are part of the combination. |
-| `set_dictation_hud_interaction(hovered, focused)` | Set pointer-hover and keyboard-focus-within state together. Either pauses the remaining six-second timer for Inserted and Copied. Error has no timer. |
-| `dismiss_dictation_hud` | Hides a result or error. While listening or processing, requests cancellation. |
+| `set_dictation_hud_interaction(hovered, focused)` | Set pointer-hover and keyboard-focus-within state together. Either pauses the remaining six-second timer for Inserted and Copied. Error has no timer. Idle, Listening and Processing reset it. No current control calls it, and Inserted and Copied receive no pointer events. |
+| `dismiss_dictation_hud` | Hides a result or error. While listening or processing, requests cancellation. No current control calls it. |
+| `dismiss_dictation_error` | Hides the HUD only while its state is Error; otherwise does nothing, so a late click never cancels a newer dictation. Used by the error pill's Dismiss button; the tray item does the same. |
 | `undo_dictation_insert(resultId)` | Requires a visible Inserted result with `undoAvailable: true`, a matching result ID and the original process instance still frontmost. Native paste does not confirm insertion, so the native HUD currently reports Undo unavailable. |
 | `fix_dictation_error` | Performs the current Error state's `fixAction`. Retry starts a hands-free session. |
 
-The HUD is visible on macOS, Windows, X11 and Wayland. Use `capabilities.hudInteractive` to
-gate pointer controls. macOS enables first-mouse clicks on its non-activating NSPanel, and
-Windows handles `WM_MOUSEACTIVATE` on its non-activating HUD. X11 and Wayland use a passive,
-click-through HUD with GTK focus hints. Wayland placement and visibility depend on the compositor.
-Errors stay visible until dismissed or replaced by a new dictation. An interactive error pill
-offers a Dismiss button. A passive HUD exposes Dismiss dictation error in the native tray menu
-only while an error is visible.
+The HUD is visible on macOS, Windows, X11 and Wayland, and never takes focus from the app being
+dictated into. It is created click-through on every platform.
+
+| Platform | Clickable HUD (`capabilities.hudInteractive`) |
+|---|---|
+| macOS | Yes: a non-activating `NSPanel`. `false` if the panel style cannot be applied. |
+| Windows | No. A click on the WebView2 child window could activate the HUD despite `WS_EX_NOACTIVATE`. |
+| Linux X11 | No. GTK focus hints and an empty input region. |
+| Linux Wayland | No. Same as X11; placement and visibility depend on the compositor. |
+
+A clickable HUD accepts the pointer only while the current state renders a control the user can
+press (today: Error). In every other state, including Listening, Processing, Inserted and Copied,
+clicks pass through to the app underneath. While it accepts the pointer, the whole 320×64 HUD
+window does, not only the pill. `hud_accepts_pointer` in `shell.rs` holds this rule; a state that
+gains a control must be added there. Gate pointer controls on `capabilities.hudInteractive`.
+
+Errors stay visible until dismissed or replaced by a new dictation. A clickable error pill
+offers a Dismiss button. A passive HUD (Windows and Linux) exposes Dismiss dictation error in the
+native tray menu only while an error is visible.
 
 An insert stages text on the clipboard and sends Command+V on macOS or Ctrl+V on Windows and
 X11. Minutae checks the foreground app again immediately before sending the keystroke and

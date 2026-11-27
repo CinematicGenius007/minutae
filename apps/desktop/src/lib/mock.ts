@@ -83,7 +83,7 @@ const presets: Record<ShapePreset, Shape> = {
 };
 const capabilities: DictationCapabilities = {
   hudVisible: true,
-  hudInteractive: os === "macos" || os === "windows",
+  hudInteractive: os === "macos",
   localRewriteAvailable: false,
   cloudRewrite: "planned",
 };
@@ -144,7 +144,7 @@ function setMockHud(hud: HudState) {
   hudDeadline = null;
   hudRemaining = null;
   mockHud = hud;
-  if (hud.state === "idle") interactingWithHud = false;
+  if (hud.state === "idle" || hud.state === "listening" || hud.state === "processing") interactingWithHud = false;
   if (hud.state === "inserted" || hud.state === "copied") {
     if (interactingWithHud) hudRemaining = 6000;
     else startHudTimer(6000);
@@ -556,6 +556,8 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
       }
       const retentionChanged = retention !== undefined && retention !== settings.dictationRetentionDays;
       settings = { ...settings, ...patch };
+      settings.dictationShapeEdits = Object.fromEntries(Object.entries(settings.dictationShapeEdits)
+        .filter(([preset]) => !preservesIdentifiers(preset as ShapePreset)));
       if (patch.tidyDictation !== undefined && patch.dictationDefaultShape === undefined) settings.dictationDefaultShape = null;
       emit("settings://changed", settings);
       if (retentionChanged && retention != null) {
@@ -677,6 +679,9 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
       return r(undefined);
     }
     case "dismiss_dictation_hud": setMockHud({ state: "idle" }); return r(undefined);
+    case "dismiss_dictation_error":
+      if (mockHud.state === "error") setMockHud({ state: "idle" });
+      return r(undefined);
     case "undo_dictation_insert":
       if (mockHud.state !== "inserted" || !mockHud.undoAvailable || mockHud.resultId !== args.resultId) return fail("Undo is unavailable.");
       setMockHud({ state: "idle" });

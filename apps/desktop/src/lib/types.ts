@@ -117,6 +117,8 @@ export interface DictationApp { app: AppMatcher; displayName: string; suggestedP
 export interface DictationCapabilities {
   /** A passive HUD is available even when pointer controls are disabled. */
   hudVisible: boolean;
+  /** The HUD window can take clicks without stealing focus (macOS only). It still passes
+   * clicks through except while the current state shows a control (today: error). */
   hudInteractive: boolean;
   localRewriteAvailable: boolean;
   cloudRewrite: "planned";

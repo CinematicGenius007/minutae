@@ -101,6 +101,7 @@ export const api = {
     call<void>("set_dictation_hud_interaction", { hovered, focused }),
   /** Hide a result or error, or cancel an active dictation. */
   dismissDictationHud: () => call<void>("dismiss_dictation_hud"),
+  dismissDictationError: () => call<void>("dismiss_dictation_error"),
   /** Requires a visible Inserted result with undoAvailable and a matching result ID. */
   undoDictationInsert: (resultId: Uuid) => call<void>("undo_dictation_insert", { resultId }),
   fixDictationError: () => call<void>("fix_dictation_error"),

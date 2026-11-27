@@ -218,12 +218,7 @@ pub fn init(app: &AppHandle, rt: tokio::runtime::Handle) {
             // Meter updates should never cause another window show/position call.
             if std::mem::discriminant(&hud) != std::mem::discriminant(&next) {
                 clock.set_state(&next);
-                crate::shell::sync_tray_dictation_error(&app, &next);
-                if matches!(next, HudState::Idle) {
-                    crate::shell::hide_aux(&app, crate::shell::HUD);
-                } else {
-                    crate::shell::show_aux(&app, crate::shell::HUD);
-                }
+                crate::shell::present_hud(&app, &next);
             }
             hud = next;
             emit_hud(&app, &hud);
@@ -287,7 +282,8 @@ fn handle_hud_request(
                 }
             }
             HudCommand::Dismiss => hide = true,
-            // A tray click queued during an error must never dismiss a newer session.
+            // An error button or tray click queued during an error must never dismiss a
+            // newer session.
             HudCommand::DismissError => hide = matches!(hud, HudState::Error { .. }),
             HudCommand::Undo(result_id) => {
                 let HudState::Inserted {
@@ -363,7 +359,11 @@ struct HudClock {
 
 impl HudClock {
     fn set_state(&mut self, hud: &HudState) {
-        if matches!(hud, HudState::Idle) {
+        // A new or finished session: hover and focus on the old result are gone.
+        if matches!(
+            hud,
+            HudState::Idle | HudState::Listening { .. } | HudState::Processing
+        ) {
             self.interacting = false;
         }
         let duration = matches!(hud, HudState::Inserted { .. } | HudState::Copied { .. })
@@ -963,6 +963,38 @@ mod tests {
                 fix_action: HudFixAction::Retry,
             });
             assert_eq!(clock.deadline, None);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hud_interaction_does_not_carry_into_a_new_dictation() {
+        let inserted = HudState::Inserted {
+            words: 1,
+            undo_available: false,
+            result_id: None,
+        };
+        for next in [
+            HudState::Idle,
+            HudState::Listening {
+                level: 0.0,
+                hands_free: false,
+                hotkey_held: true,
+                app: None,
+                shape: ShapePreset::Tidy,
+            },
+            HudState::Processing,
+        ] {
+            let mut clock = HudClock::default();
+            clock.set_state(&inserted);
+            clock.interact(true);
+            clock.set_state(&next);
+            assert_eq!(clock.deadline, None);
+            clock.set_state(&inserted);
+            assert_eq!(
+                clock.deadline,
+                Some(Instant::now() + Duration::from_secs(6)),
+                "result after {next:?} must expire"
+            );
         }
     }
 

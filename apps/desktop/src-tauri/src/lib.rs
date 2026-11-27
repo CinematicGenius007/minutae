@@ -374,6 +374,7 @@ pub fn run() {
             commands::switch_dictation_shape,
             commands::set_dictation_hud_interaction,
             commands::dismiss_dictation_hud,
+            commands::dismiss_dictation_error,
             commands::undo_dictation_insert,
             commands::fix_dictation_error,
             commands::list_dictations,

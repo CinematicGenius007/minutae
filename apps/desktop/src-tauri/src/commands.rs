@@ -127,7 +127,12 @@ pub fn merge_settings(current: &AppSettings, patch: serde_json::Value) -> R<AppS
             obj.insert(k, v);
         }
     }
-    serde_json::from_value(base).map_err(|e| format!("Invalid setting: {e}"))
+    let mut merged: AppSettings =
+        serde_json::from_value(base).map_err(|e| format!("Invalid setting: {e}"))?;
+    merged
+        .dictation_shape_edits
+        .retain(|preset, _| !preset.preserves_identifiers());
+    Ok(merged)
 }
 
 #[tauri::command]
@@ -878,6 +883,13 @@ pub async fn set_dictation_hud_interaction(app: AppHandle, hovered: bool, focuse
 #[tauri::command]
 pub async fn dismiss_dictation_hud(app: AppHandle) -> R<()> {
     crate::dictation::hud_request(&app, crate::dictation::HudCommand::Dismiss)
+        .await
+        .map(|_| ())
+}
+
+#[tauri::command]
+pub async fn dismiss_dictation_error(app: AppHandle) -> R<()> {
+    crate::dictation::hud_request(&app, crate::dictation::HudCommand::DismissError)
         .await
         .map(|_| ())
 }
@@ -1661,6 +1673,32 @@ mod tests {
         assert_eq!(s.prompt_delay_seconds, base.prompt_delay_seconds);
         assert!(merge_settings(&base, serde_json::json!({"whisperModel": "huge"})).is_err());
         assert!(merge_settings(&base, serde_json::json!([1])).is_err());
+    }
+
+    #[test]
+    fn settings_patch_drops_edits_for_identifier_preserving_shapes() {
+        use minutae_core::dictation::ShapePreset;
+
+        let edits = serde_json::json!({ "capitals": "sentence", "dropFinalPeriod": true });
+        let patched = merge_settings(
+            &AppSettings::default(),
+            serde_json::json!({ "dictationShapeEdits": {
+                "verbatim": edits, "codeAndCommit": edits, "email": edits
+            } }),
+        )
+        .unwrap();
+        assert_eq!(
+            patched.dictation_shape_edits.keys().collect::<Vec<_>>(),
+            [&ShapePreset::Email]
+        );
+
+        // Keys stored by an earlier build go away with the next settings change.
+        let mut stored = AppSettings::default();
+        stored
+            .dictation_shape_edits
+            .insert(ShapePreset::Verbatim, Default::default());
+        let patched = merge_settings(&stored, serde_json::json!({ "appearance": "dark" })).unwrap();
+        assert!(patched.dictation_shape_edits.is_empty());
     }
 
     #[test]

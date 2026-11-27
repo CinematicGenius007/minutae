@@ -79,7 +79,7 @@ export default function HudWindow() {
           state="error"
           message={hud.message}
           onDismiss={options.data?.capabilities.hudInteractive
-            ? () => { void api.dismissDictationHud().catch(console.error); }
+            ? () => { void api.dismissDictationError().catch(console.error); }
             : undefined}
         />
       )}
