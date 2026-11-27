@@ -63,10 +63,12 @@ export default function DictateScreen() {
   const [pendingDelete, setPendingDelete] = useState<Dictation | null>(null);
 
   const searchRef = useRef<HTMLInputElement>(null);
+  const recentRef = useRef<HTMLElement>(null);
   const copyRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const moreRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const returnFocusId = useRef<string | null>(null);
   const focusAfterDelete = useRef<string | "search" | null>(null);
+  const focusAfterRetry = useRef(false);
 
   useEvent<void>(events.dictationsChanged, () => {
     void reloadList();
@@ -107,6 +109,17 @@ export default function DictateScreen() {
       searchRef.current?.focus();
     }
   }, [list.status, rows]);
+
+  // After a keyboard/AT retry recovers from an error, move focus from the unmounted "Try again"
+  // button to the Recent heading so screen readers land at the top of the loaded section without
+  // leaving a stray focus ring on a mouse retry.
+  useEffect(() => {
+    if (!focusAfterRetry.current || list.status === "loading") return;
+    focusAfterRetry.current = false;
+    if (list.status !== "ready") return;
+    if (document.activeElement && document.activeElement !== document.body) return;
+    recentRef.current?.focus();
+  }, [list]);
 
   const copy = (d: Dictation) => {
     api
@@ -226,7 +239,7 @@ export default function DictateScreen() {
           </section>
 
           <section aria-labelledby="recent-label" aria-busy={list.status === "loading" || undefined}>
-            <GroupLabel as="h2" id="recent-label" count={historyLimit}>
+            <GroupLabel ref={recentRef} as="h2" id="recent-label" tabIndex={-1} count={historyLimit}>
               Recent
             </GroupLabel>
             <div className="mn-sr-only" role="status" aria-live="polite" aria-atomic="true">
@@ -244,7 +257,8 @@ export default function DictateScreen() {
                   action={
                     <Button
                       variant="secondary"
-                      onClick={() => {
+                      onClick={(e) => {
+                        focusAfterRetry.current = e.detail === 0;
                         void reloadList();
                         void reloadStats();
                       }}

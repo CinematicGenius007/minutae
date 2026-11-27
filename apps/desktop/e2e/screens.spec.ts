@@ -141,6 +141,7 @@ const SHOTS: Shot[] = [
     ready: "Minutae for Mac",
     act: showImport(async (page) => {
       await page.getByRole("button", { name: "Import", exact: true }).click();
+      await page.mouse.move(0, 0);
       await expect(page.getByText("21 of 54")).toBeVisible();
     }),
   },
@@ -150,6 +151,7 @@ const SHOTS: Shot[] = [
     ready: "Minutae for Mac",
     act: showImport(async (page) => {
       await page.getByRole("button", { name: "Import", exact: true }).click();
+      await page.mouse.move(0, 0);
       await expect(page.getByText("Imported 41 meetings and 12 dictations")).toBeVisible();
       await expect(page.getByText("53 already imported")).toBeVisible();
     }),
@@ -218,7 +220,10 @@ for (const theme of THEMES) {
         if (shot.viewport) await page.setViewportSize(shot.viewport);
         await open(page, theme, shot.route, shot.query);
         await settle(page, shot.ready);
-        if (shot.act) await shot.act(page);
+        if (shot.act) {
+          await shot.act(page);
+          await page.mouse.move(0, 0);
+        }
         await expect(page).toHaveScreenshot(`${shot.name}-${theme}.png`, {
           fullPage: shot.name === "gallery",
           mask: shot.mask?.(page),
@@ -1000,8 +1005,25 @@ test("dictate a11y: error state announces alert and recovers on retry", async ({
   await settle(page, "Couldn't load your dictations.");
   const alert = page.locator('[data-screen="dictate"] [role="alert"]');
   await expect(alert).toContainText("Couldn't load your dictations.");
+
+  // Keyboard retry moves focus from the unmounted button to the Recent heading (not document.body).
+  const retry = alert.getByRole("button", { name: "Try again" });
+  await retry.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("Running ten minutes late")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Recent", level: 2 })).toBeFocused();
+
+  // Mouse retry recovers without leaving a stray focus ring on any control or heading.
+  await page.reload();
+  await settle(page, "Couldn't load your dictations.");
   await alert.getByRole("button", { name: "Try again" }).click();
   await expect(page.getByText("Running ten minutes late")).toBeVisible();
+  const hasStrayFocusRing = await page.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null;
+    if (!el || el === document.body) return false;
+    return el.matches(":focus-visible") || el.tagName === "INPUT";
+  });
+  expect(hasStrayFocusRing).toBe(false);
 });
 
 test("dictate a11y: hit targets (>= 28x28 desktop, >= 44x44 narrow), narrow width and 200% zoom reflow", async ({ page }) => {
