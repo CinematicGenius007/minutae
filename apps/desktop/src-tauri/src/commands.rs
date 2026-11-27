@@ -200,7 +200,7 @@ async fn change_settings(
     crate::apply_settings(app, &old, &new);
     let _ = app.emit(ev::SETTINGS_CHANGED, &new);
     if old.summaries_path != new.summaries_path || old.recordings_path != new.recordings_path {
-        crate::spawn_export_backfill(&app);
+        crate::spawn_export_backfill(app);
     }
     if old.dictation_retention_days != new.dictation_retention_days {
         crate::dictation::prune(app).await;

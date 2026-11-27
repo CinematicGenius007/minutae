@@ -23,7 +23,7 @@ pub struct ActionItemRow {
 
 // Action ids stay opaque and cannot be recycled by SQLite when the previous
 // highest row is deleted, including across summary refreshes.
-fn new_action_id() -> i64 {
+pub fn new_action_id() -> i64 {
     (uuid::Uuid::new_v4().as_u128() as i64) & i64::MAX
 }
 
@@ -97,12 +97,33 @@ pub enum ActionChange {
     SetDone(i64, bool),
 }
 
+/// What the saved checklist is published from.
+pub struct ChecklistState<'a> {
+    /// The saved summary Markdown, empty when the meeting has no summary.
+    pub markdown: &'a str,
+    /// The action items before and after the change being published.
+    pub before: &'a [ActionItemRow],
+    pub rows: &'a [ActionItemRow],
+    /// The publisher's record of the checklist it last wrote.
+    pub written: Option<&'a str>,
+}
+
+/// What publishing the checklist saves.
+pub struct ChecklistUpdate {
+    pub markdown: String,
+    /// The action items in order, including any the publisher changed or added.
+    /// It never removes one.
+    pub rows: Vec<ActionItemRow>,
+    pub written: Option<String>,
+}
+
 /// Publish the rendered checklist in the same SQLite transaction as the action change.
-pub type PublishChecklist<'a> = dyn FnMut(&str, &[ActionItemRow]) -> Result<String> + 'a;
+pub type PublishChecklist<'a> = dyn FnMut(ChecklistState<'_>) -> Result<ChecklistUpdate> + 'a;
 
 fn publish_checklist(
     tx: &rusqlite::Connection,
     id: MeetingId,
+    before: &[ActionItemRow],
     publish: &mut PublishChecklist<'_>,
 ) -> Result<()> {
     let mid = id.to_string();
@@ -113,14 +134,47 @@ fn publish_checklist(
             |r| r.get(0),
         )
         .optional()?;
-    let rendered = publish(
-        markdown.as_deref().unwrap_or_default(),
-        &action_rows(tx, id)?,
+    let written: Option<String> = tx.query_row(
+        "SELECT exported_checklist FROM meetings WHERE id = ?1",
+        [&mid],
+        |r| r.get(0),
     )?;
+    let rows = action_rows(tx, id)?;
+    let update = publish(ChecklistState {
+        markdown: markdown.as_deref().unwrap_or_default(),
+        before,
+        rows: &rows,
+        written: written.as_deref(),
+    })?;
+    for row in update.rows.iter().filter(|row| !rows.contains(row)) {
+        tx.execute(
+            "INSERT INTO action_items (id, meeting_id, position, text, owner, due, done, created_at, source_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(id) DO UPDATE SET position = excluded.position, text = excluded.text,
+               owner = excluded.owner, due = excluded.due, done = excluded.done,
+               source_ms = excluded.source_ms",
+            params![
+                row.id,
+                mid,
+                row.position,
+                row.item.text,
+                row.item.owner,
+                row.item.due,
+                row.item.done,
+                now_ms(),
+                row.source_ms
+            ],
+        )?;
+    }
+    // Without a summary there is no export to keep track of.
     if markdown.is_some() {
         tx.execute(
             "UPDATE summaries SET markdown = ?2, updated_at = ?3 WHERE meeting_id = ?1",
-            params![mid, rendered, now_ms()],
+            params![mid, update.markdown, now_ms()],
+        )?;
+        tx.execute(
+            "UPDATE meetings SET exported_checklist = ?2 WHERE id = ?1",
+            params![mid, update.written],
         )?;
     }
     Ok(())
@@ -144,6 +198,7 @@ impl Store {
         publish: &mut PublishChecklist<'_>,
     ) -> Result<()> {
         self.transaction(|tx| {
+            let before = action_rows(tx, summary.meeting_id)?;
             write_summary(tx, summary)?;
             tx.execute(
                 "INSERT OR IGNORE INTO meeting_exports (meeting_id, path) VALUES (?1, ?2)",
@@ -164,7 +219,7 @@ impl Store {
                     ],
                 )?;
             }
-            publish_checklist(tx, summary.meeting_id, publish)
+            publish_checklist(tx, summary.meeting_id, &before, publish)
         })
     }
 
@@ -192,6 +247,7 @@ impl Store {
                 "UPDATE meetings SET checklist_curated=1 WHERE id=?1 AND status != 'recording'",
                 [&mid],
             )?, &mid)?;
+            let before = action_rows(tx, meeting)?;
             let row_id = match change {
                 ActionChange::Add(a, source) => tx.query_row(
                     "INSERT INTO action_items (meeting_id, position, text, owner, due, done, created_at, source_ms, id)
@@ -215,7 +271,7 @@ impl Store {
                     id
                 }
             };
-            publish_checklist(tx, meeting, publish)?;
+            publish_checklist(tx, meeting, &before, publish)?;
             Ok(action_rows(tx, meeting)?.into_iter().find(|a| a.id == row_id))
         })
     }

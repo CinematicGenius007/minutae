@@ -18,6 +18,7 @@ use crate::state::{
     AppState, MeetingOperations, emit_meetings_changed, recordings_root, summaries_root,
 };
 
+mod checklist;
 mod erase;
 mod files;
 mod publication;
@@ -1573,6 +1574,531 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             format!("{prefix}{tail}")
+        );
+    }
+
+    /// A published meeting whose checklist holds `tasks`, none completed.
+    fn exported(store: &Store, root: &Path, tasks: &[&str]) -> (Meeting, PathBuf) {
+        let meeting = meeting(store, MeetingStatus::Done);
+        let mut generated = summary(&meeting, "Saved");
+        generated.action_items = tasks.iter().map(|text| new_action(text)).collect();
+        generated.markdown.push_str("\n## Action Items\n");
+        for text in tasks {
+            generated.markdown.push_str(&format!("- [ ] {text}\n"));
+        }
+        publish_summary(store, &meeting, &generated, None, root).unwrap();
+        let path = markdown_path(store, root, meeting.id).unwrap().unwrap();
+        (meeting, path)
+    }
+
+    fn tasks(store: &Store, id: MeetingId) -> Vec<(String, bool)> {
+        store
+            .list_action_items(id)
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.item.text, row.item.done))
+            .collect()
+    }
+
+    fn row_id(store: &Store, id: MeetingId, text: &str) -> i64 {
+        store
+            .list_action_items(id)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.item.text == text)
+            .unwrap_or_else(|| panic!("no action item {text}"))
+            .id
+    }
+
+    fn owned(expected: &[(&str, bool)]) -> Vec<(String, bool)> {
+        expected
+            .iter()
+            .map(|(text, done)| (text.to_string(), *done))
+            .collect()
+    }
+
+    /// Replaces the checklist of an export, keeping everything before it.
+    fn rewrite_checklist(path: &Path, section: &str) -> String {
+        let text = fs::read_to_string(path).unwrap();
+        let (head, _) = text.split_once("## Action Items\n").unwrap();
+        let edited = format!("{head}## Action Items\n{section}");
+        fs::write(path, &edited).unwrap();
+        edited
+    }
+
+    fn checklist(path: &Path) -> String {
+        let text = fs::read_to_string(path).unwrap();
+        text.split_once("## Action Items\n").unwrap().1.to_string()
+    }
+
+    #[test]
+    fn typed_task_is_adopted_by_every_checklist_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        for kind in ["tick", "add", "edit", "delete"] {
+            let (meeting, path) = exported(&store, tmp.path(), &["Send notes", "Book room"]);
+            let id = meeting.id;
+            let typed =
+                "- [ ] Send notes\n- [x] Typed by hand\n- [ ] Book room\n* [ ]  Typed  last\n";
+            rewrite_checklist(&path, typed);
+            let target = row_id(&store, id, "Book room");
+            let mutation = match kind {
+                "tick" => ActionChange::SetDone(target, true),
+                "add" => ActionChange::Add(new_action("From the app"), None),
+                "edit" => ActionChange::Edit(target, new_action("Book the big room"), None),
+                _ => ActionChange::Delete(target),
+            };
+            assert_eq!(change(&store, &path, id, mutation).1, None, "{kind}");
+            let (file, rows): (&str, &[(&str, bool)]) = match kind {
+                "tick" => (
+                    "- [ ] Send notes\n- [x] Typed by hand\n- [x] Book room\n* [ ]  Typed  last\n",
+                    &[
+                        ("Send notes", false),
+                        ("Typed by hand", true),
+                        ("Book room", true),
+                        ("Typed last", false),
+                    ],
+                ),
+                "add" => (
+                    "- [ ] Send notes\n- [x] Typed by hand\n- [ ] Book room\n* [ ]  Typed  last\n- [ ] From the app\n",
+                    &[
+                        ("Send notes", false),
+                        ("Typed by hand", true),
+                        ("Book room", false),
+                        ("Typed last", false),
+                        ("From the app", false),
+                    ],
+                ),
+                "edit" => (
+                    "- [ ] Send notes\n- [x] Typed by hand\n- [ ] Book the big room\n* [ ]  Typed  last\n",
+                    &[
+                        ("Send notes", false),
+                        ("Typed by hand", true),
+                        ("Book the big room", false),
+                        ("Typed last", false),
+                    ],
+                ),
+                _ => (
+                    "- [ ] Send notes\n- [x] Typed by hand\n* [ ]  Typed  last\n",
+                    &[
+                        ("Send notes", false),
+                        ("Typed by hand", true),
+                        ("Typed last", false),
+                    ],
+                ),
+            };
+            assert_eq!(checklist(&path), file, "{kind}");
+            assert_eq!(tasks(&store, id), owned(rows), "{kind}");
+            let copy = store.get_summary(id).unwrap().unwrap().markdown;
+            assert!(copy.contains("- [x] Typed by hand"), "{kind}");
+
+            // Once adopted it is the app's item: no duplicate, and deletable.
+            let typed = row_id(&store, id, "Typed by hand");
+            assert_eq!(
+                change(&store, &path, id, ActionChange::Delete(typed)).1,
+                None
+            );
+            assert!(!checklist(&path).contains("Typed by hand"), "{kind}");
+            let last = row_id(&store, id, "Typed last");
+            change(&store, &path, id, ActionChange::SetDone(last, true));
+            assert_eq!(checklist(&path).matches("Typed").count(), 1, "{kind}");
+            assert!(!tasks(&store, id).iter().any(|t| t.0 == "Typed by hand"));
+        }
+    }
+
+    #[test]
+    fn deleted_item_is_not_resurrected_after_an_untouched_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        // Both an export published by this version and one from before the upgrade.
+        for upgraded in [false, true] {
+            let (meeting, path) = if upgraded {
+                let meeting = meeting(&store, MeetingStatus::Done);
+                let mut old = summary(&meeting, "Legacy");
+                old.action_items.push(new_action("Book room"));
+                old.markdown
+                    .push_str("\n## Action Items\n- [ ] Send notes\n- [ ] Book room\n");
+                store.upsert_summary(&old).unwrap();
+                let path = tmp.path().join(summary_file_name(&meeting));
+                fs::write(&path, &old.markdown).unwrap();
+                (meeting, path)
+            } else {
+                exported(&store, tmp.path(), &["Send notes", "Book room"])
+            };
+            let id = meeting.id;
+            let original = fs::read_to_string(&path).unwrap();
+            let ambiguous = format!("{original}\n## Action Items\n- [ ] Elsewhere\n");
+            fs::write(&path, &ambiguous).unwrap();
+            let gone = row_id(&store, id, "Send notes");
+            assert!(
+                change(&store, &path, id, ActionChange::Delete(gone))
+                    .1
+                    .is_some()
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), ambiguous);
+
+            // The stale file comes back readable, and once more with no file at all.
+            fs::remove_file(&path).unwrap();
+            let kept = row_id(&store, id, "Book room");
+            change(&store, &path, id, ActionChange::SetDone(kept, true));
+            fs::write(&path, &original).unwrap();
+            let (_, notice) = change(&store, &path, id, ActionChange::SetDone(kept, true));
+            assert_eq!(notice, None, "{upgraded}");
+            assert_eq!(checklist(&path), "- [x] Book room\n", "{upgraded}");
+            assert_eq!(tasks(&store, id), owned(&[("Book room", true)]));
+        }
+    }
+
+    #[test]
+    fn restored_older_export_never_brings_back_removed_wording() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        for edit in [false, true] {
+            let (meeting, path) = exported(&store, tmp.path(), &["Send notes", "Book room"]);
+            let id = meeting.id;
+            let older = fs::read_to_string(&path).unwrap();
+            let target = row_id(&store, id, "Send notes");
+            let mutation = if edit {
+                ActionChange::Edit(target, new_action("Send the notes to Ana"), None)
+            } else {
+                ActionChange::Delete(target)
+            };
+            assert_eq!(change(&store, &path, id, mutation).1, None);
+            let expected = tasks(&store, id);
+            fs::write(&path, &older).unwrap();
+            let kept = row_id(&store, id, "Book room");
+            let (_, notice) = change(&store, &path, id, ActionChange::SetDone(kept, false));
+            assert!(notice.is_some(), "{edit}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), older);
+            assert_eq!(tasks(&store, id), expected, "{edit}");
+        }
+    }
+
+    #[test]
+    fn hand_edited_wording_and_ticks_are_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let (meeting, path) =
+            exported(&store, tmp.path(), &["Send notes", "Book room", "Call Ana"]);
+        let id = meeting.id;
+        let notes = row_id(&store, id, "Send notes");
+        let room = row_id(&store, id, "Book room");
+        rewrite_checklist(
+            &path,
+            "- [x] Send notes\n- [ ] Book room 4 for Friday\n- [ ] Call Ana\n",
+        );
+        let ana = row_id(&store, id, "Call Ana");
+        assert_eq!(
+            change(&store, &path, id, ActionChange::SetDone(ana, true)).1,
+            None
+        );
+        assert_eq!(
+            checklist(&path),
+            "- [x] Send notes\n- [ ] Book room 4 for Friday\n- [x] Call Ana\n"
+        );
+        assert_eq!(
+            tasks(&store, id),
+            owned(&[
+                ("Send notes", true),
+                ("Book room 4 for Friday", false),
+                ("Call Ana", true)
+            ])
+        );
+        assert_eq!(row_id(&store, id, "Book room 4 for Friday"), room);
+
+        // A change to one side of a line combines with the other side.
+        rewrite_checklist(
+            &path,
+            "- [x] Send the notes\n- [ ] Book room 4 for Friday\n- [x] Call Ana\n",
+        );
+        assert_eq!(
+            change(&store, &path, id, ActionChange::SetDone(notes, false)).1,
+            None
+        );
+        assert_eq!(
+            checklist(&path),
+            "- [ ] Send the notes\n- [ ] Book room 4 for Friday\n- [x] Call Ana\n"
+        );
+        assert_eq!(tasks(&store, id)[0], ("Send the notes".into(), false));
+    }
+
+    #[test]
+    fn hand_edits_keep_owner_due_and_timestamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let (meeting, path) = exported(&store, tmp.path(), &["Book room"]);
+        let id = meeting.id;
+        let action = CoreAction {
+            text: "Send the handoff".into(),
+            owner: Some("Alice".into()),
+            due: Some("Friday".into()),
+            done: false,
+        };
+        change(&store, &path, id, ActionChange::Add(action, Some(724_500)));
+        rewrite_checklist(
+            &path,
+            "- [ ] Book room\n- [ ] Alice: Send the full handoff (due Friday) · 12:04\n",
+        );
+        let room = row_id(&store, id, "Book room");
+        assert_eq!(
+            change(&store, &path, id, ActionChange::SetDone(room, true)).1,
+            None
+        );
+        let row = store.list_action_items(id).unwrap().pop().unwrap();
+        assert_eq!(row.item.text, "Send the full handoff");
+        assert_eq!(row.item.owner.as_deref(), Some("Alice"));
+        assert_eq!(row.item.due.as_deref(), Some("Friday"));
+        assert_eq!(row.source_ms, Some(724_500));
+    }
+
+    #[test]
+    fn edits_that_cannot_be_matched_leave_the_export_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let cases = [
+            ("removed line", "- [ ] Send notes\n- [ ] Call Ana\n"),
+            (
+                "replaced by something else",
+                "- [ ] Send notes\n- [ ] Order lunch\n- [ ] Call Ana\n",
+            ),
+            (
+                "two neighbours rewritten",
+                "- [ ] Send notes today\n- [ ] Book room today\n- [ ] Call Ana\n",
+            ),
+            (
+                "same item edited twice",
+                "- [ ] Send notes\n- [ ] Book room\n- [ ] Call Ana tonight\n",
+            ),
+            (
+                "nested line",
+                "- [ ] Send notes\n  - to Ana\n- [ ] Book room\n- [ ] Call Ana\n",
+            ),
+            (
+                "nested after a blank",
+                "- [ ] Send notes\n\n  Ask first.\n- [ ] Book room\n- [ ] Call Ana\n",
+            ),
+            (
+                "continued line",
+                "- [ ] Send notes\nand the deck\n- [ ] Book room\n- [ ] Call Ana\n",
+            ),
+            (
+                "quoted task",
+                "- [ ] Send notes\n- [ ] Book room\n- [ ] Call Ana\n\n> - [ ] Quoted\n",
+            ),
+        ];
+        for (name, section) in cases {
+            let (meeting, path) =
+                exported(&store, tmp.path(), &["Send notes", "Book room", "Call Ana"]);
+            let id = meeting.id;
+            let edited = rewrite_checklist(&path, section);
+            let ana = row_id(&store, id, "Call Ana");
+            let (_, notice) = change(
+                &store,
+                &path,
+                id,
+                ActionChange::Edit(ana, new_action("Call Ana tomorrow"), None),
+            );
+            assert!(notice.unwrap().contains("left unchanged"), "{name}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), edited, "{name}");
+            assert_eq!(
+                tasks(&store, id),
+                owned(&[
+                    ("Send notes", false),
+                    ("Book room", false),
+                    ("Call Ana tomorrow", false)
+                ]),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn deleting_a_rewritten_item_leaves_the_export_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let (meeting, path) = exported(&store, tmp.path(), &["Send notes", "Book room"]);
+        let id = meeting.id;
+        let edited = rewrite_checklist(&path, "- [ ] Send notes to Ana\n- [ ] Book room\n");
+        let notes = row_id(&store, id, "Send notes");
+        let (_, notice) = change(&store, &path, id, ActionChange::Delete(notes));
+        assert!(notice.is_some());
+        assert_eq!(fs::read_to_string(&path).unwrap(), edited);
+        assert_eq!(tasks(&store, id), owned(&[("Book room", false)]));
+        // Still no resurrection on the next change.
+        let room = row_id(&store, id, "Book room");
+        change(&store, &path, id, ActionChange::SetDone(room, true));
+        assert_eq!(fs::read_to_string(&path).unwrap(), edited);
+        assert_eq!(tasks(&store, id), owned(&[("Book room", true)]));
+    }
+
+    #[test]
+    fn notes_inside_the_checklist_section_survive_every_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let (meeting, path) = exported(&store, tmp.path(), &["Send notes", "Book room"]);
+        let id = meeting.id;
+        rewrite_checklist(
+            &path,
+            "Before lunch:\n\n- [ ] Send notes\n\nAsk Ana first.\n\n- [ ] Book room\n\n- [ ] Typed later\n- a plain bullet\n\n<!-- mine -->\n",
+        );
+        let notes = row_id(&store, id, "Send notes");
+        assert_eq!(
+            change(&store, &path, id, ActionChange::Delete(notes)).1,
+            None
+        );
+        assert_eq!(
+            change(
+                &store,
+                &path,
+                id,
+                ActionChange::Add(new_action("New"), None)
+            )
+            .1,
+            None
+        );
+        assert_eq!(
+            checklist(&path),
+            "Before lunch:\n\n\nAsk Ana first.\n\n- [ ] Book room\n\n- [ ] Typed later\n- [ ] New\n- a plain bullet\n\n<!-- mine -->\n"
+        );
+        assert_eq!(
+            tasks(&store, id),
+            owned(&[("Book room", false), ("Typed later", false), ("New", false)])
+        );
+    }
+
+    #[test]
+    fn app_edit_wins_over_nothing_when_the_file_reworded_the_item() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let (meeting, path) = exported(&store, tmp.path(), &["Ask Bob about rooms"]);
+        let id = meeting.id;
+        let edited = rewrite_checklist(&path, "- [ ] Ask about the rooms\n");
+        let row = row_id(&store, id, "Ask Bob about rooms");
+        // Only the owner changes, so the checklist wording stays the same.
+        let mut owned_item = new_action("Ask Bob about rooms");
+        owned_item.owner = Some("Bob".into());
+        let (saved, notice) = change(&store, &path, id, ActionChange::Edit(row, owned_item, None));
+        assert!(notice.is_some());
+        assert_eq!(fs::read_to_string(&path).unwrap(), edited);
+        assert_eq!(saved.unwrap().item.owner.as_deref(), Some("Bob"));
+    }
+
+    #[test]
+    fn app_tick_is_never_undone_by_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let (meeting, path) = exported(&store, tmp.path(), &["Send notes"]);
+        let id = meeting.id;
+        let row = row_id(&store, id, "Send notes");
+        // The app ticks while the file can't be updated, then the user ticks it
+        // there too, and the app unticks.
+        let original = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("{original}\n## Action Items\n")).unwrap();
+        change(&store, &path, id, ActionChange::SetDone(row, true));
+        let edited = rewrite_checklist(&path, "- [x] Send notes\n");
+        let (_, notice) = change(&store, &path, id, ActionChange::SetDone(row, false));
+        assert!(notice.is_some());
+        assert_eq!(fs::read_to_string(&path).unwrap(), edited);
+        assert_eq!(tasks(&store, id), owned(&[("Send notes", false)]));
+    }
+
+    #[test]
+    fn typed_task_is_adopted_beside_an_item_removed_on_both_sides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let (meeting, path) = exported(&store, tmp.path(), &["Send notes", "Book room"]);
+        let id = meeting.id;
+        rewrite_checklist(&path, "- [ ] Book room\n- [ ] Order lunch\n");
+        let notes = row_id(&store, id, "Send notes");
+        assert_eq!(
+            change(&store, &path, id, ActionChange::Delete(notes)).1,
+            None
+        );
+        assert_eq!(checklist(&path), "- [ ] Book room\n- [ ] Order lunch\n");
+        assert_eq!(
+            tasks(&store, id),
+            owned(&[("Book room", false), ("Order lunch", false)])
+        );
+    }
+
+    #[test]
+    fn typed_task_survives_a_rerun_once_adopted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let (meeting, path) = exported(&store, tmp.path(), &["Send notes"]);
+        let id = meeting.id;
+        rewrite_checklist(&path, "- [ ] Send notes\n- [ ] Typed by hand\n");
+        let notes = row_id(&store, id, "Send notes");
+        change(&store, &path, id, ActionChange::SetDone(notes, true));
+        publish_summary(
+            &store,
+            &meeting,
+            &summary(&meeting, "Again"),
+            None,
+            tmp.path(),
+        )
+        .unwrap();
+        assert_eq!(checklist(&path), "- [x] Send notes\n- [ ] Typed by hand\n");
+    }
+
+    #[test]
+    fn removed_wording_is_remembered_when_a_section_is_added_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let (meeting, path) = exported(&store, tmp.path(), &["Send notes"]);
+        let id = meeting.id;
+        let older = fs::read_to_string(&path).unwrap();
+        let notes = row_id(&store, id, "Send notes");
+        change(&store, &path, id, ActionChange::Delete(notes));
+        // A rerun with a curated, empty checklist writes no section.
+        let mut again = summary(&meeting, "Again");
+        again.action_items.clear();
+        publish_summary(&store, &meeting, &again, None, tmp.path()).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("Action Items"));
+        let added = change(
+            &store,
+            &path,
+            id,
+            ActionChange::Add(new_action("Later"), None),
+        )
+        .0
+        .unwrap();
+
+        change(&store, &path, id, ActionChange::Delete(added.id));
+
+        fs::write(&path, &older).unwrap();
+        let (_, notice) = change(
+            &store,
+            &path,
+            id,
+            ActionChange::Add(new_action("Final"), None),
+        );
+        assert!(notice.is_some());
+        assert_eq!(fs::read_to_string(&path).unwrap(), older);
+        assert_eq!(tasks(&store, id), owned(&[("Final", false)]));
+    }
+
+    #[test]
+    fn rerun_keeps_a_copy_holding_a_typed_task() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let (meeting, path) = exported(&store, tmp.path(), &["Send notes"]);
+        let edited = rewrite_checklist(&path, "- [ ] Send notes\n- [ ] Typed by hand\n");
+        publish_summary(
+            &store,
+            &meeting,
+            &summary(&meeting, "Again"),
+            None,
+            tmp.path(),
+        )
+        .unwrap();
+        assert!(fs::read_to_string(&path).unwrap().contains("Again"));
+        assert!(
+            fs::read_dir(tmp.path())
+                .unwrap()
+                .flatten()
+                .any(|entry| entry.path() != path
+                    && fs::read_to_string(entry.path()).ok().as_deref() == Some(&edited))
         );
     }
 

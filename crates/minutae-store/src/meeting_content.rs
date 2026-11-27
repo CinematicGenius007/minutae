@@ -331,7 +331,7 @@ impl Store {
                 tx.execute("DELETE FROM moments WHERE meeting_id=?1", [&mid])?;
                 tx.execute("DELETE FROM summaries WHERE meeting_id=?1", [&mid])?;
                 tx.execute(
-                    "UPDATE meetings SET checklist_curated=0 WHERE id=?1",
+                    "UPDATE meetings SET checklist_curated=0, exported_checklist=NULL WHERE id=?1",
                     [&mid],
                 )?;
             }

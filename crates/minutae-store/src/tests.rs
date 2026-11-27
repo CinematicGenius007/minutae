@@ -752,6 +752,7 @@ fn v2_migration_backfills_title_key() {
         c.execute_batch(
             "ALTER TABLE meetings DROP COLUMN title_lc;
              ALTER TABLE meetings DROP COLUMN echo_cancel;
+             ALTER TABLE meetings DROP COLUMN exported_checklist;
              ALTER TABLE meetings DROP COLUMN markdown_file;
              ALTER TABLE meetings DROP COLUMN checklist_curated;
              ALTER TABLE meetings DROP COLUMN jobs_retired;
@@ -870,7 +871,7 @@ fn populated_v4_and_v5_databases_upgrade_and_reopen() {
         let (ticked, open) = populated_database(&path, version);
 
         let s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 6);
+        assert_eq!(s.schema_version().unwrap(), schema::SCHEMA_VERSION);
         let curated = s.list_action_items(ticked).unwrap();
         assert!(curated[0].item.done && curated[0].source_ms.is_none());
         // A ticked checklist is the user's; an untouched one can be regenerated.
@@ -899,7 +900,7 @@ fn populated_v4_and_v5_databases_upgrade_and_reopen() {
         drop(s);
 
         let s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 6);
+        assert_eq!(s.schema_version().unwrap(), schema::SCHEMA_VERSION);
         assert_eq!(s.list_action_items(ticked).unwrap(), curated);
         assert_eq!(s.list_dictations(10, 0).unwrap(), dictations);
     }

@@ -314,6 +314,12 @@ CREATE TABLE discarded_recordings (
 );
 "#;
 
+/// v7: the checklist Minutae last wrote to a meeting's Markdown export, so a task
+/// typed into the file can be told from one deleted in the app.
+const V7: &str = r#"
+ALTER TABLE meetings ADD COLUMN exported_checklist TEXT;
+"#;
+
 /// One schema step: SQL, then an optional Rust data step in the same transaction.
 struct Migration {
     sql: &'static str,
@@ -343,6 +349,10 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         sql: V6,
+        data: None,
+    },
+    Migration {
+        sql: V7,
         data: None,
     },
 ];
