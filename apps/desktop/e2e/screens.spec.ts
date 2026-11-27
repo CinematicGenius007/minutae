@@ -752,6 +752,12 @@ test("live captions partial differs from final by more than colour, and provider
   await expect(partialP).toContainText("Partial thought in progress…");
   expect(await partialP.evaluate((el) => getComputedStyle(el).fontStyle)).toBe("italic");
   expect(await finalP.evaluate((el) => getComputedStyle(el).fontStyle)).toBe("normal");
+  // Verify a bundled Geist italic @font-face actually loaded (base.css sets font-synthesis: none).
+  expect(
+    await page.evaluate(() =>
+      Array.from(document.fonts).some((f) => f.family.replace(/^"|"$/g, "") === "Geist" && f.style === "italic" && f.status === "loaded"),
+    ),
+  ).toBe(true);
 
   // Summaries: Tab leaves the reorder handle instead of trapping focus.
   await page.goto(url("/settings/summaries"));
