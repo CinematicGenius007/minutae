@@ -79,7 +79,8 @@
   font: inherit;
   letter-spacing: inherit;
   color: inherit;
-  outline: none;
+  outline: 2px solid transparent;
+  outline-offset: 2px;
 }
 .people { font-size: var(--fs-body); line-height: var(--lh-body-loose); color: var(--muted); }
 
@@ -130,6 +131,7 @@
 .turn { display: flex; flex-direction: column; gap: var(--s-2); }
 .turnHead { display: flex; align-items: baseline; gap: var(--s-4); }
 .speaker {
+  position: relative;
   margin: 0 calc(var(--s-2) * -1);
   padding: 0 var(--s-2);
   border-radius: var(--s-2);
@@ -139,6 +141,7 @@
   color: var(--ink);
   transition: background-color var(--t-fast);
 }
+.speaker::after { content: ""; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); min-width: 28px; min-height: 28px; width: 100%; height: 100%; }
 .speaker:hover { background: var(--surface); }
 .speakerInput {
   width: calc(var(--rail-w) / 1.6);
@@ -152,9 +155,11 @@
   font-size: var(--fs-body-sm);
   line-height: var(--lh-body-sm);
   font-weight: var(--fw-semibold);
-  outline: none;
+  outline: 2px solid transparent;
+  outline-offset: 2px;
 }
 .stamp {
+  position: relative;
   font-family: var(--font-mono);
   font-size: var(--fs-meta);
   line-height: var(--lh-meta);
@@ -162,6 +167,7 @@
   font-variant-numeric: tabular-nums;
   border-radius: var(--s-1);
 }
+.stamp::after { content: ""; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); min-width: 28px; min-height: 28px; width: 100%; height: 100%; }
 .stamp:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
 .turnText { display: flex; flex-direction: column; gap: var(--s-2); font-size: var(--fs-body); line-height: var(--lh-body-loose); color: var(--ink); }
 
@@ -199,6 +205,7 @@
 .moments { display: flex; flex-direction: column; gap: var(--s-4); }
 .moment { display: flex; gap: 14px; align-items: baseline; }
 .momentTime {
+  position: relative;
   flex-shrink: 0;
   width: var(--s-10);
   font-family: var(--font-mono);
@@ -211,6 +218,7 @@
   color: var(--ink);
   border-radius: var(--s-1);
 }
+.momentTime::after { content: ""; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); min-width: 28px; min-height: 28px; width: 100%; height: 100%; }
 .momentTime:hover { text-decoration-thickness: 2px; }
 .momentLabel { font-size: var(--fs-body-sm); line-height: var(--lh-body-sm); color: var(--ink); }
 
@@ -236,3 +244,7 @@
 
 .tabPanel { padding-top: calc(var(--s-8) + var(--s-2)); }
 .summaryStack { display: flex; flex-direction: column; gap: var(--s-9); }
+
+@media (forced-colors: active) {
+  .titleInput, .speakerInput { outline-color: Highlight; }
+}

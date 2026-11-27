@@ -149,8 +149,10 @@ export function SummariesSection({ settings, update }: SectionProps) {
                     className={s.handle}
                     aria-label={`Reorder ${r.name}, position ${i + 1} of ${rows.length}. Use the up and down arrow keys.`}
                     onKeyDown={(e) => {
-                      onHandleKey(e, r.transport, i);
-                      focusHandle(r.transport);
+                      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+                        onHandleKey(e, r.transport, i);
+                        focusHandle(r.transport);
+                      }
                     }}
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden>

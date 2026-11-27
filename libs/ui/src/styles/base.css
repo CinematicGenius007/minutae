@@ -37,10 +37,14 @@ button:disabled { cursor: default; }
 a { color: inherit; }
 ::selection { background: color-mix(in srgb, var(--ink) 16%, transparent); }
 
-/* Focus ring (§7). Never remove an outline without replacing it. */
+/* Focus ring (§7). Never remove an outline without replacing it.
+ * The transparent outline is invisible in normal mode and repainted by the OS under forced-colors. */
 :focus { outline: none; }
-:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-.mn-focus-ring:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+:focus-visible { outline: 2px solid transparent; outline-offset: 2px; box-shadow: var(--focus-ring); }
+.mn-focus-ring:focus-visible { outline: 2px solid transparent; outline-offset: 2px; box-shadow: var(--focus-ring); }
+@media (forced-colors: active) {
+  :focus-visible, .mn-focus-ring:focus-visible { outline-color: Highlight; }
+}
 
 /* Tabular figures for numbers that change. */
 .mn-tabular { font-variant-numeric: tabular-nums; }

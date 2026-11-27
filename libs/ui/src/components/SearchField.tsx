@@ -39,7 +39,11 @@ export function SearchField({
         disabled={disabled}
         {...rest}
       />
-      {shortcut ? <Shortcut keys={shortcut} platform={platform} /> : null}
+      {shortcut ? (
+        <span aria-hidden>
+          <Shortcut keys={shortcut} platform={platform} />
+        </span>
+      ) : null}
     </div>
   );
 }

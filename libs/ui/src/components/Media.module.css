@@ -47,7 +47,7 @@
   --pct: 0%;
   flex: 1;
   min-width: 80px;
-  height: 20px;
+  height: 28px;
   margin: 0;
   background: transparent;
   appearance: none;
@@ -58,9 +58,9 @@
 .scrub::-webkit-slider-runnable-track {
   height: 3px;
   border-radius: var(--radius-full);
-  background: linear-gradient(to right, var(--ink) var(--pct), var(--line) var(--pct));
+  background: linear-gradient(to right, var(--ink) var(--pct), var(--control-edge) var(--pct));
 }
-.scrub::-moz-range-track { height: 3px; border-radius: var(--radius-full); background: var(--line); }
+.scrub::-moz-range-track { height: 3px; border-radius: var(--radius-full); background: var(--control-edge); }
 .scrub::-moz-range-progress { height: 3px; border-radius: var(--radius-full); background: var(--ink); }
 .scrub::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -104,4 +104,16 @@
   transition: background-color var(--t-fast), box-shadow var(--t-fast);
 }
 .speed:hover { background: var(--surface); }
+.speed:disabled { color: var(--faint); cursor: default; }
 .extra { display: flex; align-items: center; gap: var(--s-4); flex-shrink: 0; }
+
+@media (forced-colors: active) {
+  .play { border: var(--hairline) solid ButtonText; }
+  .play:disabled { border-color: GrayText; color: GrayText; }
+  .scrub::-webkit-slider-runnable-track { border: var(--hairline) solid ButtonText; background: Canvas; forced-color-adjust: none; }
+  .scrub::-moz-range-track { border: var(--hairline) solid ButtonText; background: Canvas; forced-color-adjust: none; }
+  .scrub::-webkit-slider-thumb { forced-color-adjust: none; background: Highlight; border: var(--hairline) solid ButtonText; }
+  .scrub::-moz-range-thumb { forced-color-adjust: none; background: Highlight; border: var(--hairline) solid ButtonText; }
+  .speed { border-color: ButtonText; }
+  .speed:disabled { border-color: GrayText; color: GrayText; }
+}

@@ -39,3 +39,13 @@
 }
 .shortcut { color: var(--on-ink-muted); }
 .timer { color: var(--on-onair); }
+
+@media (forced-colors: active) {
+  .pill { border: var(--hairline) solid ButtonText; }
+  .dot { forced-color-adjust: none; background: ButtonText; }
+  .live { forced-color-adjust: none; background: Highlight; color: HighlightText; border: 2px solid Highlight; }
+  .live .timer { color: HighlightText; }
+  .stop { forced-color-adjust: none; background: HighlightText; }
+  .pill:disabled { border-color: GrayText; color: GrayText; }
+  .pill:disabled .dot { background: GrayText; }
+}

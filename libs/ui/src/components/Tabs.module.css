@@ -57,4 +57,11 @@
   font-weight: var(--fw-regular);
   color: var(--muted);
 }
-.content:focus-visible { outline: none; border-radius: var(--radius-sm); box-shadow: var(--focus-ring); }
+.content:focus-visible { outline: 2px solid transparent; outline-offset: 2px; border-radius: var(--radius-sm); box-shadow: var(--focus-ring); }
+
+@media (forced-colors: active) {
+  .trigger[data-state="active"] { forced-color-adjust: none; color: Highlight; }
+  .trigger[data-state="active"]::after { forced-color-adjust: none; background: Highlight; }
+  .trigger:disabled { color: GrayText; }
+  .content:focus-visible { outline-color: Highlight; }
+}

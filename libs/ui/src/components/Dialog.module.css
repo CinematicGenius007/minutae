@@ -38,3 +38,6 @@
 @media (prefers-reduced-motion: reduce) {
   @keyframes dialog-in { from { opacity: 0; } }
 }
+@media (forced-colors: active) {
+  .content { border: var(--hairline) solid CanvasText; }
+}

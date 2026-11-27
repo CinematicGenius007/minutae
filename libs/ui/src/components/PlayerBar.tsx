@@ -54,7 +54,11 @@ export function PlayerBar({
         disabled={disabled}
         aria-label={playing ? "Pause" : "Play"}
       >
-        {playing ? <Pause size={16} strokeWidth={2} fill="currentColor" /> : <Play size={16} strokeWidth={2} fill="currentColor" />}
+        {playing ? (
+          <Pause size={16} strokeWidth={2} fill="currentColor" aria-hidden />
+        ) : (
+          <Play size={16} strokeWidth={2} fill="currentColor" aria-hidden />
+        )}
       </button>
       <span className={s.time}>
         {formatDuration(currentMs)} <span className={s.timeTotal}>/ {formatDuration(durationMs)}</span>

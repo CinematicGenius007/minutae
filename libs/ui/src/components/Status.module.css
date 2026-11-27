@@ -39,3 +39,11 @@
   white-space: nowrap;
 }
 .end { align-items: flex-end; }
+
+@media (forced-colors: active) {
+  .dot { border: var(--hairline) solid CanvasText; }
+  .ok, .onair { forced-color-adjust: none; background: Highlight; border-color: Highlight; }
+  .off { forced-color-adjust: none; background: Canvas; border-color: GrayText; }
+  .track { forced-color-adjust: none; height: 5px; border: var(--hairline) solid CanvasText; background: Canvas; }
+  .fill { forced-color-adjust: none; background: Highlight; }
+}

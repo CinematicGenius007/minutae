@@ -348,7 +348,13 @@ function GalleryBody() {
                 onValueChange={setWhere}
                 options={[
                   { value: "local", label: `On this ${platform === "mac" ? "Mac" : platform === "windows" ? "PC" : "computer"}` },
-                  { value: "cloud", label: "Cloud" },
+                  {
+                    value: "cloud",
+                    label: "Cloud",
+                    tag: "Planned",
+                    disabled: true,
+                    disabledReason: "Cloud transcription is planned for a future release.",
+                  },
                 ]}
               />
             </Spec>
@@ -558,7 +564,7 @@ function GalleryBody() {
             />
             <SettingRow
               title="Transcribe"
-              description={`Local keeps audio ${here}.`}
+              description={`Runs ${here}, free, private and offline. Cloud transcription is planned for a future release.`}
               control={
                 <Segmented
                   aria-label="Transcribe"
@@ -566,7 +572,13 @@ function GalleryBody() {
                   onValueChange={setWhere}
                   options={[
                     { value: "local", label: "Locally" },
-                    { value: "cloud", label: "Cloud" },
+                    {
+                      value: "cloud",
+                      label: "Cloud",
+                      tag: "Planned",
+                      disabled: true,
+                      disabledReason: "Cloud transcription is planned for a future release.",
+                    },
                   ]}
                 />
               }
@@ -576,7 +588,7 @@ function GalleryBody() {
               description="Not set."
               control={<Button variant="quiet">Add key</Button>}
             />
-            <SettingRow title="Speaker labels" description="Needs the diarization model." disabled control={<Toggle disabled />} />
+            <SettingRow title="Speaker labels" description="Needs the diarization model." htmlFor="g-speakers" disabled control={<Toggle id="g-speakers" disabled />} />
           </div>
         </Section>
 

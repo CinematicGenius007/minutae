@@ -29,7 +29,7 @@
   background: var(--bg);
   transition: box-shadow var(--t-fast);
 }
-.field:focus-within { box-shadow: var(--halo); }
+.field:focus-within { box-shadow: var(--halo); outline: 2px solid transparent; outline-offset: 2px; }
 .fieldIcon { color: var(--ink); }
 .input {
   flex: 1 1 0;
@@ -44,7 +44,7 @@
   color: var(--ink);
   caret-color: var(--onair);
 }
-.input:focus-visible { box-shadow: none; }
+.input:focus-visible { box-shadow: none; outline: none; }
 .input::placeholder { color: var(--placeholder); opacity: 1; }
 .input::-webkit-search-cancel-button, .input::-webkit-search-decoration { appearance: none; display: none; }
 .hint { flex-shrink: 0; font-family: var(--font-mono); font-size: var(--fs-meta); line-height: var(--lh-meta); color: var(--muted); }
@@ -118,4 +118,8 @@
 @media (max-width: 1199px) {
   .results { flex-direction: column; gap: var(--s-9); }
   .answer { width: auto; }
+}
+
+@media (forced-colors: active) {
+  .field:focus-within { outline-color: Highlight; border-color: Highlight; }
 }

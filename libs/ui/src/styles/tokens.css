@@ -11,6 +11,7 @@
   /* colour, light */
   --bg: #FFFFFF; --ink: #111111; --muted: #6B6B6B; --faint: #B5B5B0;
   --surface: #F4F4F2; --raised: #FFFFFF; --line: #E6E6E3; --line-strong: #D9D9D5;
+  --control-edge: #8A8A85;
   --on-ink: #FFFFFF; --onair: #FF3B1F; --onair-fill: #DB2F17; --on-onair: #FFFFFF;
   --destructive: #C8321F; --ok: #2BB673; --hud: #111111;
 
@@ -38,15 +39,17 @@
 }
 
 :root[data-theme="dark"] {
-  --bg: #0D0D0C; --ink: #EDEDE8; --muted: #8E8E88; --faint: #4A4A47;
+  --bg: #0D0D0C; --ink: #EDEDE8; --muted: #9A9A94; --faint: #4A4A47;
   --surface: #181817; --raised: #2A2A28; --line: #262624; --line-strong: #3A3A38;
+  --control-edge: #6E6E69;
   --on-ink: #0D0D0C; --onair: #FF4A2E; --onair-fill: #DB2F17; --destructive: #F0624D; --hud: #262624;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0D0D0C; --ink: #EDEDE8; --muted: #8E8E88; --faint: #4A4A47;
+    --bg: #0D0D0C; --ink: #EDEDE8; --muted: #9A9A94; --faint: #4A4A47;
     --surface: #181817; --raised: #2A2A28; --line: #262624; --line-strong: #3A3A38;
+    --control-edge: #6E6E69;
     --on-ink: #0D0D0C; --onair: #FF4A2E; --onair-fill: #DB2F17; --destructive: #F0624D; --hud: #262624;
   }
 }
@@ -89,7 +92,7 @@
   --surface-pressed: color-mix(in srgb, var(--surface) 90%, var(--ink));
   --on-ink-muted: color-mix(in srgb, var(--on-ink) 66%, transparent); /* ≥ 4.5:1 on --ink in both modes */
   --toggle-knob-off: var(--raised);
-  --placeholder: color-mix(in srgb, var(--muted) 55%, var(--faint));
+  --placeholder: var(--muted);
 
   /* HUD / toast stay dark in both modes (§2) */
   --on-hud: #FFFFFF;
@@ -106,13 +109,43 @@
 :root[data-theme="dark"] {
   --shadow-1: 0 1px 2px rgb(0 0 0 / .08), 0 0 0 0.5px var(--line-strong);
   --shadow-2: 0 12px 32px rgb(0 0 0 / .10), 0 2px 6px rgb(0 0 0 / .06), 0 0 0 0.5px var(--line-strong);
-  --toggle-knob-off: var(--muted);
+  --toggle-knob-off: var(--ink);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --shadow-1: 0 1px 2px rgb(0 0 0 / .08), 0 0 0 0.5px var(--line-strong);
     --shadow-2: 0 12px 32px rgb(0 0 0 / .10), 0 2px 6px rgb(0 0 0 / .06), 0 0 0 0.5px var(--line-strong);
-    --toggle-knob-off: var(--muted);
+    --toggle-knob-off: var(--ink);
+  }
+}
+
+/* ── 3. Higher contrast preference (§2, §11) ───────────────────────────── */
+
+@media (prefers-contrast: more) {
+  :root {
+    --muted: #4A4A47;
+    --line: #8A8A85;
+    --line-strong: #6B6B6B;
+    --control-edge: #595956;
+    --destructive: #A62212;
+  }
+
+  :root[data-theme="dark"] {
+    --muted: #BDBDB7;
+    --line: #6E6E69;
+    --line-strong: #8E8E88;
+    --control-edge: #9A9A94;
+    --destructive: #FF7A66;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --muted: #BDBDB7;
+      --line: #6E6E69;
+      --line-strong: #8E8E88;
+      --control-edge: #9A9A94;
+      --destructive: #FF7A66;
+    }
   }
 }

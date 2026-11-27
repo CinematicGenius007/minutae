@@ -11,13 +11,14 @@ import {
   Spinner,
   Toggle,
   formatBytes,
+  localPhrase,
   usePlatform,
   useToast,
 } from "@minutae/ui";
 import { useCallback, useEffect, useState } from "react";
 import { api, events } from "../../../lib/api";
 import type { DiarizeModelInfo, ModelInfo, WhisperModel } from "../../../lib/types";
-import { deviceNoun, localTitle, tildify } from "../shared/format";
+import { localTitle, tildify } from "../shared/format";
 import { errorText, useLoad } from "../../../hooks";
 import p from "../shared/page.module.css";
 import s from "../settings.module.css";
@@ -160,15 +161,23 @@ export function TranscriptionSection({ settings, update }: SectionProps) {
         <GroupLabel id="g-transcription">Transcription</GroupLabel>
         <SettingRow
           title="Where it runs"
-          description={`${local} is free, private and works offline. Cloud is faster on older ${deviceNoun(platform)}s.`}
+          description={`Runs ${localPhrase(platform)}, free, private and offline. Cloud transcription is planned for a future release.`}
           control={
             <Segmented
               aria-label="Where transcription runs"
-              value={settings.transcribeWhere}
-              onValueChange={(v) => update({ transcribeWhere: v })}
+              value="local"
+              onValueChange={(v) => {
+                if (v === "local") void update({ transcribeWhere: v });
+              }}
               options={[
                 { value: "local", label: local },
-                { value: "cloud", label: "Cloud" },
+                {
+                  value: "cloud",
+                  label: "Cloud",
+                  tag: "Planned",
+                  disabled: true,
+                  disabledReason: "Cloud transcription is planned for a future release.",
+                },
               ]}
             />
           }
@@ -284,7 +293,7 @@ export function TranscriptionSection({ settings, update }: SectionProps) {
                   <span className={s.modelSize}>{formatBytes(m.sizeBytes)}</span>
                   <span className={s.modelState}>
                     {m.state === "missing" ? (
-                      <Button variant="quiet" className={s.quietLink} onClick={() => download(m.model)}>
+                      <Button variant="quiet" className={s.quietLink} onClick={() => download(m.model)} aria-label={`Download ${copy.name} model`}>
                         Download
                       </Button>
                     ) : m.state === "downloading" ? (
@@ -296,7 +305,7 @@ export function TranscriptionSection({ settings, update }: SectionProps) {
                           ) : (
                             <>
                               {pct}% ·{" "}
-                              <button type="button" onClick={() => cancel(m.model)}>
+                              <button type="button" onClick={() => cancel(m.model)} aria-label={`Cancel ${copy.name} model download`}>
                                 Cancel
                               </button>
                             </>
@@ -310,7 +319,12 @@ export function TranscriptionSection({ settings, update }: SectionProps) {
                         </span>
                         {m.model !== settings.whisperModel ? (
                           <span className={s.reveal}>
-                            <Button variant="destructive" className={s.quietLink} onClick={() => setPendingDelete(m.model)}>
+                            <Button
+                              variant="destructive"
+                              className={s.quietLink}
+                              onClick={() => setPendingDelete(m.model)}
+                              aria-label={`Delete ${copy.name} model`}
+                            >
                               Delete
                             </Button>
                           </span>
