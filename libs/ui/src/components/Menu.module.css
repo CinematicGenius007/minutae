@@ -82,3 +82,28 @@
 /* Highlight is the focus indicator inside menus. */
 .item:focus-visible { box-shadow: none; }
 .content:focus-visible { box-shadow: var(--shadow-2); }
+
+@media (prefers-contrast: more) {
+  .trigger {
+    border: var(--hairline) solid var(--line);
+    padding-inline: calc(var(--s-4) - var(--hairline));
+  }
+}
+
+@media (forced-colors: active) {
+  .content { border-color: CanvasText; }
+  .item[data-highlighted], .item[data-force="hover"] {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+  .item[data-highlighted] .itemShortcut { color: HighlightText; }
+  .item[data-disabled] { color: GrayText; }
+  .trigger {
+    border: var(--hairline) solid ButtonText;
+    padding-inline: calc(var(--s-4) - var(--hairline));
+  }
+  .trigger:disabled { border-color: GrayText; color: GrayText; }
+}

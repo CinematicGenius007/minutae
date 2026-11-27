@@ -1,11 +1,16 @@
 import * as TG from "@radix-ui/react-toggle-group";
+import { useId } from "react";
 import { cx } from "../lib/cx";
 import s from "./Segmented.module.css";
 
 export interface SegmentedOption<V extends string = string> {
   value: V;
   label: string;
+  /** Short trailing tag (e.g. "Planned"). */
+  tag?: string;
   disabled?: boolean;
+  /** Reason this option is disabled, exposed to screen readers via aria-describedby and title. */
+  disabledReason?: string;
 }
 
 export interface SegmentedProps<V extends string = string> {
@@ -14,6 +19,7 @@ export interface SegmentedProps<V extends string = string> {
   value: V;
   onValueChange: (value: V) => void;
   "aria-label": string;
+  "aria-describedby"?: string;
   fullWidth?: boolean;
   disabled?: boolean;
   className?: string;
@@ -28,24 +34,53 @@ export function Segmented<V extends string = string>({
   disabled,
   className,
   "aria-label": ariaLabel,
+  "aria-describedby": ariaDescribedBy,
 }: SegmentedProps<V>) {
+  const baseId = useId();
+  const reasons = options.filter((o) => o.disabledReason);
   return (
-    <TG.Root
-      type="single"
-      value={value}
-      onValueChange={(v) => {
-        // A segmented control always has a value; ignore deselection.
-        if (v) onValueChange(v as V);
-      }}
-      aria-label={ariaLabel}
-      disabled={disabled}
-      className={cx(s.track, fullWidth && s.full, className)}
-    >
-      {options.map((o) => (
-        <TG.Item key={o.value} value={o.value} disabled={o.disabled} className={s.item}>
-          {o.label}
-        </TG.Item>
+    <>
+      <TG.Root
+        type="single"
+        value={value}
+        onValueChange={(v) => {
+          // A segmented control always has a value; ignore deselection and disabled options.
+          if (!v) return;
+          const opt = options.find((o) => o.value === v);
+          if (opt && !opt.disabled) onValueChange(v as V);
+        }}
+        aria-label={ariaLabel}
+        aria-describedby={ariaDescribedBy}
+        disabled={disabled}
+        className={cx(s.track, fullWidth && s.full, className)}
+      >
+        {options.map((o) => {
+          const reasonId = o.disabledReason ? `${baseId}-reason-${o.value}` : undefined;
+          return (
+            <TG.Item
+              key={o.value}
+              value={o.value}
+              disabled={o.disabled}
+              aria-describedby={reasonId}
+              title={o.disabled && o.disabledReason ? o.disabledReason : undefined}
+              className={cx(s.item, o.tag && s.itemTagged)}
+            >
+              <span>{o.label}</span>
+              {o.tag ? (
+                <>
+                  {" "}
+                  <span className={s.tag}>{o.tag}</span>
+                </>
+              ) : null}
+            </TG.Item>
+          );
+        })}
+      </TG.Root>
+      {reasons.map((o) => (
+        <span key={o.value} id={`${baseId}-reason-${o.value}`} hidden>
+          {o.disabledReason}
+        </span>
       ))}
-    </TG.Root>
+    </>
   );
 }

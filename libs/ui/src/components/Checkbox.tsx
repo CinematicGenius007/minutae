@@ -17,7 +17,7 @@ export function Checkbox({ label, className, id, forceFocus, ...rest }: Checkbox
   const box = (
     <RC.Root id={boxId} className={cx(s.checkbox, forceFocus && s.forceFocus, className)} {...rest}>
       <RC.Indicator className={s.indicator}>
-        {rest.checked === "indeterminate" ? <Minus size={11} strokeWidth={3.5} /> : <Check size={11} strokeWidth={3.5} />}
+        {rest.checked === "indeterminate" ? <Minus size={11} strokeWidth={3.5} aria-hidden /> : <Check size={11} strokeWidth={3.5} aria-hidden />}
       </RC.Indicator>
     </RC.Root>
   );

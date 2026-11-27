@@ -5,6 +5,8 @@
  */
 import geistLatin from "@fontsource-variable/geist/files/geist-latin-wght-normal.woff2?url";
 import geistLatinExt from "@fontsource-variable/geist/files/geist-latin-ext-wght-normal.woff2?url";
+import geistLatinItalic from "@fontsource-variable/geist/files/geist-latin-wght-italic.woff2?url";
+import geistLatinExtItalic from "@fontsource-variable/geist/files/geist-latin-ext-wght-italic.woff2?url";
 import monoLatin from "@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2?url";
 import monoLatinExt from "@fontsource-variable/geist-mono/files/geist-mono-latin-ext-wght-normal.woff2?url";
 import serifLatin from "@fontsource-variable/newsreader/files/newsreader-latin-standard-normal.woff2?url";
@@ -27,6 +29,8 @@ interface Face {
 const FACES: Face[] = [
   { family: "Geist", url: geistLatinExt, weight: "100 900", range: LATIN_EXT },
   { family: "Geist", url: geistLatin, weight: "100 900", range: LATIN },
+  { family: "Geist", url: geistLatinExtItalic, weight: "100 900", style: "italic", range: LATIN_EXT },
+  { family: "Geist", url: geistLatinItalic, weight: "100 900", style: "italic", range: LATIN },
   { family: "Geist Mono", url: monoLatinExt, weight: "100 900", range: LATIN_EXT },
   { family: "Geist Mono", url: monoLatin, weight: "100 900", range: LATIN },
   { family: "Newsreader", url: serifLatinExt, weight: "200 800", range: LATIN_EXT },

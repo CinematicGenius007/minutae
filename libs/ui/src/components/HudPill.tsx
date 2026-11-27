@@ -56,10 +56,11 @@ export function HudPill({ state, levels, words, message, elapsedMs, className, s
       style={style}
       role={state === "error" ? "alert" : "status"}
       aria-live={state === "error" ? "assertive" : "polite"}
-      aria-label={text}
+      aria-atomic="true"
     >
       {state === "listening" ? (
         <>
+          <span className="mn-sr-only">{text}</span>
           <span className={s.dot} aria-hidden />
           <span className={s.bars} aria-hidden>
             {lv.map((l, i) => (
@@ -90,7 +91,7 @@ export function HudPill({ state, levels, words, message, elapsedMs, className, s
         </span>
       ) : null}
       {state === "listening" ? null : (
-        <span className={state === "error" ? s.message : undefined} aria-hidden>
+        <span className={state === "error" ? s.message : undefined}>
           {text}
         </span>
       )}

@@ -15,13 +15,41 @@ import {
   usePlatform,
   useToast,
 } from "@minutae/ui";
-import { useMemo, useState } from "react";
+import { MoreHorizontal } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, events } from "../../lib/api";
 import type { Dictation } from "../../lib/types";
 import { toKitShortcut } from "../settings/shared/format";
-import { errorText, useEvent, useLoad, usePlatformInfo, useSettings, useShortcutStatus } from "../../hooks";
+import { errorText, useEvent, useLoad, usePlatformInfo, useSettings, useShortcut, useShortcutStatus } from "../../hooks";
 import p from "../settings/shared/page.module.css";
 import s from "./dictate.module.css";
+
+const SPOKEN_KEY: Record<string, string> = {
+  "⌘": "Command",
+  "⌥": "Option",
+  "⌃": "Control",
+  "⇧": "Shift",
+  "⏎": "Return",
+  "↑": "Up",
+  "↓": "Down",
+  "←": "Left",
+  "→": "Right",
+  "⌫": "Backspace",
+  "⌦": "Delete",
+  esc: "Escape",
+};
+
+function spokenKeyLabel(label: string): string {
+  return label
+    .split(/\s+/)
+    .map((part) => SPOKEN_KEY[part] ?? part)
+    .join(" ");
+}
+
+function previewText(text: string): string {
+  const trimmed = text.trim();
+  return trimmed.length > 40 ? `${trimmed.slice(0, 40).trimEnd()}…` : trimmed;
+}
 
 export default function DictateScreen() {
   const platform = usePlatform();
@@ -34,17 +62,26 @@ export default function DictateScreen() {
   const [query, setQuery] = useState("");
   const [pendingDelete, setPendingDelete] = useState<Dictation | null>(null);
 
+  const searchRef = useRef<HTMLInputElement>(null);
+  const recentRef = useRef<HTMLElement>(null);
+  const copyRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const moreRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const returnFocusId = useRef<string | null>(null);
+  const focusAfterDelete = useRef<string | "search" | null>(null);
+  const focusAfterRetry = useRef(false);
+
   useEvent<void>(events.dictationsChanged, () => {
     void reloadList();
     void reloadStats();
   });
 
-  // ⌘K / Ctrl+K stays global (Shell → Library), as on every other screen. This field only
-  // filters the list below, so it shows no shortcut hint.
+  // "/" focuses this screen's filter field (matching Meetings); ⌘K / Ctrl+K stays global (Shell → Library).
+  useShortcut("slash", () => searchRef.current?.focus());
 
   const hotkey = toKitShortcut(settings?.dictationHotkey ?? (platform === "mac" ? "Alt+Space" : "Ctrl+Space"));
   const keys = shortcutKeys(hotkey, platform);
   const keyLabel = shortcuts?.dictateTrigger ?? (platform === "mac" ? keys.join(" ") : keys.join(" + "));
+  const spokenKey = spokenKeyLabel(keyLabel);
   const toggle = shortcuts?.holdSupported === false || settings?.dictationMode === "toggle";
   const hasShortcut = shortcuts?.backend !== "unavailable" && (shortcuts?.backend !== "portal" || shortcuts.dictateTrigger !== null);
 
@@ -54,6 +91,36 @@ export default function DictateScreen() {
     return q ? all.filter((d) => d.text.toLowerCase().includes(q) || d.targetApp?.toLowerCase().includes(q)) : all;
   }, [list.data, query]);
 
+  // After a confirmed delete removes a row, move focus to the adjacent row's Copy button (or search when empty).
+  useEffect(() => {
+    const target = focusAfterDelete.current;
+    if (!target || list.status !== "ready") return;
+    if (target === "search") {
+      focusAfterDelete.current = null;
+      searchRef.current?.focus();
+      return;
+    }
+    const nextEl = copyRefs.current.get(target);
+    if (nextEl) {
+      focusAfterDelete.current = null;
+      nextEl.focus();
+    } else if (rows.length === 0) {
+      focusAfterDelete.current = null;
+      searchRef.current?.focus();
+    }
+  }, [list.status, rows]);
+
+  // After a keyboard/AT retry recovers from an error, move focus from the unmounted "Try again"
+  // button to the Recent heading so screen readers land at the top of the loaded section without
+  // leaving a stray focus ring on a mouse retry.
+  useEffect(() => {
+    if (!focusAfterRetry.current || list.status === "loading") return;
+    focusAfterRetry.current = false;
+    if (list.status !== "ready") return;
+    if (document.activeElement && document.activeElement !== document.body) return;
+    recentRef.current?.focus();
+  }, [list]);
+
   const copy = (d: Dictation) => {
     api
       .copyText(d.text)
@@ -62,6 +129,9 @@ export default function DictateScreen() {
   };
 
   const remove = (d: Dictation) => {
+    const idx = rows.findIndex((r) => r.id === d.id);
+    const nextRow = rows[idx + 1] ?? rows[idx - 1] ?? null;
+    focusAfterDelete.current = nextRow ? nextRow.id : "search";
     api
       .deleteDictation(d.id)
       .then(() => {
@@ -69,11 +139,38 @@ export default function DictateScreen() {
         void reloadList();
         void reloadStats();
       })
-      .catch((e) => toast.show({ title: `Couldn't delete it. ${errorText(e)}` }));
+      .catch((e) => {
+        focusAfterDelete.current = null;
+        toast.show({ title: `Couldn't delete it. ${errorText(e)}` });
+      });
+  };
+
+  const clearSearch = () => {
+    setQuery("");
+    searchRef.current?.focus();
   };
 
   const retentionDays = settings?.dictationRetentionDays;
   const historyLimit = retentionDays != null ? `Keep for ${retentionDays} days` : undefined;
+  const trimmedQuery = query.trim();
+  const filterAnnouncement =
+    trimmedQuery && list.status === "ready"
+      ? rows.length === 0
+        ? `No dictations match “${trimmedQuery}”.`
+        : rows.length === 1
+          ? `1 dictation matches “${trimmedQuery}”.`
+          : `${rows.length} dictations match “${trimmedQuery}”.`
+      : "";
+
+  const shortcutSpan =
+    spokenKey !== keyLabel ? (
+      <>
+        <span aria-hidden>{keyLabel}</span>
+        <span className="mn-sr-only">{spokenKey}</span>
+      </>
+    ) : (
+      keyLabel
+    );
 
   return (
     <section
@@ -85,7 +182,8 @@ export default function DictateScreen() {
       <div className={cx(p.inner, s.stack)}>
         <div className={p.toolbar}>
           <SearchField
-            className={p.toolbarSearch}
+            ref={searchRef}
+            className={cx(p.toolbarSearch, s.search)}
             placeholder="Search dictations"
             value={query}
             onChange={(e) => setQuery(e.currentTarget.value)}
@@ -114,16 +212,20 @@ export default function DictateScreen() {
           <section className={s.howto} aria-label="How to dictate">
             <div className={s.howtoLead}>
               {hasShortcut && (
-                <div className={s.keyGroup}>
+                <div className={s.keyGroup} aria-hidden>
                   <KeyCap className={s.bigCap}>{keyLabel}</KeyCap>
                   <span className={s.keyHint}>{toggle ? "press" : "hold"}</span>
                 </div>
               )}
               <div className={s.howtoText}>
                 <p className={s.howtoTitle}>
-                  {!hasShortcut
-                    ? "Set up a system shortcut to dictate."
-                    : toggle ? `Press ${keyLabel}, talk, press again.` : `Hold ${keyLabel}, talk, let go.`}
+                  {!hasShortcut ? (
+                    "Set up a system shortcut to dictate."
+                  ) : toggle ? (
+                    <>Press {shortcutSpan}, talk, press again.</>
+                  ) : (
+                    <>Hold {shortcutSpan}, talk, let go.</>
+                  )}
                 </p>
                 <p className={s.howtoBody}>
                   {hasShortcut
@@ -136,24 +238,36 @@ export default function DictateScreen() {
             </div>
           </section>
 
-          <section aria-labelledby="recent-label">
-            <GroupLabel id="recent-label" count={historyLimit}>
+          <section aria-labelledby="recent-label" aria-busy={list.status === "loading" || undefined}>
+            <GroupLabel ref={recentRef} as="h2" id="recent-label" tabIndex={-1} count={historyLimit}>
               Recent
             </GroupLabel>
+            <div className="mn-sr-only" role="status" aria-live="polite" aria-atomic="true">
+              {filterAnnouncement}
+            </div>
             {list.status === "loading" ? (
-              <div className={p.loading}>
+              <div className={p.loading} role="status" aria-live="polite">
                 <Spinner /> Loading dictations…
               </div>
             ) : list.status === "error" && !list.data ? (
-              <EmptyState
-                title="Couldn't load your dictations."
-                description={list.error}
-                action={
-                  <Button variant="secondary" onClick={() => void reloadList()}>
-                    Try again
-                  </Button>
-                }
-              />
+              <div role="alert">
+                <EmptyState
+                  title="Couldn't load your dictations."
+                  description={list.error}
+                  action={
+                    <Button
+                      variant="secondary"
+                      onClick={(e) => {
+                        focusAfterRetry.current = e.detail === 0;
+                        void reloadList();
+                        void reloadStats();
+                      }}
+                    >
+                      Try again
+                    </Button>
+                  }
+                />
+              </div>
             ) : (list.data ?? []).length === 0 ? (
               <EmptyState
                 title="No dictations yet."
@@ -161,51 +275,75 @@ export default function DictateScreen() {
               />
             ) : rows.length === 0 ? (
               <EmptyState
-                title={`Nothing matches “${query.trim()}”.`}
+                title={`Nothing matches “${trimmedQuery}”.`}
                 description="Try fewer words, or search everything in Library."
                 action={
-                  <Button variant="quiet" onClick={() => setQuery("")}>
+                  <Button variant="quiet" onClick={clearSearch}>
                     Clear search
                   </Button>
                 }
               />
             ) : (
-              <ul className={s.list}>
-                {rows.map((d) => (
-                  <li key={d.id} className={s.row}>
-                    <time className={s.time} dateTime={d.createdAt}>
-                      {formatRelativeDate(new Date(d.createdAt))}
-                    </time>
-                    <p className={s.text}>{d.text}</p>
-                    <span className={s.app}>{d.targetApp ?? "Copied"}</span>
-                    <span className={s.words}>
-                      {d.wordCount} {d.wordCount === 1 ? "word" : "words"}
-                    </span>
-                    <span className={s.actions}>
-                      <button type="button" className={s.copy} onClick={() => copy(d)} aria-label={`Copy “${d.text.slice(0, 40)}”`}>
-                        Copy
-                      </button>
-                      <DropdownMenu
-                        align="end"
-                        platform={platform}
-                        trigger={
-                          <button type="button" className={s.more} aria-label="More actions">
-                            <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden>
-                              <circle cx="5" cy="12" r="1.8" fill="currentColor" />
-                              <circle cx="12" cy="12" r="1.8" fill="currentColor" />
-                              <circle cx="19" cy="12" r="1.8" fill="currentColor" />
-                            </svg>
-                          </button>
-                        }
-                        items={[
-                          { label: "Copy", onSelect: () => copy(d) },
-                          "separator",
-                          { label: "Delete…", destructive: true, onSelect: () => setPendingDelete(d) },
-                        ]}
-                      />
-                    </span>
-                  </li>
-                ))}
+              // biome-ignore lint/a11y/noRedundantRoles: list-style:none strips implicit list semantics in WebKit/VoiceOver
+              <ul className={s.list} role="list">
+                {rows.map((d) => {
+                  const snippet = previewText(d.text);
+                  return (
+                    <li key={d.id} className={s.row}>
+                      <time className={s.time} dateTime={d.createdAt}>
+                        {formatRelativeDate(new Date(d.createdAt))}
+                      </time>
+                      <p className={s.text}>{d.text}</p>
+                      <span className={s.app}>{d.targetApp ?? "Copied"}</span>
+                      <span className={s.words}>
+                        {d.wordCount} {d.wordCount === 1 ? "word" : "words"}
+                      </span>
+                      <span className={s.actions}>
+                        <Button
+                          ref={(el) => {
+                            if (el) copyRefs.current.set(d.id, el);
+                            else copyRefs.current.delete(d.id);
+                          }}
+                          variant="quiet"
+                          className={s.copy}
+                          onClick={() => copy(d)}
+                          aria-label={`Copy “${snippet}”`}
+                        >
+                          Copy
+                        </Button>
+                        <DropdownMenu
+                          align="end"
+                          platform={platform}
+                          trigger={
+                            <button
+                              ref={(el) => {
+                                if (el) moreRefs.current.set(d.id, el);
+                                else moreRefs.current.delete(d.id);
+                              }}
+                              type="button"
+                              className={s.more}
+                              aria-label={`More actions for “${snippet}”`}
+                            >
+                              <MoreHorizontal size={14} strokeWidth={2} aria-hidden />
+                            </button>
+                          }
+                          items={[
+                            { label: "Copy", onSelect: () => copy(d) },
+                            "separator",
+                            {
+                              label: "Delete…",
+                              destructive: true,
+                              onSelect: () => {
+                                returnFocusId.current = d.id;
+                                setPendingDelete(d);
+                              },
+                            },
+                          ]}
+                        />
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </section>
@@ -216,6 +354,26 @@ export default function DictateScreen() {
         open={pendingDelete !== null}
         onOpenChange={(o) => {
           if (!o) setPendingDelete(null);
+        }}
+        onCloseAutoFocus={(e) => {
+          e.preventDefault();
+          const targetId = returnFocusId.current;
+          returnFocusId.current = null;
+          if (focusAfterDelete.current) {
+            const nextTarget = focusAfterDelete.current;
+            if (nextTarget === "search") {
+              focusAfterDelete.current = null;
+              searchRef.current?.focus();
+            } else {
+              const nextEl = copyRefs.current.get(nextTarget);
+              if (nextEl) {
+                focusAfterDelete.current = null;
+                nextEl.focus();
+              }
+            }
+            return;
+          }
+          if (targetId) moreRefs.current.get(targetId)?.focus();
         }}
         title="Delete this dictation?"
         description="The text and any saved audio are removed from Minutae. Anything already typed into other apps stays."

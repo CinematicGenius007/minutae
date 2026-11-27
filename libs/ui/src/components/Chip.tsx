@@ -39,7 +39,7 @@ export function Tag({ children, onRemove, removeLabel, className, ...rest }: Tag
           onClick={onRemove}
           aria-label={removeLabel ?? `Remove ${typeof children === "string" ? children : "tag"}`}
         >
-          <X size={12} strokeWidth={2.4} />
+          <X size={12} strokeWidth={2.4} aria-hidden />
         </button>
       ) : null}
     </span>
