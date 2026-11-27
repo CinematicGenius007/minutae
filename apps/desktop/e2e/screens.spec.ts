@@ -54,6 +54,7 @@ const SHOTS: Shot[] = [
   { name: "detail-failed", route: `/meetings/${MEETING}`, query: "state=failed", ready: "Vendor call" },
   { name: "dictate", route: "/dictate", ready: "Running ten minutes late" },
   { name: "dictate-empty", route: "/dictate", query: "state=empty" },
+  { name: "dictate-error", route: "/dictate", query: "dictations=error", ready: "Couldn't load your dictations." },
   { name: "dictate-wayland", route: "/dictate", query: "os=linux&session=wayland", ready: "Global Esc cancellation is unavailable on Wayland." },
   {
     name: "dictate-retention",
@@ -247,6 +248,7 @@ for (const theme of THEMES) {
     for (const [name, route, ready] of [
       ["meetings", "/", "Q2 Design Sync"],
       ["detail", `/meetings/${MEETING}`, "Share updated mockups"],
+      ["dictate", "/dictate", "Running ten minutes late"],
     ] as const) {
       test(`${name} narrow`, async ({ page }) => {
         await page.setViewportSize({ width: 820, height: 900 });
@@ -394,6 +396,8 @@ const A11Y_ROUTES: [string, string, string?][] = [
   ["detail", `/meetings/${MEETING}`],
   ["detail-failed", `/meetings/${MEETING}`, "state=failed"],
   ["dictate", "/dictate"],
+  ["dictate-empty", "/dictate", "state=empty"],
+  ["dictate-error", "/dictate", "dictations=error"],
   ["library", "/library?q=launch"],
   ["settings-general", "/settings/general"],
   ["settings-transcription", "/settings/transcription"],
@@ -757,4 +761,341 @@ test("live captions partial differs from final by more than colour, and provider
   await expect(firstHandle).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(firstHandle).not.toBeFocused();
+});
+
+// ── Deterministic computed design-token colours (0-tolerance RGB check) ─────
+
+const EXPECTED_TOKENS: Record<"light" | "dark", Record<string, string>> = {
+  light: {
+    "--bg": "rgb(255, 255, 255)",
+    "--ink": "rgb(17, 17, 17)",
+    "--muted": "rgb(107, 107, 107)",
+    "--faint": "rgb(181, 181, 176)",
+    "--surface": "rgb(244, 244, 242)",
+    "--raised": "rgb(255, 255, 255)",
+    "--line": "rgb(230, 230, 227)",
+    "--line-strong": "rgb(217, 217, 213)",
+    "--control-edge": "rgb(138, 138, 133)",
+    "--on-ink": "rgb(255, 255, 255)",
+    "--onair": "rgb(255, 59, 31)",
+    "--onair-fill": "rgb(219, 47, 23)",
+    "--on-onair": "rgb(255, 255, 255)",
+    "--destructive": "rgb(200, 50, 31)",
+    "--ok": "rgb(43, 182, 115)",
+    "--hud": "rgb(17, 17, 17)",
+  },
+  dark: {
+    "--bg": "rgb(13, 13, 12)",
+    "--ink": "rgb(237, 237, 232)",
+    "--muted": "rgb(154, 154, 148)",
+    "--faint": "rgb(74, 74, 71)",
+    "--surface": "rgb(24, 24, 23)",
+    "--raised": "rgb(42, 42, 40)",
+    "--line": "rgb(38, 38, 36)",
+    "--line-strong": "rgb(58, 58, 56)",
+    "--control-edge": "rgb(110, 110, 105)",
+    "--on-ink": "rgb(13, 13, 12)",
+    "--onair": "rgb(255, 74, 46)",
+    "--onair-fill": "rgb(219, 47, 23)",
+    "--on-onair": "rgb(255, 255, 255)",
+    "--destructive": "rgb(240, 98, 77)",
+    "--ok": "rgb(43, 182, 115)",
+    "--hud": "rgb(38, 38, 36)",
+  },
+};
+
+const EXPECTED_CONTRAST_MORE: Record<"light" | "dark", Record<string, string>> = {
+  light: {
+    "--muted": "rgb(74, 74, 71)",
+    "--line": "rgb(138, 138, 133)",
+    "--line-strong": "rgb(107, 107, 107)",
+    "--control-edge": "rgb(89, 89, 86)",
+    "--destructive": "rgb(166, 34, 18)",
+  },
+  dark: {
+    "--muted": "rgb(189, 189, 183)",
+    "--line": "rgb(110, 110, 105)",
+    "--line-strong": "rgb(142, 142, 136)",
+    "--control-edge": "rgb(154, 154, 148)",
+    "--destructive": "rgb(255, 122, 102)",
+  },
+};
+
+for (const theme of THEMES) {
+  test(`computed design-token colours match DESIGN-LANGUAGE.md (${theme})`, async ({ page }) => {
+    await open(page, theme, "/dictate");
+    await settle(page, "Running ten minutes late");
+
+    const resolveTokens = (names: string[]) =>
+      page.evaluate((keys) => {
+        const probe = document.createElement("div");
+        probe.style.display = "none";
+        document.body.appendChild(probe);
+        const out: Record<string, string> = {};
+        for (const key of keys) {
+          probe.style.color = `var(${key})`;
+          out[key] = getComputedStyle(probe).color;
+        }
+        probe.remove();
+        return out;
+      }, names);
+
+    expect(await resolveTokens(Object.keys(EXPECTED_TOKENS[theme]))).toEqual(EXPECTED_TOKENS[theme]);
+
+    // Verify rendered elements pick up the resolved token colours directly.
+    const rendered = await page.evaluate(() => {
+      const time = document.querySelector("time");
+      return {
+        bg: getComputedStyle(document.body).backgroundColor,
+        ink: getComputedStyle(document.body).color,
+        muted: time ? getComputedStyle(time).color : null,
+      };
+    });
+    expect(rendered).toEqual({
+      bg: EXPECTED_TOKENS[theme]["--bg"],
+      ink: EXPECTED_TOKENS[theme]["--ink"],
+      muted: EXPECTED_TOKENS[theme]["--muted"],
+    });
+
+    // prefers-contrast: more strengthens --muted, hairlines, --control-edge and --destructive.
+    await page.emulateMedia({ colorScheme: theme, contrast: "more", reducedMotion: "reduce" });
+    expect(await resolveTokens(Object.keys(EXPECTED_CONTRAST_MORE[theme]))).toEqual(EXPECTED_CONTRAST_MORE[theme]);
+  });
+}
+
+// ── Dictate screen accessibility audit tests ────────────────────────────────
+
+test("dictate a11y: heading hierarchy, screen-reader names, spoken shortcut and live search announcements", async ({ page, browserName }) => {
+  await open(page, "light", "/dictate");
+  await settle(page, "Running ten minutes late");
+
+  // Headings: h1 "Dictate" followed by h2 "Recent" with no skipped heading levels.
+  const headings = await page.locator("h1, h2, h3, h4, h5, h6").evaluateAll((els) =>
+    els.map((el) => ({ tag: el.tagName, text: el.textContent?.trim() })),
+  );
+  expect(headings[0]).toEqual({ tag: "H1", text: "Dictate" });
+  expect(headings[1]).toEqual({ tag: "H2", text: "Recent" });
+  expect(headings.some((h) => h.tag === "H3")).toBe(false);
+
+  // Spoken shortcut in How-to strip avoids raw unicode symbols and hides the duplicate decorative keycap.
+  const howto = page.getByRole("region", { name: "How to dictate" });
+  if (browserName === "webkit") {
+    await expect(howto).toContainText("Option Space");
+  } else {
+    await expect(howto).toContainText("Alt + Space");
+  }
+  await expect(howto.locator("[aria-hidden='true'], [aria-hidden='']").first()).toBeAttached();
+
+  // Every row's Copy and More actions buttons have unique accessible names referencing the dictation.
+  const copyNames = await page.getByRole("button", { name: /^Copy “/ }).evaluateAll((els) =>
+    els.map((el) => el.getAttribute("aria-label")),
+  );
+  const moreNames = await page.getByRole("button", { name: /^More actions for “/ }).evaluateAll((els) =>
+    els.map((el) => el.getAttribute("aria-label")),
+  );
+  expect(copyNames.length).toBe(4);
+  expect(new Set(copyNames).size).toBe(4);
+  expect(moreNames.length).toBe(4);
+  expect(new Set(moreNames).size).toBe(4);
+
+  // "/" shortcut focuses search; live status announces match counts; Clear search returns focus to search.
+  const search = page.getByRole("searchbox", { name: "Search dictations" });
+  await page.keyboard.press("/");
+  await expect(search).toBeFocused();
+
+  const status = page.locator('[data-screen="dictate"] [role="status"]').first();
+  await search.fill("Messages");
+  await expect(status).toHaveText("1 dictation matches “Messages”.");
+
+  await search.fill("nonexistent-query-xyz");
+  await expect(status).toHaveText("No dictations match “nonexistent-query-xyz”.");
+  await page.getByRole("button", { name: "Clear search" }).click();
+  await expect(search).toHaveValue("");
+  await expect(search).toBeFocused();
+});
+
+test("dictate a11y: keyboard order, focus rings, and focus restoration after cancel and delete", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit", "WebKit skips non-form controls on Tab by default");
+  await open(page, "light", "/dictate");
+  await settle(page, "Running ten minutes late");
+
+  const hasRing = () =>
+    page.evaluate(() => {
+      const el = document.activeElement as HTMLElement | null;
+      if (!el) return false;
+      const check = (n: Element | null) => {
+        if (!n) return false;
+        const cs = getComputedStyle(n);
+        return cs.boxShadow !== "none" || (cs.outlineStyle !== "none" && Number.parseFloat(cs.outlineWidth) >= 1);
+      };
+      return check(el) || check(el.parentElement);
+    });
+
+  // Tab order: Search -> row 1 Copy -> row 1 More actions -> row 2 Copy.
+  const search = page.getByRole("searchbox", { name: "Search dictations" });
+  await search.focus();
+  expect(await hasRing()).toBe(true);
+
+  await page.keyboard.press("Tab");
+  const firstCopy = page.getByRole("button", { name: /^Copy “Thanks for the notes/ });
+  await expect(firstCopy).toBeFocused();
+  expect(await hasRing()).toBe(true);
+
+  await page.keyboard.press("Tab");
+  const firstMore = page.getByRole("button", { name: /^More actions for “Thanks for the notes/ });
+  await expect(firstMore).toBeFocused();
+  expect(await hasRing()).toBe(true);
+  await expect(firstMore).toHaveCSS("opacity", "1");
+
+  // Open menu -> Delete… -> Cancel returns focus to the triggering More actions button.
+  await page.keyboard.press("Enter");
+  await page.getByRole("menuitem", { name: "Delete…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Delete this dictation?" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(firstMore).toBeFocused();
+
+  // Open menu -> Delete… -> Escape also returns focus to the triggering More actions button.
+  await firstMore.click();
+  await page.getByRole("menuitem", { name: "Delete…" }).click();
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(firstMore).toBeFocused();
+
+  // Confirm delete moves focus to the next row's Copy button (not document.body).
+  await firstMore.click();
+  await page.getByRole("menuitem", { name: "Delete…" }).click();
+  await dialog.getByRole("button", { name: "Delete dictation" }).click();
+  await expect(page.getByRole("button", { name: /^Copy “Refactor the recorder/ })).toBeFocused();
+});
+
+for (const theme of THEMES) {
+  test(`dictate a11y: loading state (${theme})`, async ({ page }) => {
+    await open(page, theme, "/dictate", "dictations=loading");
+    const loading = page.getByRole("status").filter({ hasText: "Loading dictations…" });
+    await expect(loading).toBeVisible();
+    await expect(page.locator('section[aria-labelledby="recent-label"]')).toHaveAttribute("aria-busy", "true");
+    // Reduced motion stops the spinner animation.
+    const anim = await loading.locator("span").first().evaluate((el) => getComputedStyle(el).animationName);
+    expect(anim).toBe("none");
+
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .analyze();
+    const bad = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
+    expect(bad, JSON.stringify(bad)).toEqual([]);
+  });
+}
+
+test("dictate a11y: error state announces alert and recovers on retry", async ({ page }) => {
+  await open(page, "light", "/dictate", "dictations=errorOnce");
+  await settle(page, "Couldn't load your dictations.");
+  const alert = page.locator('[data-screen="dictate"] [role="alert"]');
+  await expect(alert).toContainText("Couldn't load your dictations.");
+  await alert.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByText("Running ten minutes late")).toBeVisible();
+});
+
+test("dictate a11y: hit targets (>= 28x28 desktop, >= 44x44 narrow), narrow width and 200% zoom reflow", async ({ page }) => {
+  await open(page, "light", "/dictate");
+  await settle(page, "Running ten minutes late");
+
+  // Desktop hit targets: every interactive control inside Dictate is >= 28x28.
+  const desktopBoxes = await page.locator('[data-screen="dictate"] button, [data-screen="dictate"] input').evaluateAll((els) =>
+    els.map((el) => {
+      const r = el.getBoundingClientRect();
+      return { label: el.getAttribute("aria-label") ?? el.textContent?.trim(), w: Math.round(r.width), h: Math.round(r.height) };
+    }),
+  );
+  expect(desktopBoxes.length).toBeGreaterThan(0);
+  for (const b of desktopBoxes) {
+    expect(b.w, `${b.label} width on desktop`).toBeGreaterThanOrEqual(28);
+    expect(b.h, `${b.label} height on desktop`).toBeGreaterThanOrEqual(28);
+  }
+
+  // Narrow (820px) and 200% zoom widths (640px for 1280@200%, 480px for 960@200%): no horizontal overflow,
+  // More actions stays visible (no hover needed), and row buttons are >= 44x44.
+  for (const vp of [
+    { width: 820, height: 900 },
+    { width: 640, height: 450 },
+    { width: 480, height: 450 },
+  ]) {
+    await page.setViewportSize(vp);
+    await expect(page.locator('[data-screen="dictate"] button[aria-label^="More actions"]').first()).toHaveCSS("opacity", "1");
+    const metrics = await page.evaluate(() => {
+      const main = document.getElementById("main");
+      const pageEl = document.querySelector('[data-screen="dictate"]');
+      const copy = document.querySelector('[data-screen="dictate"] button[aria-label^="Copy "]');
+      const more = document.querySelector('[data-screen="dictate"] button[aria-label^="More actions"]');
+      const cr = copy?.getBoundingClientRect();
+      const mr = more?.getBoundingClientRect();
+      return {
+        docOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        mainOverflow: main ? main.scrollWidth - main.clientWidth : 0,
+        pageOverflow: pageEl ? pageEl.scrollWidth - pageEl.clientWidth : 0,
+        copyW: cr ? Math.round(cr.width) : 0,
+        copyH: cr ? Math.round(cr.height) : 0,
+        moreW: mr ? Math.round(mr.width) : 0,
+        moreH: mr ? Math.round(mr.height) : 0,
+      };
+    });
+    expect(metrics.docOverflow, `document overflow at ${vp.width}px`).toBeLessThanOrEqual(0);
+    expect(metrics.mainOverflow, `main overflow at ${vp.width}px`).toBeLessThanOrEqual(0);
+    expect(metrics.pageOverflow, `dictate overflow at ${vp.width}px`).toBeLessThanOrEqual(0);
+    expect(metrics.copyW, `Copy width at ${vp.width}px`).toBeGreaterThanOrEqual(44);
+    expect(metrics.copyH, `Copy height at ${vp.width}px`).toBeGreaterThanOrEqual(44);
+    expect(metrics.moreW, `More width at ${vp.width}px`).toBeGreaterThanOrEqual(44);
+    expect(metrics.moreH, `More height at ${vp.width}px`).toBeGreaterThanOrEqual(44);
+  }
+});
+
+for (const theme of THEMES) {
+  test(`dictate a11y: prefers-contrast: more (${theme})`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme: theme, contrast: "more", reducedMotion: "reduce" });
+    await page.clock.setFixedTime(NOW);
+    await page.goto(url("/dictate"));
+    await settle(page, "Running ten minutes late");
+
+    const howtoBorder = await page.getByRole("region", { name: "How to dictate" }).evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { style: cs.borderTopStyle, width: Number.parseFloat(cs.borderTopWidth) };
+    });
+    expect(howtoBorder.style).toBe("solid");
+    expect(howtoBorder.width).toBeGreaterThanOrEqual(1);
+
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .analyze();
+    const bad = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
+    expect(bad, JSON.stringify(bad)).toEqual([]);
+  });
+}
+
+test("dictate a11y: forced-colors: active focus outlines and boundaries", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit", "WebKit does not emulate Windows forced-colors");
+  await page.emulateMedia({ forcedColors: "active", reducedMotion: "reduce" });
+  await page.clock.setFixedTime(NOW);
+  await page.goto(url("/dictate"));
+  await settle(page, "Running ten minutes late");
+
+  const hasOutline = () =>
+    page.evaluate(() => {
+      const el = document.activeElement as HTMLElement | null;
+      if (!el) return false;
+      const check = (n: Element | null) => {
+        if (!n) return false;
+        const cs = getComputedStyle(n);
+        return cs.outlineStyle !== "none" && Number.parseFloat(cs.outlineWidth) >= 1;
+      };
+      return check(el) || check(el.parentElement);
+    });
+
+  await page.getByRole("searchbox", { name: "Search dictations" }).focus();
+  expect(await hasOutline(), "SearchField focus outline in forced-colors").toBe(true);
+  await page.getByRole("button", { name: /^Copy “/ }).first().focus();
+  expect(await hasOutline(), "Copy button focus outline in forced-colors").toBe(true);
+  await page.getByRole("button", { name: /^More actions for “/ }).first().focus();
+  expect(await hasOutline(), "More actions focus outline in forced-colors").toBe(true);
 });
