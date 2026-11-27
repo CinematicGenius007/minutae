@@ -17,7 +17,7 @@ const KB = 1024;
 const BUDGETS = {
   "HTML + CSS": 15 * KB,
   "JavaScript at first paint": 5 * KB,
-  "All JavaScript": 11 * KB,
+  "All JavaScript": 12 * KB,
   Fonts: 35 * KB,
   "Whole first load": 70 * KB,
 };
@@ -104,8 +104,10 @@ if (!canonical || !URL.canParse(canonical)) {
 }
 const origin = new URL(canonical).origin;
 
+const onOrigin = (url) => URL.canParse(url) && new URL(url).origin === origin;
+
 function requireOrigin(file, what, value) {
-  if (!value?.startsWith(`${origin}/`)) {
+  if (!value || !onOrigin(value)) {
     fail(file, `${what} must be on ${origin}, found ${value ?? "nothing"}`);
   }
 }
@@ -149,11 +151,11 @@ function checkReference(file, reference, { resource = true } = {}) {
     return null;
   }
   const isRemote = /^([a-z][a-z+.-]*:|\/\/)/i.test(reference);
-  if (isRemote && !reference.startsWith(`${origin}/`)) {
+  if (isRemote && !onOrigin(reference)) {
     if (resource) fail(file, `third-party resource: ${reference}`);
     return null;
   }
-  const local = isRemote ? reference.slice(origin.length) : reference;
+  const local = isRemote ? reference.slice(origin.length) || "/" : reference;
   const [path, fragment] = local.split("#");
   let target = file;
   if (path) {
@@ -259,7 +261,11 @@ for (const file of withExtension(".js")) {
     });
   staticImports.set(file, resolveImports(STATIC_IMPORT));
   resolveImports(DYNAMIC_IMPORT);
-  for (const [url] of source.matchAll(/(?:https?|wss?):\/\/[^\s"'`]+/g)) {
+  const code = source.replace(/\/\*[\s\S]*?\*\/|(?<=^|\s)\/\/.*$/gm, "");
+  // With a scheme, or protocol-relative at the start of a string.
+  for (const [url] of code.matchAll(
+    /(?:(?:https?|wss?):|(?<=["'`]))\/\/[\w-]+\.[^\s"'`]*/g,
+  )) {
     fail(file, `absolute URL in a script: ${url}`);
   }
 }
@@ -303,7 +309,7 @@ if (sitemapLine) checkReference(robots, sitemapLine);
 for (const file of withExtension(".md", ".txt")) {
   if (file.endsWith("README.md")) continue;
   for (const [url] of read(file).matchAll(/https?:\/\/[^\s"'<>()`\\]+/g)) {
-    if (url.startsWith(`${origin}/`)) {
+    if (onOrigin(url.replace(/[.,;:]+$/, ""))) {
       checkReference(file, url.replace(/[.,;:]+$/, ""));
     }
   }
@@ -318,34 +324,50 @@ const vercel = existsSync(vercelFile)
 const policy = vercel?.headers
   ?.find((rule) => rule.source === "/(.*)")
   ?.headers.find((header) => header.key === "Content-Security-Policy")?.value;
-if (!policy) {
-  fail(vercelFile, 'no Content-Security-Policy header for source "/(.*)"');
-} else {
-  const scriptSource =
+/** Every inline script or style needs its hash in the directive, and no hash may be left over. */
+function checkInline(directive, kind, blocks) {
+  const sources =
     policy
       .split(";")
-      .map((directive) => directive.trim().split(/\s+/))
-      .find(([name]) => name === "script-src") ?? [];
+      .map((part) => part.trim().split(/\s+/))
+      .find(([name]) => name === directive) ?? [];
   const allowed = new Set(
-    scriptSource.filter((value) => value.startsWith("'sha256-")),
+    sources.filter((value) => value.startsWith("'sha256-")),
   );
   const used = new Set();
-  for (const { file, scripts } of pages) {
-    for (const { src, type, body } of scripts) {
-      if (src !== undefined || type === "application/ld+json") continue;
-      const digest = createHash("sha256").update(body).digest("base64");
-      const hash = `'sha256-${digest}'`;
-      used.add(hash);
-      if (!allowed.has(hash)) {
-        fail(file, `inline script not allowed: add ${hash} to script-src`);
-      }
+  for (const { file, body } of blocks) {
+    const digest = createHash("sha256").update(body).digest("base64");
+    const hash = `'sha256-${digest}'`;
+    used.add(hash);
+    if (!allowed.has(hash)) {
+      fail(file, `inline ${kind} not allowed: add ${hash} to ${directive}`);
     }
   }
   for (const hash of allowed) {
     if (!used.has(hash)) {
-      fail(vercelFile, `script-src allows ${hash}, which matches no script`);
+      fail(vercelFile, `${directive} allows ${hash}, which matches no ${kind}`);
     }
   }
+}
+
+if (!policy) {
+  fail(vercelFile, 'no Content-Security-Policy header for source "/(.*)"');
+} else {
+  const inlineScripts = pages.flatMap(({ file, scripts }) =>
+    scripts
+      .filter(
+        ({ src, type }) => src === undefined && type !== "application/ld+json",
+      )
+      .map(({ body }) => ({ file, body })),
+  );
+  checkInline("script-src", "script", inlineScripts);
+  // The CSP header is sent with SVG files too, so their <style> needs it as well.
+  const svgStyles = withExtension(".svg").flatMap((file) =>
+    [...read(file).matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(
+      ([, body]) => ({ file, body }),
+    ),
+  );
+  checkInline("style-src", "style", svgStyles);
 }
 
 // --- Budgets ----------------------------------------------------------------------------

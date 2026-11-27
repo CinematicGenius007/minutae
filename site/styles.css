@@ -113,7 +113,7 @@
 
   --bg: #0d0d0c;
   --ink: #edede8;
-  --muted: #8e8e88;
+  --muted: #9a9a94;
   --surface: #181817;
   --raised: #2a2a28;
   --line: #262624;
@@ -132,7 +132,7 @@
   :root:not([data-theme="light"]) {
     --bg: #0d0d0c;
     --ink: #edede8;
-    --muted: #8e8e88;
+    --muted: #9a9a94;
     --surface: #181817;
     --raised: #2a2a28;
     --line: #262624;
@@ -471,7 +471,7 @@ svg {
 }
 
 .footer-inner {
-  padding-block: 27px;
+  padding-block: 27px 91px; /* the extra 64px clears the docked transport */
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -629,6 +629,10 @@ svg {
 
 .tape-line-you {
   top: 145px;
+}
+
+.tape-toggle:disabled {
+  cursor: default;
 }
 
 /* Red dots mean recording or listening. */
@@ -916,6 +920,11 @@ svg {
 .prompt-dot {
   width: 10px;
   height: 10px;
+  background-color: var(--muted);
+}
+
+.prompt-card[data-state="recording"] .prompt-dot {
+  background-color: var(--onair);
 }
 
 .prompt-title {
@@ -1670,7 +1679,7 @@ svg {
 
   .theme-option {
     width: 36px;
-    height: 36px;
+    height: 44px;
   }
 
   .btn-nav {
@@ -1785,7 +1794,13 @@ svg {
     width: auto;
   }
 
-  .transport-seg {
+  .transport-total {
+    display: none;
+  }
+
+  /* Equal widths: proportional segments are too thin to tap on a phone. */
+  .transport-seg:nth-child(n) {
+    flex-grow: 1;
     min-height: 44px;
   }
 
@@ -1951,10 +1966,11 @@ svg {
 
   .footer-links {
     flex-wrap: wrap;
-    gap: 16px 24px;
+    gap: 4px 12px;
   }
 
   .footer-links a {
+    min-width: 44px;
     min-height: 44px;
   }
 }

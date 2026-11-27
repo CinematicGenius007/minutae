@@ -6,7 +6,7 @@ function revealTree(tree) {
   const lines = [...tree.children].sort(
     (a, b) => a.classList.contains("is-new") - b.classList.contains("is-new"),
   );
-  const animations = lines.map((line, i) =>
+  lines.forEach((line, i) =>
     line.animate(
       { opacity: [0, 1], transform: ["translateY(4px)", "none"] },
       {
@@ -17,19 +17,18 @@ function revealTree(tree) {
       },
     ),
   );
-  for (const animation of animations) animation.pause();
-  whenVisible(
-    [tree],
-    () => {
-      for (const animation of animations) animation.play();
-    },
-    { threshold: 0.25 },
-  );
 }
 
 export default function fileViewer() {
   const viewer = document.getElementById("file-viewer");
-  if (!reducedMotion.matches) revealTree(viewer.querySelector(".file-tree"));
+  const tree = viewer.querySelector(".file-tree");
+  whenVisible(
+    [tree],
+    () => {
+      if (!reducedMotion.matches) revealTree(tree);
+    },
+    { threshold: 0.05 },
+  );
 
   for (const checkbox of viewer.querySelectorAll(".read-check-input")) {
     const mark = document.getElementById(checkbox.dataset.mark);

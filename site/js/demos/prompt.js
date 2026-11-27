@@ -1,10 +1,5 @@
-import {
-  everyFrame,
-  formatTime,
-  reducedMotion,
-  whenVisible,
-} from "../motion.js";
-import { announce, setText } from "../ui.js";
+import { formatTime, reducedMotion, whenVisible } from "../motion.js";
+import { announce } from "../ui.js";
 
 export default function prompt() {
   const card = document.getElementById("prompt-card");
@@ -13,12 +8,13 @@ export default function prompt() {
   const timer = card.querySelector(".prompt-timer");
   const [record, dismiss] = card.querySelectorAll(".prompt-btn");
   const idle = { title: title.textContent, body: body.textContent };
-  let stopTimer;
+  let ticking = 0;
   let comeBack = 0;
 
   function show(recording) {
     clearTimeout(comeBack);
-    stopTimer?.();
+    clearInterval(ticking);
+    card.inert = false;
     card.dataset.state = recording ? "recording" : "idle";
     title.textContent = recording ? "Recording" : idle.title;
     body.textContent = recording
@@ -30,11 +26,10 @@ export default function prompt() {
     dismiss.hidden = recording;
 
     if (recording) {
-      let elapsed = 0;
-      stopTimer = everyFrame((dt) => {
-        elapsed += dt;
-        setText(timer, formatTime(elapsed / 1000));
-      });
+      let seconds = 0;
+      ticking = setInterval(() => {
+        timer.textContent = formatTime(++seconds);
+      }, 1000);
     }
   }
 
@@ -46,20 +41,29 @@ export default function prompt() {
 
   dismiss.addEventListener("click", () => {
     if (card.dataset.state === "dismissed") return;
+    const hadFocus = card.contains(document.activeElement);
     card.dataset.state = "dismissed";
+    card.inert = true;
     announce("Prompt dismissed. Returning shortly.");
-    comeBack = setTimeout(() => show(false), 2000);
+    comeBack = setTimeout(() => {
+      show(false);
+      // Give keyboard users their place back, unless they have moved on.
+      if (hadFocus && document.activeElement === document.body) {
+        dismiss.focus({ preventScroll: true });
+      }
+    }, 2000);
   });
 
-  if (reducedMotion.matches) return;
-  const drop = card.animate(
-    { opacity: [0, 1], transform: ["translateY(-16px)", "none"] },
-    {
-      duration: 320,
-      easing: "cubic-bezier(0.2, 0.8, 0.2, 1)",
-      fill: "backwards",
+  // Created only once in view, so the card is never left invisible while waiting.
+  whenVisible(
+    [card],
+    () => {
+      if (reducedMotion.matches) return;
+      card.animate(
+        { opacity: [0, 1], transform: ["translateY(-16px)", "none"] },
+        { duration: 320, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" },
+      );
     },
+    { threshold: 0.05 },
   );
-  drop.pause(); // hidden until seen
-  whenVisible([card], () => drop.play(), { threshold: 0.3 });
 }

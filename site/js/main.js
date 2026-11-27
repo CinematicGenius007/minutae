@@ -21,7 +21,12 @@ const demos = [
 for (const [selector, load] of demos) {
   whenVisible(
     [...document.querySelectorAll(selector)],
-    () => load().then((demo) => demo.default()),
+    // The second callback covers a failed download only; errors in a demo still surface.
+    () =>
+      load().then(
+        (demo) => demo.default(),
+        () => {},
+      ),
     { rootMargin: "50% 0px" },
   );
 }

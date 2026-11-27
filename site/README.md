@@ -31,13 +31,13 @@ The local server sends none of the `vercel.json` headers. `check-site.mjs` (also
 |---|---|
 | HTML + CSS | 15 KB |
 | JavaScript at first paint (`main.js` and its static imports) | 5 KB |
-| All JavaScript | 11 KB |
+| All JavaScript | 12 KB |
 | Fonts | 35 KB |
 | Whole first load | 70 KB |
 
 When editing:
 
-- The inline theme script is allowed by its hash. After changing it, the check prints the new hash for `vercel.json`.
+- The inline theme script and the `<style>` in `icons/favicon.svg` are allowed by hash. After changing either, the check prints the new hash for `vercel.json`.
 - A new static import of `js/main.js` also needs a `<link rel="modulepreload">` in `index.html`; the check enforces it.
 - Fonts are subsetted. A character the page has not used before needs a new subset (`pyftsubset` from the `@fontsource-variable/*` packages; the arrows in `geist-mono-symbols.woff2` come from the `geist` npm package, which has them). No Geist font has `⌥`, so the system draws it.
 - Red (`--onair`) is only for something recording or listening.

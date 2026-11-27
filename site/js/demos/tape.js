@@ -117,6 +117,7 @@ export default function tape() {
   function run() {
     const live = visible && !paused && !reducedMotion.matches;
     band.classList.toggle("is-live", live);
+    toggle.disabled = reducedMotion.matches; // nothing to pause
     stop?.();
     if (live) stop = everyFrame(frame);
   }
