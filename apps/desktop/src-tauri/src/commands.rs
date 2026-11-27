@@ -135,6 +135,11 @@ pub async fn update_settings(app: AppHandle, patch: serde_json::Value) -> R<AppS
     let st = app.state::<AppState>();
     let old = st.settings();
     let new = merge_settings(&old, patch)?;
+    if old.dictation_retention_days != new.dictation_retention_days
+        && !matches!(new.dictation_retention_days, None | Some(7 | 30 | 90))
+    {
+        return Err("Choose Forever, 7, 30, or 90 days for dictation history.".into());
+    }
     {
         let picked = st.picked_folders.lock().unwrap_or_else(|e| e.into_inner());
         check_folder_setting(
@@ -173,6 +178,9 @@ pub async fn update_settings(app: AppHandle, patch: serde_json::Value) -> R<AppS
     *st.settings.write().unwrap_or_else(|e| e.into_inner()) = new.clone();
     crate::apply_settings(&app, &old, &new);
     let _ = app.emit(ev::SETTINGS_CHANGED, &new);
+    if old.dictation_retention_days != new.dictation_retention_days {
+        crate::dictation::prune(&app).await;
+    }
     Ok(new)
 }
 
@@ -725,15 +733,12 @@ pub async fn dictation_stats(state: State<'_, AppState>) -> R<dto::DictationStat
 
 #[tauri::command]
 pub async fn delete_dictation(app: AppHandle, id: String) -> R<()> {
-    let id = uuid(&id)?;
-    app.state::<AppState>()
-        .store
-        .call(move |s| s.delete_dictation(id))
-        .await
-        .map_err(err)?;
-    let _ = std::fs::remove_file(crate::dictation::dictation_audio_path(id));
-    let _ = app.emit(ev::DICTATIONS_CHANGED, ());
-    Ok(())
+    crate::dictation::delete(&app, crate::dictation::DeleteDictations::One(uuid(&id)?)).await
+}
+
+#[tauri::command]
+pub async fn delete_all_dictations(app: AppHandle) -> R<()> {
+    crate::dictation::delete(&app, crate::dictation::DeleteDictations::All).await
 }
 
 // ---------------------------------------------------------------- library

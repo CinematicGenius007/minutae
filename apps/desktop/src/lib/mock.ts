@@ -43,17 +43,18 @@ const os = osParam === "macos" || osParam === "windows" || osParam === "linux"
 const sessionParam = params.get("session");
 const sessionKind = os === "linux" && (sessionParam === "x11" || sessionParam === "wayland") ? sessionParam : null;
 const portalParam = params.get("portal");
+const waylandCancelDetail = "Global Esc cancellation is unavailable on Wayland.";
 const shortcutStatus: ShortcutStatus =
   sessionKind !== "wayland"
-    ? { backend: "native", dictateTrigger: null, recordTrigger: null, canConfigure: false, holdSupported: true, detail: null }
+    ? { backend: "native", dictateTrigger: null, recordTrigger: null, canConfigure: false, holdSupported: true, detail: null, cancelDetail: null }
     : portalParam === "none"
       ? {
           backend: "unavailable", dictateTrigger: null, recordTrigger: null, canConfigure: false, holdSupported: null,
-          detail: "org.freedesktop.portal.GlobalShortcuts was not found",
+          detail: "org.freedesktop.portal.GlobalShortcuts was not found", cancelDetail: waylandCancelDetail,
         }
       : {
           backend: "portal", dictateTrigger: "Alt+Space", recordTrigger: "Ctrl+Alt+R", canConfigure: true,
-          holdSupported: portalParam === "press" ? false : null, detail: null,
+          holdSupported: portalParam === "press" ? false : null, detail: null, cancelDetail: waylandCancelDetail,
         };
 const noPerms = params.get("perms") === "none";
 let perms: Permissions = noPerms
@@ -74,7 +75,7 @@ let settings: AppSettings = {
   whisperModel: "small", language: null, labelSpeakers: true, liveCaptions: true, echoCancellation: "auto", transportOrder: ["codexCli", "ollama", "grokCli"],
   apiFallbackEnabled: false, summaryLength: "brief", summariesPath: null, codexModel: null, ollamaModel: "llama3.1:8b",
   dictationHotkey: "Alt+Space", dictationMode: "hold", tidyDictation: true, keepDictationAudio: false,
-  vocabulary: ["Minutae", "whisper.cpp", "Priya Raman", "SwiftUI"], deleteAudioAfterDays: 30, recordingsPath: null,
+  dictationRetentionDays: null, vocabulary: ["Minutae", "whisper.cpp", "Priya Raman", "SwiftUI"], deleteAudioAfterDays: 30, recordingsPath: null,
 };
 
 const groups: DayGroup[] = [
@@ -184,15 +185,23 @@ function detail(meetingId: string): MeetingDetail {
   return d;
 }
 
-const dictations: Dictation[] = [
+let dictations: Dictation[] = empty ? [] : [
   ["Thanks for the notes. Let's keep the May date and I'll send the revised plan to the team before Friday's review.", "Mail", 16, 2],
   ["Refactor the recorder so it writes chunks to disk every thirty seconds instead of holding the whole buffer.", "Xcode", 15, 47],
   ["Running ten minutes late, start without me.", "Messages", 11, 20],
   ["Standup: finished the model download flow, today on the summary prompt, no blockers.", "Slack", 9, 5],
 ].map(([text, app, h, m], i) => ({
-  id: id(300 + i), createdAt: iso(0, h as number, m as number), text: text as string, rawText: text as string,
+  id: id(300 + i), createdAt: iso(params.has("oldDictations") && i === 3 ? 10 : 0, h as number, m as number), text: text as string, rawText: text as string,
   targetApp: app as string, wordCount: (text as string).split(/\s+/).length, durationMs: 6000, inserted: true,
 }));
+
+function removeDictations(remove: (entry: Dictation) => boolean) {
+  const remaining = dictations.filter((entry) => !remove(entry));
+  if (remaining.length !== dictations.length) {
+    dictations = remaining;
+    emit("dictations://changed", null);
+  }
+}
 
 // Live captions. `?captions=off | noModel` sets the status; `?captions=none` keeps them on but
 // silent. In `?state=recording` a few lines are already there, then a new line (partial, then
@@ -352,7 +361,9 @@ export function highlightRanges(text: string, query: string): [number, number][]
   return merged;
 }
 
-const hitsFor = (query: string) => hits.map((h) => ({ ...h, highlights: highlightRanges(h.snippet, query) }));
+const hitsFor = (query: string) => hits
+  .filter((h) => !h.dictationId || dictations.some((entry) => entry.id === h.dictationId))
+  .map((h) => ({ ...h, highlights: highlightRanges(h.snippet, query) }));
 
 const delay = <T,>(v: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
 const fail = (message: string, ms = 120) => new Promise<never>((_, reject) => setTimeout(() => reject(message), ms));
@@ -448,8 +459,17 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
       const patch = args.patch as Partial<AppSettings>;
       const refusal = shortcutRefusal(patch);
       if (refusal) return fail(refusal);
+      const retention = patch.dictationRetentionDays;
+      if (retention != null && ![7, 30, 90].includes(retention)) {
+        return fail("Choose Forever, 7, 30, or 90 days for dictation history.");
+      }
+      const retentionChanged = retention !== undefined && retention !== settings.dictationRetentionDays;
       settings = { ...settings, ...patch };
       emit("settings://changed", settings);
+      if (retentionChanged && retention != null) {
+        const cutoff = Date.now() - retention * 86_400_000;
+        removeDictations((entry) => Date.parse(entry.createdAt) < cutoff);
+      }
       if (patch.liveCaptions !== undefined && captionStatus !== "noModel") {
         captionStatus = patch.liveCaptions ? "on" : "off";
         if (recording.phase !== "idle") {
@@ -492,8 +512,22 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
     case "resume_recording": recording = { ...recording, phase: "recording" }; emit("recording://state", recording); return r(undefined);
     case "mark_moment": return r({ meetingId: recording.meetingId, atMs: recording.elapsedMs, label: (args.label as string) ?? "Moment" });
     case "list_input_devices": return r([{ id: "default", name: "MacBook Pro Microphone", isDefault: true }, { id: "airpods", name: "AirPods Pro", isDefault: false }, { id: "mv7", name: "Shure MV7", isDefault: false }]);
-    case "list_dictations": return r(empty ? [] : dictations);
-    case "dictation_stats": return r({ wordsThisWeek: 4210, minutesSaved: 38 });
+    case "list_dictations": return r(dictations.slice(0, (args.limit as number | undefined) ?? 100));
+    case "delete_dictation":
+      removeDictations((entry) => entry.id === args.id);
+      return r(undefined);
+    case "delete_all_dictations":
+      removeDictations(() => true);
+      return r(undefined);
+    case "dictation_stats": {
+      const weekStart = new Date();
+      weekStart.setDate(weekStart.getDate() - (weekStart.getDay() + 6) % 7);
+      weekStart.setHours(0, 0, 0, 0);
+      const week = dictations.filter((entry) => Date.parse(entry.createdAt) >= weekStart.getTime());
+      const wordsThisWeek = week.reduce((total, entry) => total + entry.wordCount, 0);
+      const spokenMs = week.reduce((total, entry) => total + entry.durationMs, 0);
+      return r({ wordsThisWeek, minutesSaved: Math.round(Math.max(0, wordsThisWeek / 40 - spokenMs / 60_000)) });
+    }
     case "search": return r(!empty && (args.query as string)?.trim() ? hitsFor(args.query as string) : []);
     case "ask": return answerFor(args.question as string) as Promise<T>;
     case "list_models": return r(models);

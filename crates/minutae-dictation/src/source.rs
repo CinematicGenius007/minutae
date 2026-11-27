@@ -1,6 +1,8 @@
 //! Seams to the audio and speech crates. The app wires the real
 //! implementations (minutae-audio, minutae-asr); tests use `crate::fakes`.
 
+use std::sync::{Arc, atomic::AtomicBool};
+
 use async_trait::async_trait;
 use tokio::sync::watch;
 
@@ -24,5 +26,11 @@ pub trait AudioSource: Send + Sync {
 #[async_trait]
 pub trait SpeechToText: Send + Sync {
     /// `vocabulary` is the user's word list, for use as a prompt/bias.
-    async fn transcribe(&self, samples: &[f32], vocabulary: &[String]) -> anyhow::Result<String>;
+    /// Stop the transcription when `cancel` is set.
+    async fn transcribe(
+        &self,
+        samples: &[f32],
+        vocabulary: &[String],
+        cancel: Arc<AtomicBool>,
+    ) -> anyhow::Result<String>;
 }

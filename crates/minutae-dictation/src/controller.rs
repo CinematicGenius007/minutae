@@ -33,7 +33,7 @@ use tokio::{
 };
 
 use crate::{
-    insert::{CopyReason, InsertOutcome, Inserter},
+    insert::{CopyReason, InsertOutcome, Inserter, InsertionControl},
     postprocess,
     source::{AudioSource, SAMPLE_RATE, SpeechToText},
 };
@@ -149,6 +149,8 @@ pub struct DictationController {
 
 struct Shared {
     inner: Mutex<Inner>,
+    // Escape can signal this even while the key worker is stopping the microphone.
+    active_insert: Mutex<Option<Arc<InsertionControl>>>,
     deps: DictationDeps,
     events: mpsc::UnboundedSender<DictationEvent>,
     handle: Handle,
@@ -184,6 +186,7 @@ struct Listening {
 
 struct Job {
     session: u64,
+    control: Arc<InsertionControl>,
     samples: Vec<f32>,
     created_at: DateTime<Utc>,
     target_app: Option<String>,
@@ -209,6 +212,7 @@ impl DictationController {
         };
         let shared = Arc::new(Shared {
             inner: Mutex::new(inner),
+            active_insert: Mutex::new(None),
             deps,
             events,
             handle,
@@ -314,19 +318,33 @@ impl DictationController {
         });
     }
 
-    /// Esc / close button: drops the current dictation without inserting.
-    /// Too late once insertion has started.
-    pub fn cancel(&self) {
+    /// Signal Escape immediately. Follow with `finish_cancel` on the key worker.
+    pub fn request_cancel(&self) -> bool {
+        self.shared
+            .active_insert()
+            .as_ref()
+            .is_some_and(|control| control.cancel())
+    }
+
+    /// Stop listening or abandon transcription off the main thread. Insertion, if
+    /// already staging the clipboard, rolls it back before emitting Idle itself.
+    pub fn finish_cancel(&self) {
         let shared = &self.shared;
         let mut inner = shared.lock();
+        if !shared.is_cancelled() {
+            return;
+        }
         match inner.phase {
             Phase::Listening(_) => shared.cancel_listening(&mut inner),
-            Phase::Processing => {
-                inner.phase = Phase::Idle;
-                inner.session += 1;
-                shared.emit(HudState::Idle);
-            }
+            Phase::Processing => shared.cancelled(&mut inner),
             _ => {}
+        }
+    }
+
+    /// Cancel from a thread where stopping the microphone is safe.
+    pub fn cancel(&self) {
+        if self.request_cancel() {
+            self.finish_cancel();
         }
     }
 }
@@ -336,6 +354,16 @@ impl Shared {
         self.inner
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn active_insert(&self) -> MutexGuard<'_, Option<Arc<InsertionControl>>> {
+        self.active_insert.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.active_insert()
+            .as_ref()
+            .is_some_and(|control| control.is_cancelled())
     }
 
     fn emit(&self, state: HudState) {
@@ -352,6 +380,7 @@ impl Shared {
             });
             return;
         }
+        *self.active_insert() = Some(Arc::default());
         inner.session += 1;
         inner.level = 0.0;
         let session = inner.session;
@@ -437,6 +466,11 @@ impl Shared {
         if let Err(e) = self.deps.audio.stop() {
             tracing::debug!("microphone stop after cancel: {e:#}");
         }
+        self.cancelled(inner);
+    }
+
+    fn cancelled(&self, inner: &mut Inner) {
+        self.active_insert().take();
         inner.phase = Phase::Idle;
         inner.session += 1;
         self.emit(HudState::Idle);
@@ -455,10 +489,20 @@ impl Shared {
                 return;
             }
         };
+        let control = self
+            .active_insert()
+            .as_ref()
+            .expect("active dictation")
+            .clone();
+        if control.is_cancelled() {
+            self.cancelled(inner);
+            return;
+        }
         let elapsed = now.duration_since(listening.started);
         let audio_ms = samples.len() as u64 * 1000 / u64::from(SAMPLE_RATE);
         let job = Job {
             session: inner.session,
+            control,
             samples,
             created_at: listening.created_at,
             target_app: listening.target_app,
@@ -477,6 +521,15 @@ impl Shared {
     }
 
     fn fail(&self, inner: &mut Inner, message: String) {
+        // Take the slot before deciding the error so an Escape that won is honored.
+        if self
+            .active_insert()
+            .take()
+            .is_some_and(|control| control.is_cancelled())
+        {
+            self.cancelled(inner);
+            return;
+        }
         tracing::warn!("dictation failed: {message}");
         inner.phase = Phase::Error;
         self.emit(HudState::Error { message });
@@ -491,6 +544,9 @@ impl Shared {
     }
 
     async fn run_pipeline(&self, job: Job) {
+        if job.control.is_cancelled() {
+            return;
+        }
         if job.samples.is_empty() {
             if let Some(mut inner) = self.current(job.session) {
                 self.fail(&mut inner, "No audio was captured".into());
@@ -500,7 +556,7 @@ impl Shared {
         let transcript = self
             .deps
             .stt
-            .transcribe(&job.samples, &job.vocabulary)
+            .transcribe(&job.samples, &job.vocabulary, job.control.cancel_flag())
             .await;
         let raw = match transcript {
             Ok(raw) => raw,
@@ -516,6 +572,9 @@ impl Shared {
             let Some(mut inner) = self.current(job.session) else {
                 return;
             };
+            if job.control.is_cancelled() {
+                return;
+            }
             if text.is_empty() {
                 self.fail(&mut inner, "No speech detected".into());
                 return;
@@ -531,30 +590,35 @@ impl Shared {
                 tracing::info!(%then, %now, "focus changed during dictation; copying instead");
                 self.deps
                     .inserter
-                    .copy(&text, CopyReason::FocusChanged)
+                    .copy(&text, CopyReason::FocusChanged, job.control.clone())
                     .await
             }
-            _ => self.deps.inserter.insert(&text).await,
+            _ => self.deps.inserter.insert(&text, job.control.clone()).await,
         };
         let words = postprocess::word_count(&text);
-        {
-            let mut inner = self.lock();
-            if inner.session == job.session {
-                match &outcome {
-                    InsertOutcome::Inserted => {
-                        inner.phase = Phase::Idle;
-                        self.emit(HudState::Inserted { words });
-                    }
-                    InsertOutcome::Copied(reason) => {
-                        inner.phase = Phase::Idle;
-                        self.emit(HudState::Copied {
-                            words,
-                            reason: *reason,
-                        });
-                    }
-                    InsertOutcome::Failed(reason) => self.fail(&mut inner, reason.clone()),
-                }
+        let mut inner = self.lock();
+        if inner.session != job.session {
+            return;
+        }
+        let control = self.active_insert().take();
+        if outcome == InsertOutcome::Cancelled || control.is_some_and(|c| c.is_cancelled()) {
+            self.cancelled(&mut inner);
+            return;
+        }
+        match &outcome {
+            InsertOutcome::Inserted => {
+                inner.phase = Phase::Idle;
+                self.emit(HudState::Inserted { words });
             }
+            InsertOutcome::Copied(reason) => {
+                inner.phase = Phase::Idle;
+                self.emit(HudState::Copied {
+                    words,
+                    reason: *reason,
+                });
+            }
+            InsertOutcome::Failed(reason) => self.fail(&mut inner, reason.clone()),
+            InsertOutcome::Cancelled => unreachable!(),
         }
 
         let dictation = Dictation {

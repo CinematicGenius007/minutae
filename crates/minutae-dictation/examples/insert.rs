@@ -31,6 +31,6 @@ async fn main() {
         minutae_dictation::refresh_paste_keycode()
     );
     println!("frontmost app: {:?}", inserter.target_app());
-    let outcome = inserter.insert(&text).await;
+    let outcome = inserter.insert(&text, Default::default()).await;
     println!("outcome: {outcome:?}");
 }
