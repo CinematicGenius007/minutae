@@ -1,0 +1,1013 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Minutae — You talk. It takes the minutes.</title>
+    <meta
+      name="description"
+      content="A meeting recorder and dictation app that runs on your computer. It writes plain Markdown. Free, open source, no account."
+    />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="theme-color"
+      content="#FFFFFF"
+      media="(prefers-color-scheme: light)"
+    />
+    <meta
+      name="theme-color"
+      content="#0D0D0C"
+      media="(prefers-color-scheme: dark)"
+    />
+    <link rel="canonical" href="https://minutae.vercel.app/" />
+    <link
+      rel="alternate"
+      type="text/plain"
+      href="./llms.txt"
+      title="Minutae summary for LLMs"
+    />
+    <link
+      rel="alternate"
+      type="text/markdown"
+      href="./agents.md"
+      title="Minutae install guide for AI agents"
+    />
+    <link
+      rel="alternate"
+      type="text/markdown"
+      href="./index.md"
+      title="Minutae home page in Markdown"
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Minutae" />
+    <meta property="og:title" content="Minutae — You talk. It takes the minutes." />
+    <meta
+      property="og:description"
+      content="A meeting recorder and dictation app that runs on your computer. It writes plain Markdown. Free, open source, no account."
+    />
+    <meta property="og:url" content="https://minutae.vercel.app/" />
+    <meta property="og:image" content="https://minutae.vercel.app/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Minutae — You talk. It takes the minutes. Two-track recording waveforms feeding live local transcription."
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="Minutae — You talk. It takes the minutes."
+    />
+    <meta
+      name="twitter:description"
+      content="A meeting recorder and dictation app that runs on your computer. It writes plain Markdown. Free, open source, no account."
+    />
+    <meta name="twitter:image" content="https://minutae.vercel.app/og.png" />
+    <meta
+      name="twitter:image:alt"
+      content="Minutae — You talk. It takes the minutes. Two-track recording waveforms feeding live local transcription."
+    />
+    <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="./icons/favicon.ico" sizes="32x32" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <link rel="manifest" href="./site.webmanifest" />
+    <link
+      rel="preload"
+      href="./fonts/geist.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <script>try{var s=localStorage.getItem("minutae-theme");if(s==="light"||s==="dark")document.documentElement.setAttribute("data-theme",s)}catch(e){}</script>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Minutae",
+        "description": "A meeting recorder and dictation app that runs on your computer. It records mic and system audio as two tracks, transcribes locally with whisper.cpp, and writes plain Markdown. Free, open source, no account.",
+        "url": "https://minutae.vercel.app/",
+        "applicationCategory": "ProductivityApplication",
+        "operatingSystem": "macOS 13+, Windows 10+, Linux x86_64",
+        "license": "https://opensource.org/licenses/MIT",
+        "isAccessibleForFree": true,
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "codeRepository": "https://github.com/CinematicGenius007/minutae",
+        "downloadUrl": "https://github.com/CinematicGenius007/minutae/releases",
+        "installUrl": "https://github.com/CinematicGenius007/minutae/tree/main/docs/install"
+      }
+    </script>
+    <script type="module" src="./main.js"></script>
+  </head>
+  <body id="top">
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="wordmark" href="#top" aria-label="minutae home">
+            <span class="wordmark-text">minutae</span>
+            <svg
+              class="wordmark-mark"
+              width="7"
+              height="7"
+              viewBox="0 0 7 7"
+              aria-hidden="true"
+            >
+              <circle cx="3.5" cy="3.5" r="3.5" fill="currentColor" />
+            </svg>
+          </a>
+          <nav class="primary-nav" aria-label="Primary">
+            <a
+              href="https://github.com/CinematicGenius007/minutae/tree/main/docs/install"
+              target="_blank"
+              rel="noopener noreferrer"
+              >docs</a
+            >
+            <a href="#install">install</a>
+            <a href="#privacy">privacy</a>
+            <a
+              href="https://github.com/CinematicGenius007/minutae"
+              target="_blank"
+              rel="noopener noreferrer"
+              >github ↗</a
+            >
+          </nav>
+        </div>
+
+        <div class="header-right">
+          <div class="theme-switcher" role="radiogroup" aria-label="Color theme">
+            <button
+              type="button"
+              class="theme-option"
+              role="radio"
+              aria-checked="false"
+              aria-label="Light theme"
+              data-theme-choice="light"
+              tabindex="-1"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="4"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+                <path
+                  d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="theme-option"
+              role="radio"
+              aria-checked="false"
+              aria-label="Dark theme"
+              data-theme-choice="dark"
+              tabindex="-1"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="theme-option"
+              role="radio"
+              aria-checked="true"
+              aria-label="System theme"
+              data-theme-choice="system"
+              tabindex="0"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+                <rect
+                  x="2"
+                  y="3"
+                  width="20"
+                  height="14"
+                  rx="2"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+                <path
+                  d="M8 21h8M12 17v4"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+          </div>
+
+          <a class="btn-primary btn-nav" href="#install">Install free</a>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="chapter-start" aria-labelledby="hero-title">
+        <div class="hero-top">
+          <h1 id="hero-title" class="hero-headline">
+            You talk.<br />It takes the minutes.
+          </h1>
+          <p class="hero-lead">
+            A meeting recorder and dictation app that runs on your computer. It
+            writes plain Markdown. Free, open source, no account.
+          </p>
+        </div>
+
+        <div class="tape-band" id="hero-tape">
+          <button
+            type="button"
+            class="tape-toggle"
+            id="hero-tape-btn"
+            aria-pressed="false"
+            aria-label="Pause live recording preview"
+          ></button>
+          <div class="tape-inner" aria-hidden="true">
+            <div class="tape-tracks" aria-hidden="true">
+              <div class="tape-track tape-track-them">
+                <span class="tape-label">THEM</span>
+                <svg
+                  class="tape-wave"
+                  id="wave-them"
+                  width="560"
+                  height="64"
+                  viewBox="0 0 560 64"
+                  preserveAspectRatio="none"
+                >
+                  <path
+                    d="M2 26v12M11 24v16M20 23v18M29 18v29M38 15v34M47 22v20M56 23v19M65 7v50M74 18v29M83 19v27M92 7v50M101 18v29M110 15v34M119 22v20M128 24v17M137 27v11M146 19v26M155 31v2M164 31v2M173 31v2M182 31v2M191 31v2M200 31v2M209 31v2M218 31v2M227 31v2M236 31v2M245 31v2M254 31v2M263 19v26M272 20v25M281 14v36M290 13v38M299 22v21M308 9v47M317 12v41M326 17v30M335 23v19M344 11v42M353 19v26M362 19v27M371 21v23M380 23v19M389 17v30M398 20v24M407 13v39M416 16v32M425 6v52M434 31v2M443 31v2M452 31v2M461 31v2M470 31v2M479 15v35M488 26v12M497 27v10M506 26v13M515 16v33M524 19v26M533 14v36M542 18v28M551 14v37"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="3"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </div>
+              <div class="tape-track tape-track-you">
+                <span class="tape-label">YOU</span>
+                <svg
+                  class="tape-wave"
+                  id="wave-you"
+                  width="560"
+                  height="64"
+                  viewBox="0 0 560 64"
+                  preserveAspectRatio="none"
+                >
+                  <path
+                    d="M2 31v2M11 31v2M20 31v2M29 31v2M38 31v2M47 31v2M56 31v2M65 31v2M74 31v2M83 31v2M92 31v2M101 31v2M110 31v2M119 31v2M128 31v2M137 19v26M146 9v47M155 23v18M164 18v28M173 27v11M182 27v11M191 18v29M200 23v18M209 15v34M218 16v32M227 15v34M236 14v37M245 19v27M254 8v48M263 22v21M272 21v23M281 31v2M290 31v2M299 31v2M308 31v2M317 31v2M326 31v2M335 31v2M344 31v2M353 31v2M362 31v2M371 31v2M380 31v2M389 31v2M398 31v2M407 31v2M416 31v2M425 28v8M434 25v14M443 22v21M452 13v39M461 18v28M470 21v22M479 18v29M488 31v2M497 31v2M506 31v2M515 31v2M524 12v41M533 26v13M542 22v20M551 26v13"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="3"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </div>
+            </div>
+
+            <div class="tape-playhead" aria-hidden="true"></div>
+
+            <div class="tape-output">
+              <div class="tape-status" aria-hidden="true">
+                <span class="onair-dot" id="tape-dot"></span>
+                <span class="tape-status-text"
+                  >ON AIR <span id="tape-time">12:04</span></span
+                >
+              </div>
+
+              <div class="tape-transcript" aria-hidden="true">
+                <p class="tape-line tape-line-them" id="tape-text-them">So we move to May. Can you share the
+updated mockups by Friday?</p>
+                <p class="tape-line tape-line-you" id="tape-text-you">Friday works. I'll move it on the
+roadmap today.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="sr-only">
+          Live transcript example at 12:04. Them: So we move to May. Can you
+          share the updated mockups by Friday? You: Friday works. I'll move it
+          on the roadmap today.
+        </p>
+
+        <div class="install-row" id="install">
+          <div class="install-control">
+            <div
+              class="install-tabs"
+              role="tablist"
+              aria-label="Install method"
+            >
+              <button
+                type="button"
+                class="install-tab"
+                role="tab"
+                id="tab-unix"
+                aria-selected="true"
+                aria-controls="install-panel"
+                data-install-tab="unix"
+                tabindex="0"
+              >
+                macOS / Linux
+              </button>
+              <button
+                type="button"
+                class="install-tab"
+                role="tab"
+                id="tab-windows"
+                aria-selected="false"
+                aria-controls="install-panel"
+                data-install-tab="windows"
+                tabindex="-1"
+              >
+                Windows
+              </button>
+              <button
+                type="button"
+                class="install-tab"
+                role="tab"
+                id="tab-source"
+                aria-selected="false"
+                aria-controls="install-panel"
+                data-install-tab="source"
+                tabindex="-1"
+              >
+                source
+              </button>
+              <button
+                type="button"
+                class="install-tab"
+                role="tab"
+                id="tab-agent"
+                aria-selected="false"
+                aria-controls="install-panel"
+                data-install-tab="agent"
+                tabindex="-1"
+              >
+                ask your agent
+              </button>
+            </div>
+
+            <div
+              class="install-box"
+              id="install-panel"
+              role="tabpanel"
+              aria-labelledby="tab-unix"
+            >
+              <span class="install-prompt" id="install-prompt" aria-hidden="true"
+                >$</span
+              >
+              <code class="install-command" id="install-command"
+                >curl -fsSL https://raw.githubusercontent.com/CinematicGenius007/minutae/main/scripts/install.sh | sh</code
+              >
+              <button type="button" class="copy-btn" id="install-copy">
+                copy
+              </button>
+            </div>
+          </div>
+
+          <div class="install-meta">
+            <span>macOS 13+ · Windows 10+ · Linux x86_64</span>
+            <span>MIT license</span>
+          </div>
+        </div>
+      </section>
+
+      <div class="transport-slot" id="transport-slot">
+        <nav
+          class="transport"
+          id="transport"
+          aria-label="Call timeline navigation"
+        >
+          <div class="transport-inner">
+            <button
+              type="button"
+              class="transport-play"
+              id="transport-play"
+              aria-pressed="false"
+              aria-label="Play through the call"
+            >
+              <svg
+                class="icon-play"
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M6 3l15 9-15 9V3z" fill="currentColor" />
+              </svg>
+              <svg
+                class="icon-pause"
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <rect x="6" y="4" width="4" height="16" fill="currentColor" />
+                <rect x="14" y="4" width="4" height="16" fill="currentColor" />
+              </svg>
+            </button>
+
+            <div class="transport-time" aria-hidden="true">
+              <span id="transport-time">00:00</span> / 33:00
+            </div>
+
+            <div class="transport-segments">
+              <button
+                type="button"
+                class="transport-seg transport-seg-1 is-active"
+                data-seg-target="chapter-start"
+                data-seg-time="00:00"
+                aria-label="Jump to start, 00:00"
+              >
+                <span class="transport-bar" aria-hidden="true"
+                  ><span class="transport-bar-fill"></span
+                ></span>
+                <span class="transport-seg-label">start</span>
+              </button>
+              <button
+                type="button"
+                class="transport-seg transport-seg-2"
+                data-seg-target="chapter-asks"
+                data-seg-time="00:04"
+                aria-label="Jump to 00:04 it asks"
+              >
+                <span class="transport-bar" aria-hidden="true"
+                  ><span class="transport-bar-fill"></span
+                ></span>
+                <span class="transport-seg-label">00:04 it asks</span>
+              </button>
+              <button
+                type="button"
+                class="transport-seg transport-seg-3"
+                data-seg-target="chapter-tracks"
+                data-seg-time="12:04"
+                aria-label="Jump to 12:04 two tracks"
+              >
+                <span class="transport-bar" aria-hidden="true"
+                  ><span class="transport-bar-fill"></span
+                ></span>
+                <span class="transport-seg-label">12:04 two tracks</span>
+              </button>
+              <button
+                type="button"
+                class="transport-seg transport-seg-4"
+                data-seg-target="chapter-file"
+                data-seg-time="32:14"
+                aria-label="Jump to 32:14 a file"
+              >
+                <span class="transport-bar" aria-hidden="true"
+                  ><span class="transport-bar-fill"></span
+                ></span>
+                <span class="transport-seg-label">32:14 a file</span>
+              </button>
+              <button
+                type="button"
+                class="transport-seg transport-seg-5"
+                data-seg-target="chapter-dictate"
+                data-seg-time="32:28"
+                aria-label="Jump to Option Space dictate"
+              >
+                <span class="transport-bar" aria-hidden="true"
+                  ><span class="transport-bar-fill"></span
+                ></span>
+                <span class="transport-seg-label">⌥ space dictate</span>
+              </button>
+              <button
+                type="button"
+                class="transport-seg transport-seg-6"
+                data-seg-target="privacy"
+                data-seg-time="32:40"
+                aria-label="Jump to 32:40 what runs where"
+              >
+                <span class="transport-bar" aria-hidden="true"
+                  ><span class="transport-bar-fill"></span
+                ></span>
+                <span class="transport-seg-label">32:40 what runs where</span>
+              </button>
+            </div>
+          </div>
+        </nav>
+      </div>
+
+      <!-- 00:04 It asks first -->
+      <section class="chapter" id="chapter-asks" aria-labelledby="asks-title">
+        <div class="chapter-inner chapter-row">
+          <div class="chapter-time">
+            <span class="sr-only">00:04</span>
+            <span
+              class="chapter-time-display"
+              aria-hidden="true"
+              data-roll-from="00:00"
+              data-roll-to="00:04"
+              >00:04</span
+            >
+          </div>
+
+          <div class="chapter-copy">
+            <h2 id="asks-title" class="chapter-title">It asks first.</h2>
+            <p class="chapter-body">
+              Another app opens your mic, one prompt appears. Nothing is
+              recorded until you say so. No bot joins your call.
+            </p>
+          </div>
+
+          <div class="chapter-demo chapter-demo-end">
+            <div class="prompt-card" id="prompt-card" data-state="idle">
+              <div class="prompt-header">
+                <div class="prompt-title-group">
+                  <span class="prompt-dot" id="prompt-dot" aria-hidden="true"></span>
+                  <span class="prompt-title" id="prompt-title"
+                    >An app is using your mic</span
+                  >
+                </div>
+                <span
+                  class="prompt-timer"
+                  id="prompt-timer"
+                  aria-hidden="true"
+                  hidden
+                  >00:00</span
+                >
+              </div>
+              <p class="prompt-body" id="prompt-body">
+                Record this call? Audio stays on this computer.
+              </p>
+              <div class="prompt-actions">
+                <button
+                  type="button"
+                  class="prompt-btn prompt-btn-primary"
+                  id="prompt-record"
+                >
+                  Record
+                </button>
+                <button
+                  type="button"
+                  class="prompt-btn prompt-btn-secondary"
+                  id="prompt-dismiss"
+                >
+                  Not now
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 12:04 Two tracks -->
+      <section
+        class="chapter"
+        id="chapter-tracks"
+        aria-labelledby="tracks-title"
+      >
+        <div class="chapter-inner chapter-row">
+          <div class="chapter-time">
+            <span class="sr-only">12:04</span>
+            <span
+              class="chapter-time-display"
+              aria-hidden="true"
+              data-roll-from="00:04"
+              data-roll-to="12:04"
+              >12:04</span
+            >
+          </div>
+
+          <div class="chapter-copy">
+            <h2 id="tracks-title" class="chapter-title">
+              Two tracks, so it knows who spoke.
+            </h2>
+            <p class="chapter-body">
+              Your mic and their audio are captured apart. Whisper writes both
+              down on your machine; speakers get separated and you name them.
+            </p>
+          </div>
+
+          <div class="chapter-demo chapter-demo-end">
+            <div
+              class="speaker-list"
+              id="speaker-list"
+              role="table"
+              aria-label="Separated speaker durations"
+            >
+              <div class="speaker-row speaker-row-first" role="row">
+                <span class="speaker-name" role="cell">You</span>
+                <span class="speaker-track" role="cell">mic.wav</span>
+                <span class="speaker-dur" role="cell">
+                  <span class="sr-only">11:02</span>
+                  <span
+                    class="speaker-dur-display"
+                    aria-hidden="true"
+                    data-count-to="662"
+                    >11:02</span
+                  >
+                </span>
+              </div>
+              <div class="speaker-row" role="row">
+                <span class="speaker-name" role="cell">Alice</span>
+                <span class="speaker-track" role="cell">system.wav</span>
+                <span class="speaker-dur" role="cell">
+                  <span class="sr-only">14:37</span>
+                  <span
+                    class="speaker-dur-display"
+                    aria-hidden="true"
+                    data-count-to="877"
+                    >14:37</span
+                  >
+                </span>
+              </div>
+              <div class="speaker-row" role="row">
+                <span class="speaker-name" role="cell">Bob</span>
+                <span class="speaker-track" role="cell">system.wav</span>
+                <span class="speaker-dur" role="cell">
+                  <span class="sr-only">05:18</span>
+                  <span
+                    class="speaker-dur-display"
+                    aria-hidden="true"
+                    data-count-to="318"
+                    >05:18</span
+                  >
+                </span>
+              </div>
+              <div class="speaker-row speaker-row-muted" role="row">
+                <span class="speaker-name" role="cell">Speaker 3</span>
+                <span class="speaker-track" role="cell">system.wav</span>
+                <span class="speaker-dur" role="cell">
+                  <span class="sr-only">01:17</span>
+                  <span
+                    class="speaker-dur-display"
+                    aria-hidden="true"
+                    data-count-to="77"
+                    >01:17</span
+                  >
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 32:14 Hang up. You have a file. -->
+      <section class="chapter" id="chapter-file" aria-labelledby="file-title">
+        <div class="chapter-inner chapter-file-inner">
+          <div class="chapter-file-header">
+            <div class="chapter-time">
+              <span class="sr-only">32:14</span>
+              <span
+                class="chapter-time-display"
+                aria-hidden="true"
+                data-roll-from="12:04"
+                data-roll-to="32:14"
+                >32:14</span
+              >
+            </div>
+
+            <div class="chapter-copy chapter-copy-wide">
+              <h2 id="file-title" class="chapter-title">
+                Hang up. You have a file.
+              </h2>
+              <p class="chapter-body chapter-body-wide">
+                Summary, decisions and action items as Markdown on your disk.
+                Grep it, commit it, drop it into Obsidian.
+              </p>
+            </div>
+          </div>
+
+          <div class="file-viewer" id="file-viewer">
+            <div
+              class="file-pane file-tree"
+              id="file-tree"
+              aria-label="Local Minutae folder structure"
+            >
+              <div class="tree-line tree-line-ink" data-tree-order="0">~/Library/Minutae/</div>
+              <div class="tree-line" data-tree-order="1">├─ recordings/a1f3/</div>
+              <div class="tree-line" data-tree-order="2">│  ├─ mic.wav</div>
+              <div class="tree-line" data-tree-order="3">│  └─ system.wav</div>
+              <div class="tree-line" data-tree-order="4">├─ summaries/</div>
+              <div class="tree-line tree-line-ink tree-line-bold" data-tree-order="7">│  └─ q2-design-sync.md</div>
+              <div class="tree-line" data-tree-order="5">├─ models/</div>
+              <div class="tree-line" data-tree-order="6">└─ minutae-v4.db</div>
+            </div>
+
+            <div class="file-pane file-raw" aria-label="Raw Markdown source">
+              <div class="pane-overline raw-overline">RAW</div>
+              <div class="raw-lines">
+                <div class="raw-line raw-muted">---</div>
+                <div class="raw-line raw-muted">title: "Q2 Design Sync"</div>
+                <div class="raw-line raw-muted">duration: 32m 14s</div>
+                <div class="raw-line raw-muted">---</div>
+                <div class="raw-line raw-bold">## Summary</div>
+                <div class="raw-line">Launch moves to May.</div>
+                <div class="raw-line raw-bold">## Action Items</div>
+                <div class="raw-line" id="raw-item-alice">- [ ] Alice: mockups by Friday</div>
+                <div class="raw-line" id="raw-item-bob">- [ ] Bob: performance budget</div>
+                <div class="raw-line">- [x] Carol: move the roadmap</div>
+              </div>
+            </div>
+
+            <div class="file-pane file-read" aria-label="Rendered summary view">
+              <div class="pane-overline">READ</div>
+              <h3 class="read-title">Q2 Design Sync</h3>
+              <p class="read-summary">
+                The team agreed to push the redesign launch to May so the new
+                onboarding ships with it.
+              </p>
+              <div class="read-actions">
+                <label class="read-check-row">
+                  <input
+                    type="checkbox"
+                    class="read-check-input"
+                    data-sync-raw="raw-item-alice"
+                    data-raw-text="Alice: mockups by Friday"
+                  />
+                  <span class="read-check-box" aria-hidden="true">
+                    <svg width="10" height="10" viewBox="0 0 12 12">
+                      <path
+                        d="M2.2 6.3 4.8 8.9 9.8 3.4"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                  </span>
+                  <span class="read-check-label"
+                    >Alice shares updated mockups by Friday</span
+                  >
+                </label>
+
+                <label class="read-check-row">
+                  <input
+                    type="checkbox"
+                    class="read-check-input"
+                    data-sync-raw="raw-item-bob"
+                    data-raw-text="Bob: performance budget"
+                  />
+                  <span class="read-check-box" aria-hidden="true">
+                    <svg width="10" height="10" viewBox="0 0 12 12">
+                      <path
+                        d="M2.2 6.3 4.8 8.9 9.8 3.4"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                  </span>
+                  <span class="read-check-label"
+                    >Bob reviews the performance budget</span
+                  >
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Option Space: Dictation -->
+      <section
+        class="chapter"
+        id="chapter-dictate"
+        aria-labelledby="dictate-title"
+      >
+        <div class="chapter-inner chapter-row">
+          <div class="chapter-time chapter-keycap-col">
+            <button
+              type="button"
+              class="keycap-btn"
+              id="dictate-keycap"
+              aria-label="Hold to simulate dictation, or hold Alt plus Space while this section is in view"
+            >
+              <span class="keycap-text">⌥ space</span>
+            </button>
+          </div>
+
+          <div class="chapter-copy">
+            <h2 id="dictate-title" class="chapter-title">
+              Between calls, just talk.
+            </h2>
+            <p class="chapter-body">
+              Hold the key, speak, let go. The words land where your cursor is.
+              Ctrl + Space on Windows and Linux.
+            </p>
+          </div>
+
+          <div class="chapter-demo chapter-dictate-demo">
+            <div class="dictate-field">
+              <span class="sr-only"
+                >Let's keep the May date and I'll send the revised plan
+                tonight.</span
+              >
+              <div class="dictate-field-inner" aria-hidden="true">
+                <span class="dictate-placeholder"
+                  >Let's keep the May date and I'll send the revised plan
+                  tonight.</span
+                >
+                <span class="dictate-live" id="dictate-text"
+                  >Let's keep the May date and I'll send the revised plan
+                  tonight.</span
+                >
+              </div>
+            </div>
+
+            <div class="dictate-hud" id="dictate-hud" aria-hidden="true">
+              <span class="hud-dot" id="hud-dot"></span>
+              <span class="hud-label" id="hud-label">Listening</span>
+              <svg
+                class="hud-bars"
+                id="hud-bars"
+                width="56"
+                height="16"
+                viewBox="0 0 56 16"
+              >
+                <path
+                  d="M2 6v4M8 3v10M14 5v6M20 1v14M26 4v8M32 6v4M38 2v12M44 5v6M50 7v2"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                />
+              </svg>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 32:40 What runs, and where. -->
+      <section class="chapter" id="privacy" aria-labelledby="privacy-title">
+        <div class="chapter-inner chapter-privacy-inner">
+          <div class="chapter-time">
+            <span class="sr-only">32:40</span>
+            <span
+              class="chapter-time-display"
+              aria-hidden="true"
+              data-roll-from="32:14"
+              data-roll-to="32:40"
+              >32:40</span
+            >
+          </div>
+
+          <div class="privacy-content">
+            <h2 id="privacy-title" class="chapter-title">
+              What runs, and where.
+            </h2>
+
+            <div
+              class="privacy-table"
+              role="table"
+              aria-label="What runs locally and what can leave your computer"
+            >
+              <div class="privacy-row privacy-row-first" role="row">
+                <span class="privacy-step" role="cell">detect</span>
+                <span class="privacy-detail" role="cell"
+                  >another app is using your mic</span
+                >
+                <span class="privacy-where" role="cell">your machine</span>
+              </div>
+              <div class="privacy-row" role="row">
+                <span class="privacy-step" role="cell">record</span>
+                <span class="privacy-detail" role="cell"
+                  >Core Audio · WASAPI · Pulse</span
+                >
+                <span class="privacy-where" role="cell">your machine</span>
+              </div>
+              <div class="privacy-row" role="row">
+                <span class="privacy-step" role="cell">transcribe</span>
+                <span class="privacy-detail" role="cell"
+                  >whisper.cpp · sherpa-onnx</span
+                >
+                <span class="privacy-where" role="cell">your machine</span>
+              </div>
+              <div class="privacy-row privacy-row-last" role="row">
+                <span class="privacy-step" role="cell">summarize</span>
+                <span class="privacy-detail" role="cell"
+                  >Ollama · Codex CLI · Grok CLI · API key</span
+                >
+                <span class="privacy-where privacy-where-bold" role="cell"
+                  >you choose →</span
+                >
+              </div>
+            </div>
+
+            <p class="privacy-note">
+              This is the one step that can leave your computer. Pick Ollama and
+              it doesn't. Pick a cloud model and the transcript is sent to it.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Closer -->
+      <section class="closer" id="chapter-closer" aria-labelledby="closer-title">
+        <div class="closer-inner">
+          <div class="closer-status">
+            <span class="stop-square" aria-hidden="true"></span>
+            <span class="closer-status-text">STOPPED · 33:00</span>
+          </div>
+
+          <div class="closer-content">
+            <div class="closer-check-wrap">
+              <button
+                type="button"
+                class="closer-toggle"
+                id="closer-toggle"
+                role="checkbox"
+                aria-checked="false"
+                aria-describedby="closer-meta"
+              >
+                <span class="closer-checkbox" aria-hidden="true">
+                  <svg width="20" height="20" viewBox="0 0 24 24">
+                    <path
+                      d="M4.5 12.75 9.5 17.75 19.5 6.75"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.75"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                </span>
+                <span class="closer-title-wrap">
+                  <span id="closer-title" class="closer-title"
+                    >Install Minutae.</span
+                  >
+                </span>
+              </button>
+            </div>
+
+            <div class="closer-meta" id="closer-meta">
+              OWNER: YOU · DUE: BEFORE YOUR NEXT CALL
+            </div>
+
+            <div class="closer-actions">
+              <a class="btn-primary btn-closer" href="#install">Install free</a>
+              <a
+                class="btn-secondary btn-closer"
+                href="https://github.com/CinematicGenius007/minutae"
+                target="_blank"
+                rel="noopener noreferrer"
+                >Read the source</a
+              >
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <div class="footer-left">minutae · MIT · made in the open</div>
+        <nav class="footer-links" aria-label="Footer">
+          <a
+            href="https://github.com/CinematicGenius007/minutae/tree/main/docs/install"
+            target="_blank"
+            rel="noopener noreferrer"
+            >docs</a
+          >
+          <a href="./agents.md">agents</a>
+          <a href="./llms.txt">llms.txt</a>
+          <a
+            href="https://github.com/CinematicGenius007/minutae/releases"
+            target="_blank"
+            rel="noopener noreferrer"
+            >releases</a
+          >
+          <a
+            href="https://github.com/CinematicGenius007/minutae"
+            target="_blank"
+            rel="noopener noreferrer"
+            >github ↗</a
+          >
+        </nav>
+      </div>
+    </footer>
+
+    <div class="sr-only" id="live-status" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>

@@ -1,0 +1,59 @@
+# Minutae
+
+> A local-first meeting recorder and dictation app that runs on your computer and writes plain Markdown. Free, MIT-licensed, open source, no account.
+
+## What it does
+
+- Detects when another app opens your microphone and shows one prompt asking if you want to record. Nothing is recorded until you say so, and no bot joins your call.
+- Captures your microphone (`mic.wav`) and the other participants' system audio (`system.wav`) as two separate tracks.
+- Transcribes locally with `whisper.cpp` and separates speakers with `sherpa-onnx`, letting you name them.
+- Writes meeting summaries, decisions, and action items as plain Markdown files (`.md` with YAML frontmatter) alongside SQLite storage on disk.
+- Provides hold-to-dictate (`Option + Space` on macOS, `Ctrl + Space` on Windows and Linux) that inserts dictated text at your cursor.
+
+## Platforms
+
+- macOS 13+ (Apple Silicon and Intel; Core Audio process tap on macOS 14.4+, ScreenCaptureKit audio on 13.0–14.3)
+- Windows 10 and 11 (x64, WebView2, WASAPI loopback)
+- Linux x86_64 (WebKitGTK 4.1, PulseAudio or PipeWire Pulse layer; Linux arm64 builds from source)
+
+## What stays on your computer and what can leave it
+
+- Detect ("another app is using your mic"): runs on your machine.
+- Record (Core Audio, WASAPI, Pulse): runs on your machine.
+- Transcribe (`whisper.cpp`, `sherpa-onnx`): runs on your machine.
+- Summarize (Ollama, Codex CLI, Grok CLI, or API key): your choice. This is the one step that can leave your computer. If you pick Ollama, the transcript stays local. If you pick a cloud model, the transcript is sent to that provider.
+
+Data folders (untouched by installs, updates, or uninstalls):
+- macOS: `~/Library/Minutae/`
+- Windows: `%APPDATA%\Minutae\`
+- Linux: `$XDG_DATA_HOME/minutae/` (default `~/.local/share/minutae/`)
+
+## Install commands
+
+macOS 13+ and Linux x86_64:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/CinematicGenius007/minutae/main/scripts/install.sh | sh
+```
+
+Windows 10/11 (x64, via Scoop):
+
+```powershell
+scoop install https://github.com/CinematicGenius007/minutae/releases/latest/download/minutae.json
+```
+
+Build from source (macOS / Linux):
+
+```sh
+git clone https://github.com/CinematicGenius007/minutae && cd minutae && sh scripts/install.sh --from-source
+```
+
+## Links
+
+- [Home page](https://minutae.vercel.app/)
+- [Home page (Markdown)](https://minutae.vercel.app/index.md)
+- [Install brief for AI agents](https://minutae.vercel.app/agents.md)
+- [Authoritative agent install guide in repository](https://github.com/CinematicGenius007/minutae/blob/main/docs/agents/INSTALL.md)
+- [Install guides](https://github.com/CinematicGenius007/minutae/tree/main/docs/install)
+- [Releases](https://github.com/CinematicGenius007/minutae/releases)
+- [Source repository (MIT)](https://github.com/CinematicGenius007/minutae)
