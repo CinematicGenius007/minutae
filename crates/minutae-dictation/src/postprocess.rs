@@ -11,6 +11,8 @@
 //! With `tidy = false` only normalize, spoken punctuation, vocabulary and
 //! spacing run, so the text stays as close to the transcript as possible.
 
+use crate::shapes::{Capitals, LineBreaks, Shape, ShapePreset};
+
 /// Hesitation sounds that are never meaningful in dictated text.
 const FILLERS: &[&str] = &[
     "um", "umm", "ummm", "ummmm", "uh", "uhh", "uhhh", "uhhhh", "uhm", "uhmm", "erm",
@@ -66,25 +68,102 @@ const COMMANDS: &[(&[&str], Command)] = &[
 
 /// Full pipeline. `tidy` mirrors `AppSettings::tidy_dictation`.
 pub fn process(raw: &str, tidy: bool, vocabulary: &[String]) -> String {
-    let mut tokens = normalize(raw);
-    if tidy {
+    let shape = Shape {
+        tidy,
+        capitals: if tidy {
+            Capitals::Sentence
+        } else {
+            Capitals::AsSaid
+        },
+        ..Shape::default()
+    };
+    process_prose(raw, &shape, vocabulary)
+}
+
+/// Apply the selected shape without side effects. The model flag has no
+/// effect on the result.
+pub fn process_with_shape(raw: &str, shape: &Shape, vocabulary: &[String]) -> String {
+    if shape.preset.preserves_identifiers() {
+        return process_literal(raw, shape);
+    }
+    process_prose(raw, shape, vocabulary)
+}
+
+fn process_prose(raw: &str, shape: &Shape, vocabulary: &[String]) -> String {
+    let preserve_breaks = match shape.line_breaks {
+        LineBreaks::SingleLine => false,
+        // Legacy Tidy folds raw line breaks and leaves layout to spoken cues.
+        LineBreaks::Spoken => shape.preset != ShapePreset::Tidy,
+        _ => true,
+    };
+    let mut tokens = normalize(raw, preserve_breaks);
+    if shape.tidy {
         tokens = remove_fillers(tokens);
         tokens = remove_false_starts(tokens);
         tokens = collapse_repeats(tokens);
     }
-    tokens = apply_spoken_punctuation(tokens);
+    tokens = apply_spoken_punctuation(tokens, shape, false);
+    if shape.tidy && shape.preset == ShapePreset::ChatMessage {
+        remove_chat_intro(&mut tokens);
+    }
+    let omit_end_punctuation = match shape.line_breaks {
+        LineBreaks::Email => lay_out_email(&mut tokens),
+        LineBreaks::NotesAndLists => lay_out_list(&mut tokens),
+        _ => false,
+    };
     tokens = apply_vocabulary(tokens, vocabulary);
-    if tidy {
+    if shape.capitals != Capitals::AsSaid {
         tokens = fix_first_person(tokens);
+    }
+    if shape.capitals == Capitals::Sentence {
         tokens = sentence_case(tokens);
+    }
+    if shape.tidy && !omit_end_punctuation {
         tokens = end_punctuation(tokens);
     }
-    let text = join(&trim_breaks(tokens));
+    let text = finish_shape(join(&trim_breaks(tokens)), shape);
     if text.chars().any(char::is_alphanumeric) {
         text
     } else {
         String::new()
     }
+}
+
+fn process_literal(raw: &str, shape: &Shape) -> String {
+    // Keep spacing, symbols, case and bracketed code intact in the presets.
+    let normalized = raw.replace("\r\n", "\n");
+    let text = if shape.spoken_punctuation || shape.line_breaks.honors_spoken_breaks() {
+        let tokens = tokenize(&normalized, shape.line_breaks != LineBreaks::SingleLine);
+        join(&trim_breaks(apply_spoken_punctuation(tokens, shape, true)))
+    } else {
+        normalized
+    };
+    finish_shape(text, shape)
+}
+
+fn is_line_ending(c: char) -> bool {
+    matches!(
+        c,
+        '\n' | '\r' | '\x0b' | '\x0c' | '\u{85}' | '\u{2028}' | '\u{2029}'
+    )
+}
+
+fn finish_shape(mut text: String, shape: &Shape) -> String {
+    text.truncate(text.trim_end().len());
+    if shape.line_breaks == LineBreaks::SingleLine && text.contains(is_line_ending) {
+        text = text.replace(is_line_ending, " ");
+    }
+    if shape.drop_final_period
+        && !shape.preset.preserves_identifiers()
+        && !text.contains(is_line_ending)
+    {
+        let mark_end = text.trim_end_matches(is_closing_punctuation).len();
+        let ending = &text[..mark_end];
+        if ending.ends_with('.') && !ending.ends_with("..") {
+            text.remove(mark_end - 1);
+        }
+    }
+    text
 }
 
 /// Words in the final text, as shown in the HUD ("Inserted · 23 words").
@@ -145,7 +224,7 @@ fn ends_sentence(token: &str) -> bool {
 }
 
 /// Straight apostrophes, no `[BLANK_AUDIO]`-style annotations, split on whitespace.
-fn normalize(raw: &str) -> Vec<String> {
+fn normalize(raw: &str, preserve_breaks: bool) -> Vec<String> {
     let mut text = raw.replace(['\u{2019}', '\u{2018}'], "'");
     while let (Some(open), Some(close)) = (text.find('['), text.find(']')) {
         if close < open {
@@ -153,7 +232,21 @@ fn normalize(raw: &str) -> Vec<String> {
         }
         text.replace_range(open..=close, " ");
     }
-    text.split_whitespace().map(str::to_owned).collect()
+    tokenize(&text, preserve_breaks)
+}
+
+fn tokenize(text: &str, preserve_breaks: bool) -> Vec<String> {
+    if !preserve_breaks {
+        return text.split_whitespace().map(str::to_owned).collect();
+    }
+    let mut tokens = Vec::new();
+    for (index, line) in text.replace("\r\n", "\n").split(is_line_ending).enumerate() {
+        if index > 0 {
+            tokens.push("\n".to_owned());
+        }
+        tokens.extend(line.split_whitespace().map(str::to_owned));
+    }
+    tokens
 }
 
 fn join(tokens: &[String]) -> String {
@@ -276,27 +369,49 @@ fn collapse_repeats(mut tokens: Vec<String>) -> Vec<String> {
     tokens
 }
 
-fn match_command(tokens: &[String], at: usize) -> Option<(usize, Command)> {
+fn match_command(
+    tokens: &[String],
+    at: usize,
+    shape: &Shape,
+    literal: bool,
+) -> Option<(usize, Command)> {
+    // Literal presets need an explicit cue so an identifier such as
+    // "comma" is still a word, even with spoken punctuation enabled.
+    if literal && !tokens.get(at)?.eq_ignore_ascii_case("insert") {
+        return None;
+    }
+    let prefix = usize::from(literal);
+    let start = at + prefix;
     COMMANDS.iter().find_map(|(words, command)| {
-        let end = at + words.len();
+        let enabled = match command {
+            Command::Break(_) => shape.line_breaks.honors_spoken_breaks(),
+            _ => shape.spoken_punctuation,
+        };
+        if !enabled {
+            return None;
+        }
+        let end = start + words.len();
         if end > tokens.len() {
             return None;
         }
-        let window = &tokens[at..end];
-        let hit = window
-            .iter()
-            .zip(words.iter())
-            .all(|(t, w)| !is_break(t) && key(t) == *w);
+        let window = &tokens[start..end];
+        let hit = window.iter().zip(words.iter()).all(|(t, w)| {
+            if literal {
+                t.eq_ignore_ascii_case(w)
+            } else {
+                !is_break(t) && key(t) == *w
+            }
+        });
         // "new, line" is two separate words, not a command.
         let joined = window[..window.len() - 1]
             .iter()
             .all(|t| affixes(t).2.is_empty());
-        (hit && joined).then_some((words.len(), *command))
+        (hit && joined).then_some((prefix + words.len(), *command))
     })
 }
 
 /// "hello comma world full stop" → "hello, world."; "new line" → line break.
-fn apply_spoken_punctuation(tokens: Vec<String>) -> Vec<String> {
+fn apply_spoken_punctuation(tokens: Vec<String>, shape: &Shape, literal: bool) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(tokens.len());
     let mut i = 0;
     while i < tokens.len() {
@@ -306,7 +421,7 @@ fn apply_spoken_punctuation(tokens: Vec<String>) -> Vec<String> {
         let found = if after_determiner {
             None
         } else {
-            match_command(&tokens, i)
+            match_command(&tokens, i, shape, literal)
         };
         let Some((len, command)) = found else {
             out.push(tokens[i].clone());
@@ -316,7 +431,7 @@ fn apply_spoken_punctuation(tokens: Vec<String>) -> Vec<String> {
         let next = i + len;
         let at_end = next == tokens.len()
             || is_break(&tokens[next])
-            || match_command(&tokens, next).is_some();
+            || match_command(&tokens, next, shape, literal).is_some();
         match command {
             Command::Break(text) => out.push(text.to_owned()),
             Command::MarkAtEnd(_) if !at_end => {
@@ -326,7 +441,9 @@ fn apply_spoken_punctuation(tokens: Vec<String>) -> Vec<String> {
             }
             Command::Mark(mark) | Command::MarkAtEnd(mark) => {
                 if let Some(prev) = out.last_mut().filter(|p| !is_break(p)) {
-                    strip_trailing_marks(prev);
+                    if !literal {
+                        strip_trailing_marks(prev);
+                    }
                     prev.push(mark);
                 }
             }
@@ -334,6 +451,94 @@ fn apply_spoken_punctuation(tokens: Vec<String>) -> Vec<String> {
         i = next;
     }
     out
+}
+
+/// Only remove introductory "so" before a standalone "sounds good".
+fn remove_chat_intro(tokens: &mut Vec<String>) {
+    let [so, sounds, good, rest @ ..] = tokens.as_slice() else {
+        return;
+    };
+    let acknowledged = good.eq_ignore_ascii_case("good,")
+        || good.eq_ignore_ascii_case("good.")
+        || (good.eq_ignore_ascii_case("good") && rest.first().is_none_or(|t| is_break(t)));
+    if (so.eq_ignore_ascii_case("so") || so.eq_ignore_ascii_case("so,"))
+        && sounds.eq_ignore_ascii_case("sounds")
+        && acknowledged
+    {
+        tokens.remove(0);
+    }
+}
+
+/// Space clearly delimited greetings and sign-offs using only existing words.
+fn lay_out_email(tokens: &mut Vec<String>) -> bool {
+    if tokens.first().is_some_and(|token| {
+        let (lead, word, _) = affixes(token);
+        lead.is_empty()
+            && ["hi", "hello", "hey", "dear"].contains(&word.to_ascii_lowercase().as_str())
+    }) && let Some(end) = tokens
+        .iter()
+        .take(6)
+        .take_while(|t| !is_break(t))
+        .position(|token| token.ends_with([',', ':']))
+        && tokens.get(end + 1).is_some_and(|token| !is_break(token))
+    {
+        tokens.insert(end + 1, "\n\n".to_owned());
+    }
+
+    const SIGN_OFFS: &[&[&str]] = &[
+        &["kind", "regards"],
+        &["best", "regards"],
+        &["thank", "you"],
+        &["thanks"],
+        &["regards"],
+        &["sincerely"],
+        &["cheers"],
+        &["best"],
+    ];
+    let end = tokens
+        .iter()
+        .rposition(|token| !is_break(token))
+        .map_or(0, |i| i + 1);
+    for phrase in SIGN_OFFS {
+        let Some(start) = end.checked_sub(phrase.len()) else {
+            continue;
+        };
+        let Some(previous) = start.checked_sub(1).and_then(|i| tokens.get(i)) else {
+            continue;
+        };
+        if (is_break(previous) || is_sentence_boundary(previous))
+            && tokens[start..end].iter().zip(*phrase).all(|(t, w)| {
+                let (lead, word, _) = affixes(t);
+                lead.is_empty() && word.eq_ignore_ascii_case(w)
+            })
+        {
+            if !is_break(previous) {
+                tokens.insert(start, "\n\n".to_owned());
+            }
+            return true;
+        }
+    }
+    false
+}
+
+fn lay_out_list(tokens: &mut Vec<String>) -> bool {
+    let mut last_line_is_bullet = false;
+    let end = tokens
+        .iter()
+        .rposition(|token| !is_break(token))
+        .map_or(0, |i| i + 1);
+    let last_break = tokens[..end].iter().rposition(|token| is_break(token));
+    for index in (0..end.saturating_sub(2)).rev() {
+        if (index == 0 || is_break(&tokens[index - 1]))
+            && tokens[index].eq_ignore_ascii_case("bullet")
+            && tokens[index + 1].eq_ignore_ascii_case("point")
+            && !is_break(&tokens[index + 2])
+        {
+            last_line_is_bullet |= last_break.is_none_or(|last_break| index > last_break);
+            tokens.splice(index..index + 2, ["•".to_owned()]);
+        }
+    }
+    last_line_is_bullet
 }
 
 /// Character-level edit distance.
@@ -491,12 +696,21 @@ fn sentence_case(tokens: Vec<String>) -> Vec<String> {
                     result = format!("{lead}{}{}{trail}", first.to_uppercase(), chars.as_str());
                 }
             }
-            let abbreviation =
-                trail.starts_with('.') && ABBREVIATIONS.contains(&core.to_lowercase().as_str());
-            start = ends_sentence(&token) && !abbreviation;
+            start = is_sentence_boundary(&token);
             result
         })
         .collect()
+}
+
+fn is_sentence_boundary(token: &str) -> bool {
+    let (_, core, trail) = affixes(token);
+    let abbreviation =
+        trail.starts_with('.') && ABBREVIATIONS.contains(&core.to_lowercase().as_str());
+    ends_sentence(token) && !abbreviation
+}
+
+fn is_closing_punctuation(c: char) -> bool {
+    "\"')]}\u{201D}\u{2019}".contains(c)
 }
 
 /// Ends the text with a full stop unless it already ends with a mark.
@@ -512,7 +726,7 @@ fn end_punctuation(mut tokens: Vec<String>) -> Vec<String> {
     let closers: String = trail
         .chars()
         .rev()
-        .take_while(|c| "\"')]}\u{201D}\u{2019}".contains(*c))
+        .take_while(|c| is_closing_punctuation(*c))
         .collect();
     let closers: String = closers.chars().rev().collect();
     let marks = &trail[..trail.len() - closers.len()];

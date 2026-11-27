@@ -20,6 +20,7 @@ pub mod fakes;
 pub mod insert;
 pub mod platform;
 pub mod postprocess;
+pub mod shapes;
 pub mod shortcuts;
 pub mod source;
 

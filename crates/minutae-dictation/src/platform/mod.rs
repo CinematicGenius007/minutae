@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::insert::CopyReason;
 use crate::insert::Preflight;
 
+pub mod identity;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "linux")]
