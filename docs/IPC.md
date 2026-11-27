@@ -88,15 +88,21 @@ Mock switches for these screens: `?os=linux&session=wayland` (portal), `&portal=
   meeting. Audio, transcript, in-app summary and Markdown are independent. The summary includes
   decisions, action items and marks. An export kept during summary deletion remains readable.
   When all content is gone the meeting row is removed. The result gives successful parts,
-  failures and the refreshed ledger. Only meeting-owned files inside the Minutae data directory
-  can be removed. File failures leave the affected part available to retry. Deletion waits for
+  failures and the refreshed ledger. File cleanup uses the default or configured storage folders
+  and locations saved for the meeting, including folders used before a settings change.
+  User-chosen storage roots may resolve through symlinks. Cleanup opens files and directories
+  below the root without following symlinks. It removes only recorder-owned names from the
+  meeting's ID directory and leaves non-empty directories in place. Markdown must carry the
+  matching meeting ID in its frontmatter. If a storage folder needed to locate a part is
+  unavailable, the part and its meeting record remain available for retry. Deletion waits for
   active processing and retires queued work before changing inputs.
 - `recording_discard_info(id) → RecordingDiscardInfo` reads active duration, WAV bytes on disk,
   track count, visible caption line count and marks. It can be refreshed while the prompt is
   open. `discard_recording(id) → RecordingDiscard` confirms for that ID, stops capture without
-  stitching or queuing processing, and removes the meeting. If filesystem cleanup fails after
-  confirmation, `cleanupError` explains why and Minutae retries cleanup on startup. A recording
-  stored outside the Minutae data directory cannot be discarded in the app.
+  stitching or queuing processing, and removes the meeting from the library. Cleanup uses the
+  folder selected when recording began. If cleanup fails, including when that folder is
+  unavailable, `cleanupError` explains why and Minutae keeps a pending cleanup record to retry
+  on startup.
 
 Browser mock switches include `?tape=ready|missing|deleted|unreadable`,
 `?meetingDelete=blocked|partial`, `?resummarize=failed|running` and

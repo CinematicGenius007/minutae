@@ -1,9 +1,10 @@
 //! Handle-relative operations on recorder-owned files.
 
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
@@ -18,11 +19,16 @@ const AUDIO_FILES: [&str; 6] = [
     "mic.clean.wav.part",
 ];
 pub trait MeetingFiles {
-    fn audio_bytes(&self, directory: &Path) -> io::Result<Option<u64>>;
+    fn audio_bytes(
+        &self,
+        directory: &Path,
+        id: MeetingId,
+        required: bool,
+    ) -> io::Result<Option<u64>>;
+    fn track_exists(&self, path: &Path, id: MeetingId) -> bool;
     fn delete_audio(&self, directory: &Path, id: MeetingId) -> io::Result<()>;
-    fn markdown_bytes(&self, path: &Path) -> io::Result<Option<u64>>;
+    fn markdown_bytes(&self, path: &Path, id: MeetingId) -> io::Result<Option<u64>>;
     fn delete_markdown(&self, path: &Path, id: MeetingId) -> io::Result<()>;
-    fn check_path(&self, path: &Path) -> io::Result<()>;
 }
 
 pub struct LocalMeetingFiles(pub PathBuf);
@@ -30,7 +36,7 @@ pub struct LocalMeetingFiles(pub PathBuf);
 pub(super) fn unsafe_path() -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
-        "Only meeting files inside Minutae’s data directory can be deleted.",
+        "This path is not a regular meeting-owned file or folder.",
     )
 }
 
@@ -43,76 +49,119 @@ pub(super) fn present<T>(result: io::Result<T>) -> io::Result<Option<T>> {
 }
 
 impl LocalMeetingFiles {
-    /// Open each directory component without following symlinks. All destructive
-    /// operations below use a directory handle and a single child name.
-    fn directory(&self, path: &Path) -> io::Result<Option<Dir>> {
-        let relative = path.strip_prefix(&self.0).map_err(|_| unsafe_path())?;
-        if relative
-            .components()
-            .any(|c| !matches!(c, Component::Normal(_)))
-        {
+    // Callers supply paths from settings, saved meeting records, or the active
+    // recorder. A custom storage root can itself resolve through symlinks.
+    // The built-in roots are opened beneath the app data directory as before.
+    fn storage_folder(&self, path: &Path, default: &str) -> io::Result<Dir> {
+        if path == self.0.join(default) {
+            return open_default_data_dir(&self.0)?.open_dir_nofollow(default);
+        }
+        open_ambient(path)
+    }
+
+    fn audio_folder(&self, directory: &Path, id: MeetingId) -> io::Result<(Dir, String)> {
+        let name = id.to_string();
+        if directory.file_name().and_then(|n| n.to_str()) != Some(&name) {
             return Err(unsafe_path());
         }
-        let mut dir = match (self.0.parent(), self.0.file_name()) {
-            (Some(parent), Some(name)) => {
-                let parent = if parent.as_os_str().is_empty() {
-                    Path::new(".")
-                } else {
-                    parent
-                };
-                Dir::open_ambient_dir(parent, cap_std::ambient_authority())?
-                    .open_dir_nofollow(name)?
-            }
-            _ => Dir::open_ambient_dir(&self.0, cap_std::ambient_authority())?,
+        let root = directory.parent().ok_or_else(unsafe_path)?;
+        let parent = self
+            .storage_folder(root, "recordings")
+            .map_err(|e| unavailable(root, e))?;
+        Ok((parent, name))
+    }
+
+    pub fn recording_sizes(&self, directory: &Path, id: MeetingId) -> io::Result<(u64, usize)> {
+        let (parent, name) = self.audio_folder(directory, id)?;
+        let Some(dir) = present(parent.open_dir_nofollow(name))? else {
+            return Ok((0, 0));
         };
-        for part in relative.components() {
-            let Some(next) = present(dir.open_dir_nofollow(part.as_os_str()))? else {
-                return Ok(None);
-            };
-            dir = next;
-        }
-        Ok(Some(dir))
+        audio_sizes(&dir).map(|(bytes, tracks)| (bytes.unwrap_or(0), tracks))
+    }
+
+    pub fn find_markdown(&self, root: &Path, id: MeetingId) -> Option<PathBuf> {
+        let dir = self.storage_folder(root, "summaries").ok()?;
+        let suffix = format!("-{}.md", &id.simple().to_string()[..8]);
+        dir.entries().ok()?.flatten().find_map(|entry| {
+            let name = entry.file_name();
+            (name.to_str().is_some_and(|n| n.ends_with(&suffix))
+                && summary_bytes(&dir, &name, id).is_ok_and(|bytes| bytes.is_some()))
+            .then(|| root.join(name))
+        })
+    }
+
+    pub fn check_summaries_folder(&self, root: &Path) -> io::Result<()> {
+        self.summary_folder(root)?
+            .entries()
+            .map(|_| ())
+            .map_err(|e| unavailable(root, e))
+    }
+
+    fn summary_folder(&self, root: &Path) -> io::Result<Dir> {
+        self.storage_folder(root, "summaries")
+            .map_err(|e| unavailable(root, e))
     }
 }
 
-fn file_bytes(metadata: fs::Metadata) -> io::Result<u64> {
+fn open_ambient(path: &Path) -> io::Result<Dir> {
+    let path = if path.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        path
+    };
+    Dir::open_ambient_dir(path, cap_std::ambient_authority())
+}
+
+fn open_default_data_dir(path: &Path) -> io::Result<Dir> {
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => open_ambient(parent)?.open_dir_nofollow(name),
+        _ => open_ambient(path),
+    }
+}
+
+fn unavailable(root: &Path, error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!(
+            "The storage folder ‘{}’ is unavailable: {error}",
+            root.display()
+        ),
+    )
+}
+
+fn audio_file_bytes(metadata: cap_std::fs::Metadata) -> io::Result<u64> {
     if metadata.is_file() {
         Ok(metadata.len())
+    } else if metadata.is_symlink() {
+        // The recognized link itself can be unlinked without touching its target.
+        Ok(0)
     } else {
         Err(unsafe_path())
     }
 }
 
 /// WAV files produced by the recorder, including chunks still being written.
-pub fn audio_sizes(directory: &Path) -> io::Result<(u64, usize)> {
-    let mut bytes = 0;
+fn audio_sizes(dir: &Dir) -> io::Result<(Option<u64>, usize)> {
+    let mut bytes = None;
     let mut tracks = BTreeSet::new();
-    let Some(dir) = present(fs::symlink_metadata(directory))? else {
-        return Ok((0, 0));
-    };
-    if !dir.is_dir() {
-        return Err(unsafe_path());
-    }
     for name in AUDIO_FILES {
-        if let Some(meta) = present(fs::symlink_metadata(directory.join(name)))? {
-            bytes += file_bytes(meta)?;
+        if let Some(meta) = present(dir.symlink_metadata(name))? {
+            bytes = Some(bytes.unwrap_or(0) + audio_file_bytes(meta)?);
             if matches!(name, "mic.wav" | "system.wav") {
                 tracks.insert(name);
             }
         }
     }
-    let chunks = directory.join("chunks");
-    if let Some(meta) = present(fs::symlink_metadata(&chunks))? {
-        if !meta.is_dir() {
-            return Err(unsafe_path());
-        }
-        for e in fs::read_dir(chunks)? {
+    if let Some(chunks) = present(dir.open_dir_nofollow("chunks"))? {
+        for e in chunks.entries()? {
             let e = e?;
-            if let Some(track) = chunk_track(&e.file_name().to_string_lossy()) {
+            let name = e.file_name();
+            let track = chunk_track(&name.to_string_lossy());
+            if track.is_some() || stitch_marker(&name) {
                 // Capture may rotate a chunk while the inventory is being read.
-                if let Some(meta) = present(fs::symlink_metadata(e.path()))? {
-                    bytes += file_bytes(meta)?;
-                    tracks.insert(track);
+                if let Some(meta) = present(chunks.symlink_metadata(name))? {
+                    bytes = Some(bytes.unwrap_or(0) + audio_file_bytes(meta)?);
+                    tracks.extend(track);
                 }
             }
         }
@@ -132,21 +181,42 @@ fn chunk_track(name: &str) -> Option<&'static str> {
     }
 }
 
+fn stitch_marker(name: &OsStr) -> bool {
+    matches!(
+        name.to_str(),
+        Some("mic.stitched" | "system.stitched" | "mic.stitched.tmp" | "system.stitched.tmp")
+    )
+}
+
 impl MeetingFiles for LocalMeetingFiles {
-    fn audio_bytes(&self, directory: &Path) -> io::Result<Option<u64>> {
-        let (bytes, tracks) = audio_sizes(directory)?;
-        Ok((bytes > 0 || tracks > 0).then_some(bytes))
+    fn audio_bytes(
+        &self,
+        directory: &Path,
+        id: MeetingId,
+        required: bool,
+    ) -> io::Result<Option<u64>> {
+        let (parent, name) = match self.audio_folder(directory, id) {
+            Err(e) if !required && e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            result => result?,
+        };
+        let Some(dir) = present(parent.open_dir_nofollow(name))? else {
+            return Ok(None);
+        };
+        audio_sizes(&dir).map(|(bytes, _)| bytes)
+    }
+
+    fn track_exists(&self, path: &Path, id: MeetingId) -> bool {
+        let Some((directory, name)) = path.parent().zip(path.file_name()) else {
+            return false;
+        };
+        self.audio_folder(directory, id)
+            .and_then(|(parent, meeting)| parent.open_dir_nofollow(meeting))
+            .and_then(|dir| dir.symlink_metadata(name))
+            .is_ok_and(|metadata| metadata.is_file())
     }
 
     fn delete_audio(&self, directory: &Path, id: MeetingId) -> io::Result<()> {
-        let name = id.to_string();
-        if directory.file_name().and_then(|n| n.to_str()) != Some(&name) {
-            return Err(unsafe_path());
-        }
-        let parent = directory.parent().ok_or_else(unsafe_path)?;
-        let Some(parent) = self.directory(parent)? else {
-            return Ok(());
-        };
+        let (parent, name) = self.audio_folder(directory, id)?;
         let Some(dir) = present(parent.open_dir_nofollow(&name))? else {
             return Ok(());
         };
@@ -159,18 +229,8 @@ impl MeetingFiles for LocalMeetingFiles {
             for entry in chunks.entries()? {
                 let entry = entry?;
                 let name = entry.file_name();
-                if chunk_track(&name.to_string_lossy()).is_some()
-                    || matches!(
-                        name.to_str(),
-                        Some(
-                            "mic.stitched"
-                                | "system.stitched"
-                                | "mic.stitched.tmp"
-                                | "system.stitched.tmp"
-                        )
-                    )
-                {
-                    present(chunks.remove_file_or_symlink(entry.file_name()))?;
+                if chunk_track(&name.to_string_lossy()).is_some() || stitch_marker(&name) {
+                    present(chunks.remove_file_or_symlink(name))?;
                 }
             }
             drop(chunks);
@@ -180,36 +240,42 @@ impl MeetingFiles for LocalMeetingFiles {
         remove_empty(&parent, &name)
     }
 
-    fn markdown_bytes(&self, path: &Path) -> io::Result<Option<u64>> {
-        present(fs::symlink_metadata(path))?
-            .map(file_bytes)
-            .transpose()
+    fn markdown_bytes(&self, path: &Path, id: MeetingId) -> io::Result<Option<u64>> {
+        let dir = self.summary_folder(path.parent().ok_or_else(unsafe_path)?)?;
+        let name = path.file_name().ok_or_else(unsafe_path)?;
+        summary_bytes(&dir, name, id)
     }
 
     fn delete_markdown(&self, path: &Path, id: MeetingId) -> io::Result<()> {
-        let Some(dir) = self.directory(path.parent().ok_or_else(unsafe_path)?)? else {
-            return Ok(());
-        };
+        let dir = self.summary_folder(path.parent().ok_or_else(unsafe_path)?)?;
         let name = path.file_name().ok_or_else(unsafe_path)?;
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No);
-        let Some(file) = present(dir.open_with(name, &options))? else {
-            return Ok(());
-        };
-        if !file.metadata()?.is_file() || !has_summary_id(&file, id)? {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "The Markdown file does not identify this meeting.",
-            ));
+        if summary_bytes(&dir, name, id)?.is_some() {
+            present(dir.remove_file(name))?;
         }
-        drop(file);
-        present(dir.remove_file(name))?;
         Ok(())
     }
+}
 
-    fn check_path(&self, path: &Path) -> io::Result<()> {
-        self.directory(path).map(|_| ())
+fn summary_bytes(dir: &Dir, name: &OsStr, id: MeetingId) -> io::Result<Option<u64>> {
+    let Some(metadata) = present(dir.symlink_metadata(name))? else {
+        return Ok(None);
+    };
+    if !metadata.is_file() {
+        return Err(unsafe_path());
     }
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    let Some(file) = present(dir.open_with(name, &options))? else {
+        return Ok(None);
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || !has_summary_id(&file, id)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "The Markdown file does not identify this meeting.",
+        ));
+    }
+    Ok(Some(metadata.len()))
 }
 
 fn remove_empty(dir: &Dir, name: &str) -> io::Result<()> {

@@ -434,17 +434,8 @@ pub fn summary_file_name(m: &Meeting) -> String {
 
 /// Existing markdown file for a meeting (title may have changed since it was written).
 pub fn find_summary_file(dir: &Path, id: MeetingId) -> Option<PathBuf> {
-    let suffix = format!("-{}.md", &id.simple().to_string()[..8]);
-    std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .find(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.ends_with(&suffix))
-                && crate::meeting_content::summary_belongs_to(p, id).unwrap_or(false)
-        })
+    crate::meeting_content::LocalMeetingFiles(minutae_core::paths::data_dir())
+        .find_markdown(dir, id)
 }
 
 async fn summarize_step(
