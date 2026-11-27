@@ -119,6 +119,9 @@ pub fn merge_settings(current: &AppSettings, patch: serde_json::Value) -> R<AppS
     let (Some(obj), serde_json::Value::Object(p)) = (base.as_object_mut(), patch) else {
         return Err("Settings patch must be an object.".into());
     };
+    if p.contains_key("tidyDictation") && !p.contains_key("dictationDefaultShape") {
+        obj.insert("dictationDefaultShape".into(), serde_json::Value::Null);
+    }
     for (k, v) in p {
         if obj.contains_key(&k) {
             obj.insert(k, v);
@@ -129,12 +132,19 @@ pub fn merge_settings(current: &AppSettings, patch: serde_json::Value) -> R<AppS
 
 #[tauri::command]
 pub async fn update_settings(app: AppHandle, patch: serde_json::Value) -> R<AppSettings> {
+    change_settings(&app, |current| merge_settings(current, patch)).await
+}
+
+async fn change_settings(
+    app: &AppHandle,
+    change: impl FnOnce(&AppSettings) -> R<AppSettings>,
+) -> R<AppSettings> {
     // Serialise read-merge-write so two quick toggles can't overwrite each other.
     static UPDATING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _guard = UPDATING.lock().await;
     let st = app.state::<AppState>();
     let old = st.settings();
-    let new = merge_settings(&old, patch)?;
+    let new = change(&old)?;
     if old.dictation_retention_days != new.dictation_retention_days
         && !matches!(new.dictation_retention_days, None | Some(7 | 30 | 90))
     {
@@ -158,28 +168,28 @@ pub async fn update_settings(app: AppHandle, patch: serde_json::Value) -> R<AppS
     if shortcuts_changed {
         check_shortcuts(&old, &new)?;
         // Register the new pair now; if the changed one is refused, the old pair stays.
-        let failed = shell::register_shortcuts(&app, &new);
+        let failed = shell::register_shortcuts(app, &new);
         let changed_failed = failed.iter().any(|f| {
             (f == &new.record_shortcut && new.record_shortcut != old.record_shortcut)
                 || (f == &new.dictation_hotkey && new.dictation_hotkey != old.dictation_hotkey)
         });
         if changed_failed {
-            shell::register_shortcuts(&app, &old);
+            shell::register_shortcuts(app, &old);
             return Err("That shortcut is already used by another app".into());
         }
     }
     let s = new.clone();
     if let Err(e) = st.store.call(move |store| store.set_settings(&s)).await {
         if shortcuts_changed {
-            shell::register_shortcuts(&app, &old);
+            shell::register_shortcuts(app, &old);
         }
         return Err(err(e));
     }
     *st.settings.write().unwrap_or_else(|e| e.into_inner()) = new.clone();
-    crate::apply_settings(&app, &old, &new);
+    crate::apply_settings(app, &old, &new);
     let _ = app.emit(ev::SETTINGS_CHANGED, &new);
     if old.dictation_retention_days != new.dictation_retention_days {
-        crate::dictation::prune(&app).await;
+        crate::dictation::prune(app).await;
     }
     Ok(new)
 }
@@ -695,6 +705,196 @@ pub async fn list_input_devices() -> R<Vec<dto::InputDevice>> {
 }
 
 // ---------------------------------------------------------------- dictation
+
+use minutae_core::dictation::{AppMatcher, DictationAppRule, ShapeEdits, ShapePreset};
+
+#[tauri::command]
+pub fn dictation_shape_options(app: AppHandle) -> dto::DictationShapeOptions {
+    let settings = app.state::<AppState>().settings();
+    dto::DictationShapeOptions {
+        presets: [
+            ShapePreset::Tidy,
+            ShapePreset::Verbatim,
+            ShapePreset::ChatMessage,
+            ShapePreset::Email,
+            ShapePreset::NotesAndLists,
+            ShapePreset::CodeAndCommit,
+        ]
+        .map(ShapePreset::shape),
+        quick_presets: minutae_dictation::QUICK_PRESETS,
+        default_shape: settings.default_dictation_shape(),
+        capabilities: dto::DictationCapabilities {
+            hud_visible: shell::hud_can_show(&app),
+            hud_interactive: shell::hud_interactive(&app),
+            local_rewrite_available: false,
+            cloud_rewrite: dto::DictationCloudRewrite::Planned,
+        },
+    }
+}
+
+#[tauri::command]
+pub fn list_dictation_app_rules(state: State<'_, AppState>) -> Vec<DictationAppRule> {
+    state.settings().dictation_app_rules
+}
+
+#[tauri::command]
+pub async fn save_dictation_app_rule(app: AppHandle, mut rule: DictationAppRule) -> R<AppSettings> {
+    if rule.app.value().trim().is_empty() {
+        return Err("Choose an app for the dictation rule.".into());
+    }
+    if rule.display_name.trim().is_empty() {
+        rule.display_name = rule.app.value().into();
+    }
+    change_settings(&app, |current| {
+        let mut next = current.clone();
+        if let Some(existing) = next
+            .dictation_app_rules
+            .iter_mut()
+            .find(|r| r.app.same_app(&rule.app))
+        {
+            *existing = rule;
+        } else {
+            next.dictation_app_rules.push(rule);
+        }
+        Ok(next)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn remove_dictation_app_rule(app: AppHandle, matcher: AppMatcher) -> R<AppSettings> {
+    change_settings(&app, |current| {
+        let mut next = current.clone();
+        next.dictation_app_rules
+            .retain(|rule| !rule.app.same_app(&matcher));
+        Ok(next)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_dictation_shape_edits(
+    app: AppHandle,
+    preset: ShapePreset,
+    edits: Option<ShapeEdits>,
+) -> R<AppSettings> {
+    change_settings(&app, |current| {
+        let mut next = current.clone();
+        match edits {
+            Some(edits) => {
+                next.dictation_shape_edits.insert(preset, edits);
+            }
+            None => {
+                next.dictation_shape_edits.remove(&preset);
+            }
+        }
+        Ok(next)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_dictation_apps(state: State<'_, AppState>) -> R<Vec<dto::DictationApp>> {
+    use minutae_dictation::platform::identity::{AppIdentityLookup, SystemAppIdentityLookup};
+    let live = tokio::task::spawn_blocking(|| SystemAppIdentityLookup.available_apps());
+    let mut identities = state
+        .store
+        .call(|s| s.dictation_apps())
+        .await
+        .map_err(err)?;
+    identities.extend(live.await.map_err(err)?);
+    // Prefer a platform ID where an old history row only knows the name.
+    identities.sort_by_key(|app| matches!(app.matcher(), Some(AppMatcher::DisplayName(_))));
+    let rules = state.settings().dictation_app_rules;
+    let mut apps: Vec<dto::DictationApp> = Vec::new();
+    for identity in identities {
+        let Some(app) = identity.matcher() else {
+            continue;
+        };
+        let display_name = identity.display_name.as_deref().unwrap_or(app.value());
+        let name_only = matches!(app, AppMatcher::DisplayName(_));
+        if rules.iter().any(|r| {
+            r.app.matches(&identity)
+                || (name_only && r.display_name.eq_ignore_ascii_case(display_name))
+        }) || apps.iter().any(|a| {
+            a.app.same_app(&app) || (name_only && a.display_name.eq_ignore_ascii_case(display_name))
+        }) {
+            continue;
+        }
+        apps.push(dto::DictationApp {
+            suggested_preset: minutae_dictation::shapes::suggested_preset(&identity),
+            display_name: display_name.to_owned(),
+            app,
+        });
+    }
+    apps.sort_by_key(|app| app.display_name.to_lowercase());
+    Ok(apps)
+}
+
+#[tauri::command]
+pub fn preview_dictation_shape(
+    state: State<'_, AppState>,
+    sample: String,
+    preset: ShapePreset,
+    edits: Option<ShapeEdits>,
+) -> R<String> {
+    if sample.len() > 16_384 {
+        return Err("Use a shorter dictation sample.".into());
+    }
+    let settings = state.settings();
+    let shape = edits.map_or_else(
+        || settings.dictation_shape(preset),
+        |edits| edits.apply(preset.shape()),
+    );
+    Ok(minutae_dictation::postprocess::process_with_shape(
+        &sample,
+        &shape,
+        &settings.vocabulary,
+    ))
+}
+
+#[tauri::command]
+pub async fn get_dictation_hud(app: AppHandle) -> R<dto::HudState> {
+    crate::dictation::hud_request(&app, crate::dictation::HudCommand::Get).await
+}
+
+#[tauri::command]
+pub async fn switch_dictation_shape(app: AppHandle, preset: ShapePreset) -> R<()> {
+    crate::dictation::hud_request(&app, crate::dictation::HudCommand::Switch(preset))
+        .await
+        .map(|_| ())
+}
+
+#[tauri::command]
+pub async fn set_dictation_hud_interaction(app: AppHandle, hovered: bool, focused: bool) -> R<()> {
+    crate::dictation::hud_request(
+        &app,
+        crate::dictation::HudCommand::Interaction { hovered, focused },
+    )
+    .await
+    .map(|_| ())
+}
+
+#[tauri::command]
+pub async fn dismiss_dictation_hud(app: AppHandle) -> R<()> {
+    crate::dictation::hud_request(&app, crate::dictation::HudCommand::Dismiss)
+        .await
+        .map(|_| ())
+}
+
+#[tauri::command]
+pub async fn undo_dictation_insert(app: AppHandle, result_id: uuid::Uuid) -> R<()> {
+    crate::dictation::hud_request(&app, crate::dictation::HudCommand::Undo(result_id))
+        .await
+        .map(|_| ())
+}
+
+#[tauri::command]
+pub async fn fix_dictation_error(app: AppHandle) -> R<()> {
+    crate::dictation::hud_request(&app, crate::dictation::HudCommand::Fix)
+        .await
+        .map(|_| ())
+}
 
 #[tauri::command]
 pub async fn list_dictations(

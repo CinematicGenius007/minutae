@@ -5,8 +5,9 @@ use std::{sync::Arc, time::Duration};
 use minutae_core::HotkeyMode;
 use minutae_dictation::{
     CopyReason, DictationConfig, DictationController, DictationDeps, DictationEvent,
-    DictationState, HudState, InsertOutcome,
+    DictationState, HudFixAction, HudState, InsertOutcome,
     fakes::{FakeAudio, FakeInserter, FakeSpeech},
+    shapes::ShapePreset,
 };
 use tokio::{runtime::Handle, sync::mpsc::UnboundedReceiver, time::sleep};
 
@@ -25,6 +26,7 @@ fn rig_with(stt: Arc<FakeSpeech>, outcome: InsertOutcome, config: DictationConfi
         audio: audio.clone(),
         stt: stt.clone(),
         inserter: ins.clone(),
+        apps: ins.clone(),
     };
     let (ctl, rx) = DictationController::new(deps, config, Handle::current());
     Rig {
@@ -54,7 +56,9 @@ impl Rig {
         sleep(ms(1)).await;
         let mut out = vec![];
         while let Ok(e) = self.rx.try_recv() {
-            out.push(e);
+            if e != DictationEvent::StartSound {
+                out.push(e);
+            }
         }
         out
     }
@@ -65,7 +69,7 @@ impl Rig {
             .into_iter()
             .filter_map(|e| match e {
                 DictationEvent::Hud(h) => Some(h),
-                DictationEvent::Finished(_) => None,
+                _ => None,
             })
             .collect()
     }
@@ -75,6 +79,8 @@ fn listening(hands_free: bool) -> HudState {
     HudState::Listening {
         level: 0.0,
         hands_free,
+        app: Some("Notes".into()),
+        shape: ShapePreset::Tidy,
     }
 }
 
@@ -102,7 +108,11 @@ async fn hold_records_transcribes_and_inserts() {
         vec![
             listening(false),
             HudState::Processing,
-            HudState::Inserted { words: 7 }
+            HudState::Inserted {
+                words: 7,
+                undo_available: false,
+                result_id: None
+            }
         ]
     );
 
@@ -168,7 +178,14 @@ async fn double_tap_enters_hands_free_until_next_press() {
     r.ctl.key_up();
     assert_eq!(
         r.huds().await,
-        vec![HudState::Processing, HudState::Inserted { words: 3 }]
+        vec![
+            HudState::Processing,
+            HudState::Inserted {
+                words: 3,
+                undo_available: false,
+                result_id: None
+            }
+        ]
     );
     assert_eq!(r.ins.texts(), vec!["Hands free text."]);
 }
@@ -187,7 +204,11 @@ async fn hold_ignores_key_repeat() {
         vec![
             listening(false),
             HudState::Processing,
-            HudState::Inserted { words: 1 }
+            HudState::Inserted {
+                words: 1,
+                undo_available: false,
+                result_id: None
+            }
         ]
     );
     assert_eq!(r.audio.starts(), 1);
@@ -211,7 +232,11 @@ async fn toggle_mode_press_starts_and_press_stops() {
         vec![
             listening(false),
             HudState::Processing,
-            HudState::Inserted { words: 1 }
+            HudState::Inserted {
+                words: 1,
+                undo_available: false,
+                result_id: None
+            }
         ]
     );
 }
@@ -246,7 +271,11 @@ async fn max_length_stops_and_inserts() {
         vec![
             listening(false),
             HudState::Processing,
-            HudState::Inserted { words: 2 }
+            HudState::Inserted {
+                words: 2,
+                undo_available: false,
+                result_id: None
+            }
         ]
     );
     assert_eq!(r.ins.texts().len(), 1);
@@ -273,7 +302,11 @@ async fn presses_while_busy_are_ignored() {
         vec![
             listening(false),
             HudState::Processing,
-            HudState::Inserted { words: 1 }
+            HudState::Inserted {
+                words: 1,
+                undo_available: false,
+                result_id: None
+            }
         ]
     );
     assert_eq!(r.ctl.state(), DictationState::Idle);
@@ -293,7 +326,8 @@ async fn transcription_error_then_recovers() {
     assert_eq!(
         huds.last(),
         Some(&HudState::Error {
-            message: "Couldn't transcribe: model missing".into()
+            message: "Couldn't transcribe: model missing".into(),
+            fix_action: HudFixAction::TranscriptionSettings
         })
     );
     assert_eq!(r.ctl.state(), DictationState::Error);
@@ -369,7 +403,8 @@ async fn insertion_failure_is_an_error() {
     assert_eq!(
         huds.last(),
         Some(&HudState::Error {
-            message: "Won't type into a password field".into()
+            message: "Won't type into a password field".into(),
+            fix_action: HudFixAction::DictationSettings
         })
     );
     assert_eq!(r.ctl.state(), DictationState::Error);
@@ -385,7 +420,8 @@ async fn silence_is_not_inserted() {
     assert_eq!(
         huds.last(),
         Some(&HudState::Error {
-            message: "No speech detected".into()
+            message: "No speech detected".into(),
+            fix_action: HudFixAction::Retry
         })
     );
     assert!(r.ins.texts().is_empty());
@@ -461,11 +497,15 @@ async fn forwards_mic_level_while_listening() {
             listening(false),
             HudState::Listening {
                 level: 0.5,
-                hands_free: false
+                hands_free: false,
+                app: Some("Notes".into()),
+                shape: ShapePreset::Tidy,
             },
             HudState::Listening {
                 level: 1.0,
-                hands_free: false
+                hands_free: false,
+                app: Some("Notes".into()),
+                shape: ShapePreset::Tidy,
             }
         ]
     );
@@ -487,7 +527,8 @@ async fn microphone_failure_is_reported() {
     assert_eq!(
         r.huds().await,
         vec![HudState::Error {
-            message: "Microphone unavailable: no input device".into()
+            message: "Microphone unavailable: no input device".into(),
+            fix_action: HudFixAction::MicrophoneSettings
         }]
     );
 }
@@ -531,11 +572,13 @@ fn hud_state_wire_format() {
     let json = serde_json::to_value(HudState::Listening {
         level: 0.5,
         hands_free: true,
+        app: None,
+        shape: ShapePreset::Email,
     })
     .unwrap();
     assert_eq!(
         json,
-        serde_json::json!({"state": "listening", "level": 0.5, "handsFree": true})
+        serde_json::json!({"state": "listening", "level": 0.5, "handsFree": true, "app": null, "shape": "email"})
     );
     let json = serde_json::to_value(HudState::Copied {
         words: 3,
@@ -548,4 +591,139 @@ fn hud_state_wire_format() {
     );
     let json = serde_json::to_value(InsertOutcome::Failed("x".into())).unwrap();
     assert_eq!(json, serde_json::json!({"kind": "failed", "detail": "x"}));
+}
+
+#[tokio::test(start_paused = true)]
+async fn app_rule_is_selected_then_a_quick_shape_can_override_it_for_this_session() {
+    use minutae_dictation::shapes::{AppMatcher, AppRule};
+    let mut r = rig_with(
+        FakeSpeech::new("um so sounds good period"),
+        InsertOutcome::Inserted,
+        DictationConfig {
+            app_rules: vec![AppRule {
+                app: AppMatcher::DisplayName("Notes".into()),
+                shape: ShapePreset::Email.shape(),
+            }],
+            ..Default::default()
+        },
+    );
+    assert!(!r.ctl.switch_shape(ShapePreset::ChatMessage));
+    r.ctl.key_down();
+    assert!(
+        matches!(r.huds().await.as_slice(), [HudState::Listening { app: Some(name), shape: ShapePreset::Email, .. }] if name == "Notes")
+    );
+    assert!(r.ctl.switch_shape(ShapePreset::ChatMessage));
+    assert!(matches!(
+        r.huds().await.as_slice(),
+        [HudState::Listening {
+            shape: ShapePreset::ChatMessage,
+            ..
+        }]
+    ));
+    sleep(ms(500)).await;
+    r.ctl.key_up();
+    assert!(!r.ctl.switch_shape(ShapePreset::Email));
+    let result = r
+        .drain()
+        .await
+        .into_iter()
+        .find_map(|event| match event {
+            DictationEvent::Finished(result) => Some(result),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        result.dictation.shape,
+        Some(ShapePreset::ChatMessage.shape())
+    );
+    assert_eq!(
+        result
+            .dictation
+            .app_identity
+            .unwrap()
+            .display_name
+            .as_deref(),
+        Some("Notes")
+    );
+    assert_eq!(result.dictation.text, "sounds good");
+    r.ctl.key_down();
+    assert!(matches!(
+        r.huds().await.as_slice(),
+        [HudState::Listening {
+            shape: ShapePreset::Email,
+            ..
+        }]
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn undo_requires_the_current_result_and_foreground_target() {
+    let mut r = rig("hello");
+    *r.ins.undo_enabled.lock().unwrap() = true;
+    for switched in [true, false] {
+        r.ins.set_app(Some("Notes"));
+        r.ctl.key_down();
+        sleep(ms(500)).await;
+        r.ctl.key_up();
+        let id = r
+            .huds()
+            .await
+            .into_iter()
+            .find_map(|hud| match hud {
+                HudState::Inserted {
+                    result_id,
+                    undo_available: true,
+                    ..
+                } => result_id,
+                _ => None,
+            })
+            .unwrap();
+        assert!(!r.ctl.undo_visible_insertion(uuid::Uuid::new_v4()));
+        if switched {
+            r.ins.set_app(Some("Other"));
+        }
+        assert_eq!(r.ctl.undo_visible_insertion(id), !switched);
+        assert!(!r.ctl.undo_visible_insertion(id));
+    }
+    assert_eq!(*r.ins.undo_calls.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn start_cue_is_optional_and_only_emitted_after_capture_starts() {
+    for enabled in [false, true] {
+        let mut r = rig_with(
+            FakeSpeech::new("hello"),
+            InsertOutcome::Inserted,
+            DictationConfig {
+                start_sound: enabled,
+                ..Default::default()
+            },
+        );
+        r.ctl.key_down();
+        assert!(matches!(
+            r.rx.try_recv().unwrap(),
+            DictationEvent::Hud(HudState::Listening { .. })
+        ));
+        assert_eq!(
+            r.rx.try_recv().ok(),
+            enabled.then_some(DictationEvent::StartSound)
+        );
+        r.ctl.cancel();
+    }
+}
+
+#[test]
+fn legacy_default_processing_keeps_spoken_punctuation_when_tidy_is_off() {
+    let old: minutae_core::AppSettings =
+        serde_json::from_str(r#"{"tidyDictation":false}"#).unwrap();
+    let raw = "um i like swift ui comma new line next line period";
+    let vocabulary = vec!["SwiftUI".to_owned()];
+    assert_eq!(
+        minutae_dictation::postprocess::process_with_shape(
+            raw,
+            &old.default_dictation_shape(),
+            &vocabulary
+        ),
+        minutae_dictation::postprocess::process(raw, false, &vocabulary)
+    );
 }

@@ -24,7 +24,10 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use minutae_core::{AppSettings, Dictation, HotkeyMode};
+use minutae_core::{
+    AppSettings, Dictation, HotkeyMode,
+    dictation::{AppIdentity, AppRule, Shape, ShapePreset},
+};
 use serde::{Deserialize, Serialize};
 use tokio::{
     runtime::Handle,
@@ -33,8 +36,10 @@ use tokio::{
 };
 
 use crate::{
-    insert::{CopyReason, InsertOutcome, Inserter, InsertionControl},
+    insert::{CopyReason, InsertOutcome, Inserter, InsertionControl, UndoTarget},
+    platform::identity::AppIdentityLookup,
     postprocess,
+    shapes::resolve_shape,
     source::{AudioSource, SAMPLE_RATE, SpeechToText},
 };
 
@@ -47,7 +52,10 @@ pub struct DictationConfig {
     pub double_tap_window: Duration,
     /// Listening stops by itself (and the text is inserted) after this long.
     pub max_duration: Duration,
-    pub tidy: bool,
+    pub default_shape: Shape,
+    pub app_rules: Vec<AppRule>,
+    pub start_sound: bool,
+    pub quick_shapes: [Shape; 5],
     pub vocabulary: Vec<String>,
     /// Attach the captured samples to [`DictationEvent::Finished`].
     pub keep_audio: bool,
@@ -60,7 +68,10 @@ impl Default for DictationConfig {
             min_press: Duration::from_millis(250),
             double_tap_window: Duration::from_millis(350),
             max_duration: Duration::from_secs(120),
-            tidy: true,
+            default_shape: Shape::default(),
+            app_rules: vec![],
+            start_sound: true,
+            quick_shapes: QUICK_PRESETS.map(ShapePreset::shape),
             vocabulary: Vec::new(),
             keep_audio: false,
         }
@@ -71,12 +82,32 @@ impl DictationConfig {
     pub fn from_settings(settings: &AppSettings) -> Self {
         Self {
             mode: settings.dictation_mode,
-            tidy: settings.tidy_dictation,
+            default_shape: settings.default_dictation_shape(),
+            app_rules: settings.dictation_rules(),
+            start_sound: settings.dictation_start_sound,
+            quick_shapes: QUICK_PRESETS.map(|preset| settings.dictation_shape(preset)),
             vocabulary: settings.vocabulary.clone(),
             keep_audio: settings.keep_dictation_audio,
             ..Self::default()
         }
     }
+}
+
+pub const QUICK_PRESETS: [ShapePreset; 5] = [
+    ShapePreset::Verbatim,
+    ShapePreset::ChatMessage,
+    ShapePreset::Email,
+    ShapePreset::NotesAndLists,
+    ShapePreset::CodeAndCommit,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HudFixAction {
+    MicrophoneSettings,
+    TranscriptionSettings,
+    Retry,
+    DictationSettings,
 }
 
 /// Coarse state, for the UI and tests.
@@ -103,11 +134,16 @@ pub enum HudState {
     Listening {
         level: f32,
         hands_free: bool,
+        app: Option<String>,
+        shape: ShapePreset,
     },
     Processing,
     /// "Inserted · 23 words"
     Inserted {
         words: u32,
+        undo_available: bool,
+        #[serde(skip)]
+        result_id: Option<uuid::Uuid>,
     },
     /// "No text field · copied instead" / "Copied — press Ctrl+V"
     Copied {
@@ -116,6 +152,7 @@ pub enum HudState {
     },
     Error {
         message: String,
+        fix_action: HudFixAction,
     },
 }
 
@@ -132,6 +169,7 @@ pub struct FinishedDictation {
 pub enum DictationEvent {
     Hud(HudState),
     Finished(Box<FinishedDictation>),
+    StartSound,
 }
 
 /// The pluggable parts.
@@ -140,6 +178,7 @@ pub struct DictationDeps {
     pub audio: Arc<dyn AudioSource>,
     pub stt: Arc<dyn SpeechToText>,
     pub inserter: Arc<dyn Inserter>,
+    pub apps: Arc<dyn AppIdentityLookup>,
 }
 
 #[derive(Clone)]
@@ -161,6 +200,7 @@ struct Inner {
     config: DictationConfig,
     session: u64,
     level: f32,
+    undo_target: Option<(uuid::Uuid, UndoTarget)>,
 }
 
 enum Phase {
@@ -175,7 +215,9 @@ struct Listening {
     started: Instant,
     pressed_at: Instant,
     created_at: DateTime<Utc>,
-    target_app: Option<String>,
+    app: Option<AppIdentity>,
+    shape: Shape,
+    quick_shapes: [Shape; 5],
     hands_free: bool,
     awaiting_second_tap: bool,
     /// The release that belongs to the press that switched to hands-free.
@@ -189,9 +231,9 @@ struct Job {
     control: Arc<InsertionControl>,
     samples: Vec<f32>,
     created_at: DateTime<Utc>,
-    target_app: Option<String>,
+    app: Option<AppIdentity>,
+    shape: Shape,
     duration_ms: u64,
-    tidy: bool,
     vocabulary: Vec<String>,
     keep_audio: bool,
 }
@@ -209,6 +251,7 @@ impl DictationController {
             config,
             session: 0,
             level: 0.0,
+            undo_target: None,
         };
         let shared = Arc::new(Shared {
             inner: Mutex::new(inner),
@@ -251,6 +294,19 @@ impl DictationController {
         self.press(Some(HotkeyMode::Toggle));
     }
 
+    pub fn retry(&self) {
+        let mut inner = self.shared.lock();
+        if matches!(inner.phase, Phase::Error) {
+            self.shared.begin(&mut inner, Instant::now());
+            // Retry is issued by a click, so there will be no matching key release.
+            let level = inner.level;
+            if let Phase::Listening(listening) = &mut inner.phase {
+                listening.hands_free = true;
+                self.shared.emit(listening.hud(level));
+            }
+        }
+    }
+
     fn press(&self, mode: Option<HotkeyMode>) {
         let shared = &self.shared;
         let now = Instant::now();
@@ -264,10 +320,7 @@ impl DictationController {
                 l.awaiting_second_tap = false;
                 l.hands_free = true;
                 l.swallow_release = true;
-                shared.emit(HudState::Listening {
-                    level,
-                    hands_free: true,
-                });
+                shared.emit(l.hud(level));
             }
             Phase::Listening(l) if l.hands_free || mode == HotkeyMode::Toggle => {
                 if now.duration_since(l.started) < min_press {
@@ -281,6 +334,35 @@ impl DictationController {
                 tracing::debug!("dictation hotkey ignored while busy");
             }
         }
+    }
+
+    /// Applies only to the current listening session.
+    pub fn switch_shape(&self, preset: ShapePreset) -> bool {
+        let mut inner = self.shared.lock();
+        let level = inner.level;
+        let Phase::Listening(listening) = &mut inner.phase else {
+            return false;
+        };
+        let Some(shape) = listening.quick_shapes.iter().find(|s| s.preset == preset) else {
+            return false;
+        };
+        listening.shape = *shape;
+        self.shared.emit(listening.hud(level));
+        true
+    }
+
+    /// The HUD calls this only while showing the insertion result. The platform
+    /// verifies the foreground process again before dispatching to that process.
+    pub fn undo_visible_insertion(&self, result_id: uuid::Uuid) -> bool {
+        let mut inner = self.shared.lock();
+        let Some((id, process)) = inner.undo_target else {
+            return false;
+        };
+        if id != result_id {
+            return false;
+        }
+        inner.undo_target = None;
+        self.shared.deps.inserter.undo(process)
     }
 
     /// The dictation hotkey was released.
@@ -349,6 +431,17 @@ impl DictationController {
     }
 }
 
+impl Listening {
+    fn hud(&self, level: f32) -> HudState {
+        HudState::Listening {
+            level,
+            hands_free: self.hands_free,
+            app: self.app.as_ref().and_then(|a| a.display_name.clone()),
+            shape: self.shape.preset,
+        }
+    }
+}
+
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner
@@ -371,36 +464,46 @@ impl Shared {
     }
 
     fn begin(self: &Arc<Self>, inner: &mut Inner, now: Instant) {
-        let target_app = self.deps.inserter.target_app();
+        inner.undo_target = None;
+        let (app, process) = self.deps.apps.foreground_target();
+        let shape = resolve_shape(
+            app.as_ref(),
+            &inner.config.app_rules,
+            &inner.config.default_shape,
+        );
         if let Err(e) = self.deps.audio.start() {
             tracing::warn!("microphone failed to start: {e:#}");
             inner.phase = Phase::Error;
             self.emit(HudState::Error {
                 message: format!("Microphone unavailable: {e}"),
+                fix_action: HudFixAction::MicrophoneSettings,
             });
             return;
         }
-        *self.active_insert() = Some(Arc::default());
+        *self.active_insert() = Some(Arc::new(InsertionControl::for_target(app.clone(), process)));
         inner.session += 1;
         inner.level = 0.0;
         let session = inner.session;
         let (alive, _) = watch::channel(());
         let levels_alive = alive.subscribe();
         let mut max_alive = alive.subscribe();
-        inner.phase = Phase::Listening(Listening {
+        let listening = Listening {
             started: now,
             pressed_at: now,
             created_at: Utc::now(),
-            target_app,
+            app,
+            shape,
+            quick_shapes: inner.config.quick_shapes,
             hands_free: false,
             awaiting_second_tap: false,
             swallow_release: false,
             _alive: alive,
-        });
-        self.emit(HudState::Listening {
-            level: 0.0,
-            hands_free: false,
-        });
+        };
+        self.emit(listening.hud(0.0));
+        inner.phase = Phase::Listening(listening);
+        if inner.config.start_sound {
+            let _ = self.events.send(DictationEvent::StartSound);
+        }
 
         let this = Arc::clone(self);
         let levels = self.deps.audio.levels();
@@ -435,9 +538,8 @@ impl Shared {
                         return;
                     }
                     if let Phase::Listening(l) = &inner.phase {
-                        let hands_free = l.hands_free;
+                        self.emit(l.hud(level));
                         inner.level = level;
-                        self.emit(HudState::Listening { level, hands_free });
                     }
                 }
                 _ = alive.changed() => return,
@@ -485,7 +587,11 @@ impl Shared {
         let samples = match self.deps.audio.stop() {
             Ok(samples) => samples,
             Err(e) => {
-                self.fail(inner, format!("Recording failed: {e}"));
+                self.fail(
+                    inner,
+                    format!("Recording failed: {e}"),
+                    HudFixAction::MicrophoneSettings,
+                );
                 return;
             }
         };
@@ -505,13 +611,13 @@ impl Shared {
             control,
             samples,
             created_at: listening.created_at,
-            target_app: listening.target_app,
+            app: listening.app,
+            shape: listening.shape,
             duration_ms: if audio_ms > 0 {
                 audio_ms
             } else {
                 elapsed.as_millis() as u64
             },
-            tidy: inner.config.tidy,
             vocabulary: inner.config.vocabulary.clone(),
             keep_audio: inner.config.keep_audio,
         };
@@ -520,7 +626,7 @@ impl Shared {
             .spawn(async move { this.run_pipeline(job).await });
     }
 
-    fn fail(&self, inner: &mut Inner, message: String) {
+    fn fail(&self, inner: &mut Inner, message: String, fix_action: HudFixAction) {
         // Take the slot before deciding the error so an Escape that won is honored.
         if self
             .active_insert()
@@ -532,7 +638,10 @@ impl Shared {
         }
         tracing::warn!("dictation failed: {message}");
         inner.phase = Phase::Error;
-        self.emit(HudState::Error { message });
+        self.emit(HudState::Error {
+            message,
+            fix_action,
+        });
     }
 
     /// Locks and checks the pipeline for `session` is still the live one.
@@ -549,7 +658,11 @@ impl Shared {
         }
         if job.samples.is_empty() {
             if let Some(mut inner) = self.current(job.session) {
-                self.fail(&mut inner, "No audio was captured".into());
+                self.fail(
+                    &mut inner,
+                    "No audio was captured".into(),
+                    HudFixAction::MicrophoneSettings,
+                );
             }
             return;
         }
@@ -562,12 +675,16 @@ impl Shared {
             Ok(raw) => raw,
             Err(e) => {
                 if let Some(mut inner) = self.current(job.session) {
-                    self.fail(&mut inner, format!("Couldn't transcribe: {e}"));
+                    self.fail(
+                        &mut inner,
+                        format!("Couldn't transcribe: {e}"),
+                        HudFixAction::TranscriptionSettings,
+                    );
                 }
                 return;
             }
         };
-        let text = postprocess::process(&raw, job.tidy, &job.vocabulary);
+        let text = postprocess::process_with_shape(&raw, &job.shape, &job.vocabulary);
         {
             let Some(mut inner) = self.current(job.session) else {
                 return;
@@ -576,7 +693,7 @@ impl Shared {
                 return;
             }
             if text.is_empty() {
-                self.fail(&mut inner, "No speech detected".into());
+                self.fail(&mut inner, "No speech detected".into(), HudFixAction::Retry);
                 return;
             }
             inner.phase = Phase::Inserting;
@@ -584,16 +701,16 @@ impl Shared {
 
         // Paste only into the app the user started dictating in. If they switched apps while
         // it was transcribing (to a terminal, a chat…), the text goes to the clipboard.
-        let now_app = self.deps.inserter.target_app();
-        let outcome = match (&job.target_app, &now_app) {
-            (Some(then), Some(now)) if then != now => {
-                tracing::info!(%then, %now, "focus changed during dictation; copying instead");
-                self.deps
-                    .inserter
-                    .copy(&text, CopyReason::FocusChanged, job.control.clone())
-                    .await
-            }
-            _ => self.deps.inserter.insert(&text, job.control.clone()).await,
+        let now_app = self.deps.apps.frontmost_app();
+        let outcome = if let (Some(then), Some(now)) = (&job.app, &now_app)
+            && then.matcher().is_some_and(|app| !app.matches(now))
+        {
+            self.deps
+                .inserter
+                .copy(&text, CopyReason::FocusChanged, job.control.clone())
+                .await
+        } else {
+            self.deps.inserter.insert(&text, job.control.clone()).await
         };
         let words = postprocess::word_count(&text);
         let mut inner = self.lock();
@@ -605,10 +722,16 @@ impl Shared {
             self.cancelled(&mut inner);
             return;
         }
+        let id = uuid::Uuid::new_v4();
         match &outcome {
             InsertOutcome::Inserted => {
                 inner.phase = Phase::Idle;
-                self.emit(HudState::Inserted { words });
+                inner.undo_target = job.control.undo_target().map(|process| (id, process));
+                self.emit(HudState::Inserted {
+                    words,
+                    undo_available: inner.undo_target.is_some(),
+                    result_id: inner.undo_target.map(|(id, _)| id),
+                });
             }
             InsertOutcome::Copied(reason) => {
                 inner.phase = Phase::Idle;
@@ -617,16 +740,20 @@ impl Shared {
                     reason: *reason,
                 });
             }
-            InsertOutcome::Failed(reason) => self.fail(&mut inner, reason.clone()),
+            InsertOutcome::Failed(reason) => {
+                self.fail(&mut inner, reason.clone(), HudFixAction::DictationSettings)
+            }
             InsertOutcome::Cancelled => unreachable!(),
         }
 
         let dictation = Dictation {
-            id: uuid::Uuid::new_v4(),
+            id,
             created_at: job.created_at,
             text,
             raw_text: raw,
-            target_app: job.target_app,
+            target_app: job.app.as_ref().and_then(|app| app.display_name.clone()),
+            app_identity: job.app,
+            shape: Some(job.shape),
             word_count: words,
             duration_ms: job.duration_ms,
             inserted: outcome == InsertOutcome::Inserted,

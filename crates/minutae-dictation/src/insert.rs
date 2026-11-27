@@ -6,7 +6,7 @@
 //! changed the clipboard meanwhile. When paste cannot work (no Accessibility
 //! permission, no focused text field, Wayland, secure input) the text is left on
 //! the clipboard and the outcome is [`InsertOutcome::Copied`] so the HUD can say
-//! "copied — press Ctrl+V".
+//! a copy reason and the platform paste shortcut.
 //!
 //! Preserved: plain text, HTML (with its text alternative), file lists and images.
 //! Other formats (RTF-only, app-private types) cannot be read back. An empty or
@@ -26,7 +26,13 @@ use std::{
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::platform;
+use crate::{
+    platform::{
+        self,
+        identity::{AppIdentity, AppIdentityLookup, SystemAppIdentityLookup},
+    },
+    shapes::{ShapePreset, suggested_preset},
+};
 
 /// Why the text went to the clipboard instead of being typed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +46,8 @@ pub enum CopyReason {
     Wayland,
     /// macOS secure keyboard entry is on (e.g. a password prompt or Terminal setting).
     SecureInput,
+    UnverifiedField,
+    MultilineTerminal,
     /// Simulating the paste keystroke failed.
     PasteFailed,
     /// The user switched to another app while the dictation was transcribed: pasting would
@@ -65,9 +73,26 @@ pub enum InsertOutcome {
 pub struct InsertionControl {
     committed: Mutex<bool>,
     cancelled: Arc<AtomicBool>,
+    target: Option<(Option<AppIdentity>, Option<u32>)>,
+    undo_target: Mutex<Option<UndoTarget>>,
 }
 
 impl InsertionControl {
+    pub(crate) fn for_target(app: Option<AppIdentity>, process: Option<u32>) -> Self {
+        Self {
+            target: Some((app, process)),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn undo_target(&self) -> Option<UndoTarget> {
+        *self.undo_target.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn record_undo_target(&self, target: UndoTarget) {
+        *self.undo_target.lock().unwrap_or_else(|e| e.into_inner()) = Some(target);
+    }
+
     pub(crate) fn cancel(&self) -> bool {
         let committed = self.committed.lock().unwrap_or_else(|e| e.into_inner());
         if *committed {
@@ -96,6 +121,13 @@ impl InsertionControl {
     }
 }
 
+/// Identifies the process instance that received the paste.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UndoTarget {
+    pub process: u32,
+    pub launched_at: u64,
+}
+
 /// Puts dictated text into the frontmost app.
 #[async_trait]
 pub trait Inserter: Send + Sync {
@@ -105,6 +137,10 @@ pub trait Inserter: Send + Sync {
         None
     }
     async fn insert(&self, text: &str, control: Arc<InsertionControl>) -> InsertOutcome;
+
+    fn undo(&self, _target: UndoTarget) -> bool {
+        false
+    }
     /// Put `text` on the clipboard only, without pasting it anywhere.
     async fn copy(
         &self,
@@ -116,12 +152,11 @@ pub trait Inserter: Send + Sync {
 
 /// What the platform layer decided before touching the clipboard.
 // Not every OS produces every variant.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Preflight {
     Paste,
     CopyOnly(CopyReason),
-    Refuse(String),
 }
 
 /// The real inserter: clipboard + simulated paste.
@@ -252,10 +287,33 @@ impl SystemInserter {
         if control.is_cancelled() {
             return InsertOutcome::Cancelled;
         }
-        match platform::preflight() {
+        let (app_now, process_now) = SystemAppIdentityLookup.foreground_target();
+        let (app, process) = control
+            .target
+            .as_ref()
+            .cloned()
+            .unwrap_or((app_now.clone(), process_now));
+        if platform::session_kind() == platform::SessionKind::Wayland {
+            return copy_only(text, CopyReason::Wayland, control);
+        }
+        if let Some(matcher) = app.as_ref().and_then(AppIdentity::matcher)
+            && !app_now.as_ref().is_some_and(|now| matcher.matches(now))
+        {
+            return copy_only(text, CopyReason::FocusChanged, control);
+        }
+        let Some(process) = process else {
+            return copy_only(text, CopyReason::UnverifiedField, control);
+        };
+        if process_now != Some(process) {
+            return copy_only(text, CopyReason::FocusChanged, control);
+        }
+        let terminal = app.as_ref().and_then(suggested_preset) == Some(ShapePreset::Verbatim);
+        if terminal && text.chars().any(char::is_control) {
+            return copy_only(text, CopyReason::MultilineTerminal, control);
+        }
+        match platform::preflight(process) {
             Preflight::Paste => {}
             Preflight::CopyOnly(reason) => return copy_only(text, reason, control),
-            Preflight::Refuse(reason) => return InsertOutcome::Failed(reason),
         }
 
         let mut clipboard = match arboard::Clipboard::new() {
@@ -268,7 +326,19 @@ impl SystemInserter {
             text,
             control,
             || thread::sleep(self.settle),
-            send_paste,
+            || {
+                if let Preflight::CopyOnly(reason) = platform::preflight(process) {
+                    return Err(reason);
+                }
+                let undo_target = (!terminal)
+                    .then(|| platform::undo_target(process))
+                    .flatten();
+                platform::send_paste(process)?;
+                if let Some(target) = undo_target {
+                    control.record_undo_target(target);
+                }
+                Ok(())
+            },
             || thread::sleep(restore_after),
         );
         platform::keep_clipboard_alive(clipboard);
@@ -306,7 +376,7 @@ fn paste_with_clipboard(
     text: &str,
     control: &InsertionControl,
     settle: impl FnOnce(),
-    paste: impl FnOnce() -> Result<(), String>,
+    paste: impl FnOnce() -> Result<(), CopyReason>,
     wait_for_paste: impl FnOnce(),
 ) -> InsertOutcome {
     let saved = clipboard.snapshot();
@@ -321,8 +391,7 @@ fn paste_with_clipboard(
             InsertOutcome::Inserted
         }
         Some(Err(e)) => {
-            tracing::warn!("paste keystroke failed: {e}");
-            return InsertOutcome::Copied(CopyReason::PasteFailed);
+            return InsertOutcome::Copied(e);
         }
         None => InsertOutcome::Cancelled,
     };
@@ -338,6 +407,10 @@ fn paste_with_clipboard(
 
 #[async_trait]
 impl Inserter for SystemInserter {
+    fn undo(&self, target: UndoTarget) -> bool {
+        platform::undo(target)
+    }
+
     fn target_app(&self) -> Option<String> {
         platform::frontmost_app_name()
     }
@@ -376,42 +449,6 @@ fn copy_only(text: &str, reason: CopyReason, control: &InsertionControl) -> Inse
         Some(Err(e)) => InsertOutcome::Failed(format!("couldn't copy to the clipboard: {e}")),
         None => InsertOutcome::Cancelled,
     }
-}
-
-/// ⌘V on macOS, Ctrl+V elsewhere.
-fn send_paste() -> Result<(), String> {
-    use enigo::{Direction, Enigo, Key, Keyboard, Settings};
-
-    let settings = Settings {
-        open_prompt_to_get_permissions: false,
-        ..Settings::default()
-    };
-    let mut enigo = Enigo::new(&settings).map_err(|e| e.to_string())?;
-
-    #[cfg(target_os = "macos")]
-    let modifier = Key::Meta;
-    #[cfg(not(target_os = "macos"))]
-    let modifier = Key::Control;
-
-    enigo
-        .key(modifier, Direction::Press)
-        .map_err(|e| e.to_string())?;
-    let pressed = press_v(&mut enigo);
-    let released = enigo.key(modifier, Direction::Release);
-    pressed.and(released).map_err(|e| e.to_string())
-}
-
-fn press_v(enigo: &mut enigo::Enigo) -> enigo::InputResult<()> {
-    use enigo::{Direction, Keyboard};
-    // A raw keycode avoids enigo's keyboard-layout lookup, which must run on the
-    // main thread on recent macOS. The keycode for "v" in the current layout
-    // (47 on Dvorak) is cached by `platform::refresh_paste_keycode`; QWERTY's 9 otherwise.
-    #[cfg(target_os = "macos")]
-    return enigo.raw(platform::paste_keycode(), Direction::Click);
-    #[cfg(target_os = "windows")]
-    return enigo.key(enigo::Key::V, Direction::Click);
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    enigo.key(enigo::Key::Unicode('v'), Direction::Click)
 }
 
 #[cfg(test)]

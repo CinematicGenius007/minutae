@@ -2,6 +2,7 @@
 // Baselines live in e2e/__screenshots__/<browser>/. Regenerate with `bun run test:e2e:update`.
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import type { HudState } from "../src/lib/types";
 
 const MEETING = "00000000-0000-4000-8000-000000000001";
 const NOW = new Date("2026-11-20T16:30:00Z");
@@ -178,13 +179,13 @@ const SHOTS: Shot[] = [
   { name: "gallery", route: "/gallery" },
 ];
 
-const HUD_STATES: { name: string; payload: unknown }[] = [
-  { name: "listening", payload: { state: "listening", level: 0.7, handsFree: false } },
-  { name: "listening-handsfree", payload: { state: "listening", level: 0.4, handsFree: true } },
+const HUD_STATES: { name: string; payload: HudState }[] = [
+  { name: "listening", payload: { state: "listening", level: 0.7, handsFree: false, app: "Slack", shape: "chatMessage", shortcutPresets: ["chatMessage"] } },
+  { name: "listening-handsfree", payload: { state: "listening", level: 0.4, handsFree: true, app: null, shape: "tidy", shortcutPresets: [] } },
   { name: "processing", payload: { state: "processing" } },
-  { name: "inserted", payload: { state: "inserted", words: 23 } },
-  { name: "copied", payload: { state: "copied", words: 12, reason: "No text field · copied instead" } },
-  { name: "error", payload: { state: "error", message: "Microphone is off. Allow it in Settings." } },
+  { name: "inserted", payload: { state: "inserted", words: 23, undoAvailable: false, resultId: null } },
+  { name: "copied", payload: { state: "copied", words: 12, reason: "No text field · copied instead", reasonCode: "noTextField" } },
+  { name: "error", payload: { state: "error", message: "Microphone is off. Allow it in Settings.", fixAction: "microphoneSettings" } },
 ];
 
 function url(route: string, query?: string) {

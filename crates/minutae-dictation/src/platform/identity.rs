@@ -1,19 +1,15 @@
 //! Foreground application metadata. No window titles or contents are read.
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppIdentity {
-    pub macos_bundle_id: Option<String>,
-    /// The executable stem reported by Win32, e.g. "notepad".
-    pub windows_executable: Option<String>,
-    pub x11_window_class: Option<String>,
-    pub display_name: Option<String>,
-}
+pub use minutae_core::dictation::AppIdentity;
 
 pub trait AppIdentityLookup: Send + Sync {
     fn frontmost_app(&self) -> Option<AppIdentity>;
+    fn foreground_target(&self) -> (Option<AppIdentity>, Option<u32>) {
+        (self.frontmost_app(), None)
+    }
+    fn available_apps(&self) -> Vec<AppIdentity> {
+        self.frontmost_app().into_iter().collect()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -22,6 +18,72 @@ pub struct SystemAppIdentityLookup;
 impl AppIdentityLookup for SystemAppIdentityLookup {
     fn frontmost_app(&self) -> Option<AppIdentity> {
         frontmost_app_identity()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn foreground_target(&self) -> (Option<AppIdentity>, Option<u32>) {
+        let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        let Some(app) = workspace.frontmostApplication() else {
+            return (None, None);
+        };
+        (
+            mac_identity(&app),
+            u32::try_from(app.processIdentifier()).ok(),
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    fn available_apps(&self) -> Vec<AppIdentity> {
+        use objc2_app_kit::NSApplicationActivationPolicy;
+        let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        workspace
+            .runningApplications()
+            .iter()
+            .filter(|app| app.activationPolicy() == NSApplicationActivationPolicy::Regular)
+            .filter(|app| app.processIdentifier() as u32 != std::process::id())
+            .filter_map(|app| mac_identity(&app))
+            .collect()
+    }
+
+    #[cfg(target_os = "windows")]
+    fn foreground_target(&self) -> (Option<AppIdentity>, Option<u32>) {
+        let Some((exe, pid)) = super::windows::foreground_executable() else {
+            return (None, None);
+        };
+        (Some(windows_identity(exe)), Some(pid))
+    }
+
+    #[cfg(target_os = "windows")]
+    fn available_apps(&self) -> Vec<AppIdentity> {
+        super::windows::visible_executables()
+            .into_iter()
+            .map(windows_identity)
+            .collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn available_apps(&self) -> Vec<AppIdentity> {
+        use std::process::Command;
+        if super::session_kind() != super::SessionKind::X11 {
+            return Vec::new();
+        }
+        let Ok(output) = Command::new("xprop")
+            .args(["-root", "-notype", "_NET_CLIENT_LIST"])
+            .output()
+        else {
+            return Vec::new();
+        };
+        let Ok(text) = std::str::from_utf8(&output.stdout) else {
+            return Vec::new();
+        };
+        let Some(ids) = text.trim().strip_prefix("_NET_CLIENT_LIST: window id # ") else {
+            return Vec::new();
+        };
+        ids.split(", ")
+            .take(100)
+            .filter_map(|id| u32::from_str_radix(id.strip_prefix("0x")?, 16).ok())
+            .filter_map(x11_identity)
+            .collect()
     }
 }
 
@@ -39,6 +101,11 @@ impl AppIdentityLookup for FakeAppIdentityLookup {
 pub fn frontmost_app_identity() -> Option<AppIdentity> {
     let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
     let app = workspace.frontmostApplication()?;
+    mac_identity(&app)
+}
+
+#[cfg(target_os = "macos")]
+fn mac_identity(app: &objc2_app_kit::NSRunningApplication) -> Option<AppIdentity> {
     let macos_bundle_id = app.bundleIdentifier().map(|id| id.to_string());
     let display_name = app.localizedName().map(|name| name.to_string());
     (macos_bundle_id.is_some() || display_name.is_some()).then_some(AppIdentity {
@@ -50,12 +117,16 @@ pub fn frontmost_app_identity() -> Option<AppIdentity> {
 
 #[cfg(target_os = "windows")]
 pub fn frontmost_app_identity() -> Option<AppIdentity> {
-    let executable = super::windows::frontmost_app_name()?;
-    Some(AppIdentity {
+    Some(windows_identity(super::windows::frontmost_app_name()?))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_identity(executable: String) -> AppIdentity {
+    AppIdentity {
         display_name: Some(executable.clone()),
         windows_executable: Some(executable),
         ..AppIdentity::default()
-    })
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -73,7 +144,12 @@ pub fn frontmost_app_identity() -> Option<AppIdentity> {
         .output()
         .ok()?;
     let id = active_window_id(&active.status.success().then_some(active.stdout)?)?;
-    let property = Command::new("xprop")
+    x11_identity(id)
+}
+
+#[cfg(target_os = "linux")]
+fn x11_identity(id: u32) -> Option<AppIdentity> {
+    let property = std::process::Command::new("xprop")
         .args(["-id", &format!("0x{id:x}"), "-notype", "WM_CLASS"])
         .output()
         .ok()?;

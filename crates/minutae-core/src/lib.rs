@@ -4,6 +4,7 @@
 //! `camelCase` on the wire so the TypeScript side reads it directly.
 //! Changing a type here is a cross-crate change: keep additions backward compatible.
 
+pub mod dictation;
 pub mod paths;
 pub mod settings;
 
@@ -165,6 +166,10 @@ pub struct Moment {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Dictation {
+    #[serde(default)]
+    pub app_identity: Option<dictation::AppIdentity>,
+    #[serde(default)]
+    pub shape: Option<dictation::Shape>,
     pub id: DictationId,
     pub created_at: DateTime<Utc>,
     pub text: String,

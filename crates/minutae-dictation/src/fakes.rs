@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use tokio::sync::watch;
 
 use crate::{
-    insert::{CopyReason, InsertOutcome, Inserter, InsertionControl},
+    insert::{CopyReason, InsertOutcome, Inserter, InsertionControl, UndoTarget},
     source::{AudioSource, SpeechToText},
 };
 
@@ -136,6 +136,8 @@ pub struct FakeInserter {
     /// What `target_app` answers; change it to simulate the user switching apps.
     pub app: Mutex<Option<String>>,
     pub inserted: Mutex<Vec<String>>,
+    pub undo_enabled: Mutex<bool>,
+    pub undo_calls: Mutex<u32>,
     pub insert_delay: Mutex<Duration>,
     /// Texts put on the clipboard only.
     pub copied: Mutex<Vec<String>>,
@@ -147,6 +149,8 @@ impl FakeInserter {
             outcome: Mutex::new(outcome),
             app: Mutex::new(Some("Notes".into())),
             inserted: Mutex::new(vec![]),
+            undo_enabled: Mutex::new(false),
+            undo_calls: Mutex::new(0),
             insert_delay: Mutex::new(Duration::ZERO),
             copied: Mutex::new(vec![]),
         })
@@ -185,6 +189,21 @@ impl Inserter for FakeInserter {
             .unwrap_or(InsertOutcome::Cancelled)
     }
 
+    fn undo(&self, target: UndoTarget) -> bool {
+        if self.target_app().as_deref() != Some("Notes") {
+            return false;
+        }
+        assert_eq!(
+            target,
+            UndoTarget {
+                process: 10,
+                launched_at: 42
+            }
+        );
+        *self.undo_calls.lock().unwrap() += 1;
+        true
+    }
+
     async fn insert(&self, text: &str, control: Arc<InsertionControl>) -> InsertOutcome {
         let delay = *self.insert_delay.lock().unwrap();
         if !delay.is_zero() {
@@ -193,8 +212,24 @@ impl Inserter for FakeInserter {
         control
             .commit(|| {
                 self.inserted.lock().unwrap().push(text.to_owned());
-                self.outcome.lock().unwrap().clone()
+                let outcome = self.outcome.lock().unwrap().clone();
+                if outcome == InsertOutcome::Inserted && *self.undo_enabled.lock().unwrap() {
+                    control.record_undo_target(UndoTarget {
+                        process: 10,
+                        launched_at: 42,
+                    });
+                }
+                outcome
             })
             .unwrap_or(InsertOutcome::Cancelled)
+    }
+}
+
+impl crate::platform::identity::AppIdentityLookup for FakeInserter {
+    fn frontmost_app(&self) -> Option<crate::platform::identity::AppIdentity> {
+        Some(crate::platform::identity::AppIdentity {
+            display_name: Some(self.target_app()?),
+            ..Default::default()
+        })
     }
 }

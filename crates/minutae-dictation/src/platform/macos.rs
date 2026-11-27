@@ -14,12 +14,15 @@ use crate::insert::{CopyReason, Preflight};
 type AXUIElementRef = *const c_void;
 type AXError = i32;
 const AX_SUCCESS: AXError = 0;
+const AX_ATTRIBUTE_UNSUPPORTED: AXError = -25205;
+const AX_NO_VALUE: AXError = -25212;
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn AXIsProcessTrusted() -> u8;
     fn AXIsProcessTrustedWithOptions(options: *const c_void) -> u8;
     static kAXTrustedCheckOptionPrompt: CFStringRef;
+    fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut i32) -> AXError;
     fn AXUIElementCreateSystemWide() -> AXUIElementRef;
     fn AXUIElementCopyAttributeValue(
         element: AXUIElementRef,
@@ -63,51 +66,34 @@ pub fn frontmost_app_name() -> Option<String> {
     app.localizedName().map(|name| name.to_string())
 }
 
-/// Roles that clearly cannot take typed text. Anything else, including
-/// web areas, groups and unknown roles (Electron, browsers), is attempted.
-const NON_TEXT_ROLES: &[&str] = &[
-    "AXButton",
-    "AXCheckBox",
-    "AXRadioButton",
-    "AXMenuItem",
-    "AXMenuBarItem",
-    "AXMenuButton",
-    "AXPopUpButton",
-    "AXImage",
-    "AXWindow",
-    "AXApplication",
-    "AXList",
-    "AXTable",
-    "AXOutline",
-    "AXRow",
-    "AXCell",
-    "AXSlider",
-    "AXLink",
-    "AXTabGroup",
-    "AXToolbar",
-    "AXDisclosureTriangle",
-    "AXStaticText",
-    "AXDockItem",
-];
-
 struct Focused {
+    pid: i32,
     role: Option<String>,
     subrole: Option<String>,
 }
 
-fn copy_string_attribute(element: AXUIElementRef, name: &'static str) -> Option<String> {
+fn copy_string_attribute(
+    element: AXUIElementRef,
+    name: &'static str,
+) -> Result<Option<String>, ()> {
     let attribute = CFString::from_static_string(name);
     let mut value: CFTypeRef = std::ptr::null();
     // SAFETY: element is a live AXUIElement; value receives a +1 reference on success.
     let error = unsafe {
         AXUIElementCopyAttributeValue(element, attribute.as_concrete_TypeRef(), &mut value)
     };
+    if matches!(error, AX_ATTRIBUTE_UNSUPPORTED | AX_NO_VALUE) {
+        return Ok(None);
+    }
     if error != AX_SUCCESS || value.is_null() {
-        return None;
+        return Err(());
     }
     // SAFETY: Copy rule: we own `value`.
     let value = unsafe { CFType::wrap_under_create_rule(value) };
-    value.downcast::<CFString>().map(|s| s.to_string())
+    value
+        .downcast::<CFString>()
+        .map(|s| Some(s.to_string()))
+        .ok_or(())
 }
 
 /// Role and subrole of the system-wide focused element, or `None` when it
@@ -132,36 +118,102 @@ fn focused_element() -> Option<Focused> {
     if error != AX_SUCCESS || focused.is_null() {
         return None;
     }
-    let result = Focused {
-        role: copy_string_attribute(focused, "AXRole"),
-        subrole: copy_string_attribute(focused, "AXSubrole"),
-    };
+    let mut pid = 0;
+    // SAFETY: focused is a live AXUIElement and pid is writable.
+    unsafe { AXUIElementGetPid(focused, &mut pid) };
+    let role = copy_string_attribute(focused, "AXRole");
+    let subrole = copy_string_attribute(focused, "AXSubrole");
     // SAFETY: we own the +1 focused element.
     unsafe { CFRelease(focused) };
-    Some(result)
+    Some(Focused {
+        pid,
+        role: role.ok()?,
+        subrole: subrole.ok()?,
+    })
 }
 
-pub(crate) fn preflight() -> Preflight {
+pub(crate) fn preflight(process: u32) -> Preflight {
     if !accessibility_trusted() {
         return Preflight::CopyOnly(CopyReason::AccessibilityNotTrusted);
     }
-    // SAFETY: no arguments.
-    if unsafe { IsSecureEventInputEnabled() } != 0 {
+    if secure_input() {
         return Preflight::CopyOnly(CopyReason::SecureInput);
     }
-    if let Some(focused) = focused_element() {
-        if focused.subrole.as_deref() == Some("AXSecureTextField") {
-            return Preflight::Refuse("Won't type into a password field".into());
-        }
-        if focused
-            .role
-            .as_deref()
-            .is_some_and(|role| NON_TEXT_ROLES.contains(&role))
-        {
-            return Preflight::CopyOnly(CopyReason::NoTextField);
-        }
+    let Some(focused) = focused_element() else {
+        return Preflight::CopyOnly(CopyReason::UnverifiedField);
+    };
+    if focused.pid as u32 != process {
+        return Preflight::CopyOnly(CopyReason::FocusChanged);
+    }
+    if [focused.role.as_deref(), focused.subrole.as_deref()].contains(&Some("AXSecureTextField")) {
+        return Preflight::CopyOnly(CopyReason::SecureInput);
+    }
+    if !matches!(
+        focused.role.as_deref(),
+        Some("AXTextField" | "AXTextArea" | "AXComboBox")
+    ) {
+        return Preflight::CopyOnly(CopyReason::UnverifiedField);
     }
     Preflight::Paste
+}
+
+fn secure_input() -> bool {
+    // SAFETY: no arguments.
+    unsafe { IsSecureEventInputEnabled() != 0 }
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGEventCreateKeyboardEvent(source: *const c_void, key: u16, down: bool) -> *const c_void;
+    fn CGEventSetFlags(event: *const c_void, flags: u64);
+    fn CGEventPostToPid(pid: i32, event: *const c_void);
+}
+
+/// Send only a command key combination, to the checked PID even if another
+/// app receives focus in the interval between the check and the dispatch.
+pub(crate) fn frontmost_launch_time(process: u32) -> Option<u64> {
+    let app = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    if app.processIdentifier() as u32 != process {
+        return None;
+    }
+    Some(app.launchDate()?.timeIntervalSince1970().to_bits())
+}
+
+pub(crate) fn send_command(
+    process: u32,
+    key: u16,
+    launched_at: Option<u64>,
+) -> Result<(), CopyReason> {
+    use super::identity::{AppIdentityLookup, SystemAppIdentityLookup};
+    const COMMAND: u64 = 1 << 20;
+    // SAFETY: create two owned events for the given virtual keycode; a null
+    // source requests the default. Release each successful create exactly once.
+    unsafe {
+        let down = CGEventCreateKeyboardEvent(std::ptr::null(), key, true);
+        let up = CGEventCreateKeyboardEvent(std::ptr::null(), key, false);
+        let result = if down.is_null() || up.is_null() {
+            Err(CopyReason::PasteFailed)
+        } else if launched_at.map_or_else(
+            || SystemAppIdentityLookup.foreground_target().1 != Some(process),
+            |time| frontmost_launch_time(process) != Some(time),
+        ) {
+            Err(CopyReason::FocusChanged)
+        } else if secure_input() {
+            Err(CopyReason::SecureInput)
+        } else {
+            for event in [down, up] {
+                CGEventSetFlags(event, COMMAND);
+                CGEventPostToPid(process as i32, event);
+            }
+            Ok(())
+        };
+        for event in [down, up] {
+            if !event.is_null() {
+                CFRelease(event);
+            }
+        }
+        result
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -208,13 +260,13 @@ pub(crate) fn is_main_thread() -> bool {
     unsafe { pthread_main_np() != 0 }
 }
 
-/// The virtual keycode that produces "v" together with ⌘ in the current keyboard layout
+/// The virtual keycode that produces a letter together with ⌘ in the current keyboard layout
 /// (e.g. 47 on Dvorak, 9 on QWERTY and "Dvorak – QWERTY ⌘"). `None` when the layout has no
 /// Unicode layout data or no key maps to "v".
 ///
 /// **Main thread only**: Text Input Source Services assert the main queue on recent macOS
 /// and abort the process otherwise. Callers check [`is_main_thread`] first.
-pub(crate) fn lookup_v_keycode() -> Option<u16> {
+pub(crate) fn lookup_keycode(key: &str) -> Option<u16> {
     const KUC_KEY_ACTION_DISPLAY: u16 = 3;
     const NO_DEAD_KEYS: u32 = 1; // 1 << kUCKeyTranslateNoDeadKeysBit
     const CMD_KEY_STATE: u32 = (0x0100 >> 8) & 0xFF; // (cmdKey >> 8) & 0xFF
@@ -253,7 +305,7 @@ pub(crate) fn lookup_v_keycode() -> Option<u16> {
             // With ⌘ held first (honours "… – QWERTY ⌘" layouts), then the plain layer.
             [CMD_KEY_STATE, 0].into_iter().find_map(|mods| {
                 (0u16..128).find(|&code| {
-                    translate(code, mods).is_some_and(|s| s.eq_ignore_ascii_case("v"))
+                    translate(code, mods).is_some_and(|s| s.eq_ignore_ascii_case(key))
                 })
             })
         };

@@ -282,6 +282,10 @@ const MIGRATIONS: &[Migration] = &[
         sql: V4,
         data: None,
     },
+    Migration {
+        sql: "ALTER TABLE dictations ADD COLUMN app_identity TEXT; ALTER TABLE dictations ADD COLUMN shape TEXT;",
+        data: None,
+    },
 ];
 
 /// Lowercased form stored in `meetings.title_lc`; must match how search tokens are lowercased.

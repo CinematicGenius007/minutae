@@ -53,6 +53,7 @@ struct Rig {
 async fn rig() -> Rig {
     let ins = FakeInserter::new(InsertOutcome::Inserted);
     let deps = DictationDeps {
+        apps: Arc::new(minutae_dictation::platform::identity::FakeAppIdentityLookup(None)),
         audio: FakeAudio::one_second(),
         stt: FakeSpeech::new("hello there"),
         inserter: ins.clone(),

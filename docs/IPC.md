@@ -57,3 +57,47 @@ Mock switches for these screens: `?os=linux&session=wayland` (portal), `&portal=
 - `MeetingDetail.echoCancel: EchoCancelReport | null`, `null` for meetings transcribed before the step existed:
   `{ ran, skipped, erleDb, delayMs, driftPpm, elapsedMs }`. `ran: true` means the transcript came from `recordings/<id>/mic.clean.wav` (the original `mic.wav` is kept and is what the player plays). `skipped` is one of `"off" | "noSystemTrack" | "systemSilent" | "noEcho" | "ineffective"`; `erleDb` is how much quieter the speaker echo got.
 - Rust: `minutae_core::{EchoCancelMode, EchoCancelReport, EchoSkip}`, `dto::MeetingDetail::echo_cancel`, stored in `meetings.echo_cancel` (schema v4).
+
+## Dictation shapes and HUD
+
+Settings persist `dictationDefaultShape`, `dictationShapeEdits`, `dictationAppRules`, and
+`dictationStartSound`. With no explicit default preset, `tidyDictation: true` uses Tidy
+and `false` uses the legacy cleanup-off rules (preserves capitalization and still handles
+spoken punctuation and vocabulary). Updating the toggle alone clears an explicit default.
+Resolution order is user app rule, automatic Verbatim for recognized terminals, then the
+default. A quick switch applies to the current dictation only. History keeps the start app's
+`appIdentity` and the actual `shape`, including edited rules. Older rows return null for both.
+
+| Command | Contract |
+|---|---|
+| `dictation_shape_options` | `DictationShapeOptions`: factory presets, ordered quick presets, effective default and capabilities. Local rewrite is unavailable. Cloud rewrite is `planned`. |
+| `list_dictation_app_rules` | Saved `DictationAppRule[]` with display names. |
+| `save_dictation_app_rule(rule)` / `remove_dictation_app_rule(matcher)` | Upsert or remove by app matcher. Returns `AppSettings` and emits `settings://changed`. |
+| `list_dictation_apps` | `DictationApp[]` with matcher, display name and nullable suggested preset. Combines history with running macOS apps, visible Windows apps or X11 window classes when EWMH and `xprop` are available. Wayland supplies no foreground app metadata. |
+| `set_dictation_shape_edits(preset, edits)` | Save per-preset capitalization and single-line final-period settings. Pass null for Reset shape. Verbatim and Code & commit preserve case and punctuation to protect identifiers. |
+| `preview_dictation_shape(sample, preset, edits)` | Runs the Rust rules and current vocabulary. Omit edits or pass null to use saved edits. Pass an object for a draft (empty object for factory rules). |
+| `get_dictation_hud` / `dictation://hud` | Snapshot and event stream, both `HudState`. Listening has the app label and preset. `shortcutPresets` lists successful temporary bindings and can be empty. Use `quickPresets` for the digit order (Verbatim, Chat message, Email, Notes and lists, Code & commit). |
+| `switch_dictation_shape(preset)` | Switch to a quick preset during listening. Option/Alt+1–5 is registered only during listening on native shortcut backends. |
+| `set_dictation_hud_interaction(hovered, focused)` | Set pointer-hover and keyboard-focus-within state together. Either pauses the remaining six-second timer for Inserted and Copied. Error has no timer. |
+| `dismiss_dictation_hud` | Hides a result or error. While listening or processing, requests cancellation. |
+| `undo_dictation_insert(resultId)` | Use the Inserted state's result ID only when `undoAvailable` is true. Requires the visible HUD and the original macOS process instance to still be frontmost. |
+| `fix_dictation_error` | Performs the current Error state's `fixAction`. Retry starts a hands-free session. |
+
+Use `capabilities.hudInteractive` to gate pointer controls. macOS uses a non-key NSPanel and
+first-mouse clicks. Windows uses a non-activating HWND and handles `WM_MOUSEACTIVATE`.
+X11 uses a passive click-through HUD with GTK focus hints. The Wayland HUD stays hidden because
+the current window uses an ordinary compositor-managed toplevel. HUD events still reach the UI.
+
+macOS checks Accessibility role and secure keyboard input before dispatching a PID-targeted
+paste. An app that misreports a protected field as ordinary text can still defeat the check.
+Windows targets standard Edit controls after checking the password style and mask. Other
+controls fall back to copying. Linux copies on both X11 and Wayland. No insertion path sends
+Return. A known terminal receives clipboard-only results when the text contains line breaks or
+control characters. macOS Undo sends Command+Z to the verified original process. Windows and
+Linux report Undo unavailable.
+
+Browser fixtures use `?state=listening|processing|inserted|inserted-no-undo|copied|error#/hud`
+(or `?hud=...`). Other fixtures include `listening-handsfree`, `listening-unknown`,
+`copied-secure`, `error-transcription`, `error-retry` and `error-insertion`. Use
+`?os=macos` to show the Undo fixture. Browser previews simulate the shape editor's design
+sample. The native Rust command processes arbitrary samples.

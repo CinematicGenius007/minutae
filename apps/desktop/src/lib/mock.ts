@@ -24,7 +24,7 @@
 //   - ask() answers take a different time per question, so a later question can land first
 
 import type {
-  Answer, AppSettings, CaptionLine, CaptionStatus, DayGroup, Dictation, ImportResult, LegacyScan, LegacySource, MeetingDetail,
+  Answer, AppMatcher, AppSettings, DictationApp, DictationAppRule, DictationCapabilities, DictationShapeOptions, HudState, Shape, ShapeEdits, ShapePreset, CaptionLine, CaptionStatus, DayGroup, Dictation, ImportResult, LegacyScan, LegacySource, MeetingDetail,
   ModelInfo, Permissions, ProviderStatus, RecordingState, SearchHit, ShortcutStatus, Track,
   UpdateStatus, UsageMonth,
 } from "./types";
@@ -69,12 +69,92 @@ const iso = (d: number, h: number, m: number) => {
 };
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
+const quickPresets: ShapePreset[] = ["verbatim", "chatMessage", "email", "notesAndLists", "codeAndCommit"];
+const tidyShape: Shape = { preset: "tidy", capitals: "sentence", dropFinalPeriod: false, tidy: true,
+  spokenPunctuation: true, lineBreaks: "spoken", rewriteWithLocalModel: false };
+const presets: Record<ShapePreset, Shape> = {
+  tidy: tidyShape,
+  verbatim: { ...tidyShape, preset: "verbatim", capitals: "asSaid", tidy: false, spokenPunctuation: false, lineBreaks: "singleLine" },
+  chatMessage: { ...tidyShape, preset: "chatMessage", capitals: "relaxed", dropFinalPeriod: true },
+  email: { ...tidyShape, preset: "email", lineBreaks: "email" },
+  notesAndLists: { ...tidyShape, preset: "notesAndLists", lineBreaks: "notesAndLists" },
+  codeAndCommit: { ...tidyShape, preset: "codeAndCommit", capitals: "asSaid", tidy: false, spokenPunctuation: false, lineBreaks: "preserve" },
+};
+const capabilities: DictationCapabilities = {
+  hudVisible: sessionKind !== "wayland",
+  hudInteractive: os === "macos" || os === "windows",
+  localRewriteAvailable: false,
+  cloudRewrite: "planned",
+};
+const mockApps: DictationApp[] = [
+  { app: { kind: "macosBundleId", value: "com.tinyspeck.slackmacgap" }, displayName: "Slack", suggestedPreset: "chatMessage" },
+  { app: { kind: "macosBundleId", value: "com.apple.mail" }, displayName: "Mail", suggestedPreset: "email" },
+  { app: { kind: "macosBundleId", value: "com.microsoft.VSCode" }, displayName: "VS Code", suggestedPreset: "codeAndCommit" },
+  { app: { kind: "macosBundleId", value: "com.apple.Terminal" }, displayName: "Terminal", suggestedPreset: "verbatim" },
+  { app: { kind: "macosBundleId", value: "com.apple.Notes" }, displayName: "Notes", suggestedPreset: "notesAndLists" },
+  { app: { kind: "macosBundleId", value: "com.apple.MobileSMS" }, displayName: "Messages", suggestedPreset: null },
+];
+
+function sameMatcher(a: AppMatcher, b: AppMatcher) {
+  if (a.kind !== b.kind) return false;
+  const key = (value: string) => a.kind === "windowsExecutable" ? value.toLowerCase().replace(/\.exe$/, "") : value.toLowerCase();
+  return key(a.value) === key(b.value);
+}
+
+function editedShape(shape: Shape, edits?: ShapeEdits | null): Shape {
+  return { ...shape, capitals: edits?.capitals ?? shape.capitals, dropFinalPeriod: edits?.dropFinalPeriod ?? shape.dropFinalPeriod };
+}
+
+const listening: Extract<HudState, { state: "listening" }> = { state: "listening", level: 0.64, handsFree: false, app: "Slack", shape: "chatMessage",
+  shortcutPresets: sessionKind === "wayland" ? [] : quickPresets };
+const hudFixtures: Record<string, HudState> = {
+  listening, "listening-handsfree": { ...listening, handsFree: true },
+  "listening-unknown": { ...listening, app: null, shape: "tidy" },
+  processing: { state: "processing" },
+  inserted: { state: "inserted", words: 23, undoAvailable: os === "macos", resultId: os === "macos" ? "00000000-0000-4000-8000-000000000023" : null },
+  "inserted-no-undo": { state: "inserted", words: 23, undoAvailable: false, resultId: null },
+  copied: { state: "copied", words: 23, reason: "You switched apps", reasonCode: "focusChanged" },
+  "copied-secure": { state: "copied", words: 23, reason: "Secure input is on", reasonCode: "secureInput" },
+  error: { state: "error", message: "Microphone is off", fixAction: "microphoneSettings" },
+  "error-transcription": { state: "error", message: "Download a speech model", fixAction: "transcriptionSettings" },
+  "error-retry": { state: "error", message: "No speech detected", fixAction: "retry" },
+  "error-insertion": { state: "error", message: "Clipboard unavailable", fixAction: "dictationSettings" },
+};
+let mockHud: HudState = hudFixtures[params.get("hud") ?? state ?? ""] ?? { state: "idle" };
+if (!(params.has("hud") || (typeof window !== "undefined" && window.location.hash === "#/hud"))) {
+  mockHud = { state: "idle" };
+}
+
+let hudTimer: ReturnType<typeof setTimeout> | undefined;
+let hudDeadline: number | null = null;
+let hudRemaining: number | null = null;
+let interactingWithHud = false;
+function startHudTimer(duration: number) {
+  hudDeadline = Date.now() + duration;
+  hudTimer = setTimeout(() => setMockHud({ state: "idle" }), duration);
+}
+function setMockHud(hud: HudState) {
+  clearTimeout(hudTimer);
+  hudDeadline = null;
+  hudRemaining = null;
+  mockHud = hud;
+  if (hud.state === "idle") interactingWithHud = false;
+  if (hud.state === "inserted" || hud.state === "copied") {
+    if (interactingWithHud) hudRemaining = 6000;
+    else startHudTimer(6000);
+  }
+  emit("dictation://hud", hud);
+}
+
 let settings: AppSettings = {
   appearance: "system", launchAtLogin: true, autoDetectMeetings: true, promptDelaySeconds: 5, stopWhenCallEnds: true,
   includeSystemAudio: true, microphone: null, recordShortcut: "CommandOrControl+Alt+R", transcribeWhere: "local",
   whisperModel: "small", language: null, labelSpeakers: true, liveCaptions: true, echoCancellation: "auto", transportOrder: ["codexCli", "ollama", "grokCli"],
   apiFallbackEnabled: false, summaryLength: "brief", summariesPath: null, codexModel: null, ollamaModel: "llama3.1:8b",
   dictationHotkey: "Alt+Space", dictationMode: "hold", tidyDictation: true, keepDictationAudio: false,
+  dictationDefaultShape: null, dictationShapeEdits: {}, dictationStartSound: true,
+  dictationAppRules: empty ? [] : mockApps.slice(0, 4).map(({ app, displayName, suggestedPreset }) =>
+    ({ app, displayName, preset: suggestedPreset ?? "tidy" })),
   dictationRetentionDays: null, vocabulary: ["Minutae", "whisper.cpp", "Priya Raman", "SwiftUI"], deleteAudioAfterDays: 30, recordingsPath: null,
 };
 
@@ -192,7 +272,10 @@ let dictations: Dictation[] = empty ? [] : [
   ["Standup: finished the model download flow, today on the summary prompt, no blockers.", "Slack", 9, 5],
 ].map(([text, app, h, m], i) => ({
   id: id(300 + i), createdAt: iso(params.has("oldDictations") && i === 3 ? 10 : 0, h as number, m as number), text: text as string, rawText: text as string,
-  targetApp: app as string, wordCount: (text as string).split(/\s+/).length, durationMs: 6000, inserted: true,
+  targetApp: app as string,
+  appIdentity: { displayName: app as string, macosBundleId: mockApps.find((a) => a.displayName === app)?.app.value ?? null,
+    x11WindowClass: null, windowsExecutable: null },
+  shape: i === 2 ? null : presets[i === 0 ? "email" : i === 1 ? "codeAndCommit" : "chatMessage"], wordCount: (text as string).split(/\s+/).length, durationMs: 6000, inserted: true,
 }));
 
 function removeDictations(remove: (entry: Dictation) => boolean) {
@@ -465,6 +548,7 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
       }
       const retentionChanged = retention !== undefined && retention !== settings.dictationRetentionDays;
       settings = { ...settings, ...patch };
+      if (patch.tidyDictation !== undefined && patch.dictationDefaultShape === undefined) settings.dictationDefaultShape = null;
       emit("settings://changed", settings);
       if (retentionChanged && retention != null) {
         const cutoff = Date.now() - retention * 86_400_000;
@@ -512,6 +596,87 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
     case "resume_recording": recording = { ...recording, phase: "recording" }; emit("recording://state", recording); return r(undefined);
     case "mark_moment": return r({ meetingId: recording.meetingId, atMs: recording.elapsedMs, label: (args.label as string) ?? "Moment" });
     case "list_input_devices": return r([{ id: "default", name: "MacBook Pro Microphone", isDefault: true }, { id: "airpods", name: "AirPods Pro", isDefault: false }, { id: "mv7", name: "Shure MV7", isDefault: false }]);
+    case "dictation_shape_options": {
+      const preset = settings.dictationDefaultShape ?? "tidy";
+      const defaultShape = preset === "tidy" && !settings.dictationDefaultShape && !settings.tidyDictation
+        ? { ...tidyShape, tidy: false, capitals: "asSaid" as const } : presets[preset];
+      const options: DictationShapeOptions = {
+        presets: Object.values(presets), quickPresets, capabilities,
+        defaultShape: editedShape(defaultShape, settings.dictationShapeEdits[preset]),
+      };
+      return r(options);
+    }
+    case "list_dictation_app_rules": return r(settings.dictationAppRules);
+    case "list_dictation_apps": return r(mockApps.filter((candidate) =>
+      !settings.dictationAppRules.some(({ app }) => sameMatcher(candidate.app, app))));
+    case "save_dictation_app_rule": {
+      const { app, preset, displayName } = args.rule as DictationAppRule;
+      if (!app.value.trim()) return fail("Choose an app for the dictation rule.");
+      const rule = { app, preset, displayName: displayName.trim() ? displayName : app.value };
+      const found = settings.dictationAppRules.some((r) => sameMatcher(r.app, app));
+      settings = { ...settings, dictationAppRules: found
+        ? settings.dictationAppRules.map((r) => sameMatcher(r.app, app) ? rule : r)
+        : [...settings.dictationAppRules, rule] };
+      emit("settings://changed", settings);
+      return r(settings);
+    }
+    case "remove_dictation_app_rule": {
+      const matcher = args.matcher as AppMatcher;
+      settings = { ...settings, dictationAppRules: settings.dictationAppRules.filter(({ app }) => !sameMatcher(matcher, app)) };
+      emit("settings://changed", settings);
+      return r(settings);
+    }
+    case "set_dictation_shape_edits": {
+      const preset = args.preset as ShapePreset;
+      const edits = args.edits as ShapeEdits | null;
+      const dictationShapeEdits = { ...settings.dictationShapeEdits };
+      if (edits) dictationShapeEdits[preset] = edits;
+      else delete dictationShapeEdits[preset];
+      settings = { ...settings, dictationShapeEdits };
+      emit("settings://changed", settings);
+      return r(settings);
+    }
+    case "preview_dictation_shape": {
+      // Fixed UI fixtures. Arbitrary sample processing is owned by Rust.
+      const sample = args.sample as string;
+      if (new TextEncoder().encode(sample).length > 16_384) return fail("Use a shorter dictation sample.");
+      const preset = args.preset as ShapePreset;
+      const shape = editedShape(presets[preset], (args.edits as ShapeEdits | null) ?? settings.dictationShapeEdits[preset]);
+      if (sample !== "um so sounds good comma I'll I'll ship it after lunch period" || !shape.tidy) return r(sample);
+      const text = shape.capitals === "sentence" ? "Sounds good, I'll ship it after lunch" : "sounds good, I'll ship it after lunch";
+      return r(shape.dropFinalPeriod ? text : text + ".");
+    }
+    case "get_dictation_hud": return r(mockHud);
+    case "switch_dictation_shape": {
+      const preset = args.preset as ShapePreset;
+      if (mockHud.state !== "listening" || !quickPresets.includes(preset)) return fail("Choose a shape while listening.");
+      setMockHud({ ...mockHud, shape: preset });
+      return r(undefined);
+    }
+    case "set_dictation_hud_interaction": {
+      const active = Boolean(args.hovered || args.focused);
+      if (active !== interactingWithHud) {
+        interactingWithHud = active;
+        if (active && hudDeadline !== null) {
+          clearTimeout(hudTimer);
+          hudRemaining = Math.max(0, hudDeadline - Date.now());
+          hudDeadline = null;
+        } else if (!active && hudRemaining !== null) {
+          startHudTimer(hudRemaining);
+          hudRemaining = null;
+        }
+      }
+      return r(undefined);
+    }
+    case "dismiss_dictation_hud": setMockHud({ state: "idle" }); return r(undefined);
+    case "undo_dictation_insert":
+      if (mockHud.state !== "inserted" || !mockHud.undoAvailable || mockHud.resultId !== args.resultId) return fail("Undo is unavailable.");
+      setMockHud({ state: "idle" });
+      return r(undefined);
+    case "fix_dictation_error":
+      if (mockHud.state !== "error") return fail("There is no dictation error to fix.");
+      if (mockHud.fixAction === "retry") setMockHud({ ...listening, handsFree: true });
+      return r(undefined);
     case "list_dictations": return r(dictations.slice(0, (args.limit as number | undefined) ?? 100));
     case "delete_dictation":
       removeDictations((entry) => entry.id === args.id);
@@ -564,10 +729,17 @@ export async function mockListen<T>(event: string, cb: (payload: T) => void): Pr
   listeners.set(event, set);
   // Captions already sent this recording reach late subscribers too (the app keeps them
   // in one app-wide store, so in the real app nothing is missed after startup).
+  if (event === "dictation://hud" && mockHud.state !== "idle") {
+    (cb as Listener)(mockHud);
+    if ((mockHud.state === "inserted" || mockHud.state === "copied") && hudDeadline === null && hudRemaining === null) startHudTimer(6000);
+  }
   if (event === "recording://caption") for (const c of captionBacklog) (cb as Listener)(c);
   return () => set.delete(cb as Listener);
 }
 
 /** Test hook: fire a backend event from the console / tests. */
-export const mockEmit = emit;
-if (typeof window !== "undefined") (window as unknown as { __minutaeMockEmit: typeof emit }).__minutaeMockEmit = emit;
+export const mockEmit = (event: string, payload: unknown) => {
+  if (event === "dictation://hud") setMockHud(payload as HudState);
+  else emit(event, payload);
+};
+if (typeof window !== "undefined") (window as unknown as { __minutaeMockEmit: typeof emit }).__minutaeMockEmit = mockEmit;

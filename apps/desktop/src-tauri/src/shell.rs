@@ -76,6 +76,7 @@ pub fn create_aux_windows(app: &AppHandle) -> tauri::Result<()> {
         .skip_taskbar(true)
         .focused(false)
         .focusable(false)
+        .accept_first_mouse(label == HUD)
         .visible(false)
         .build()?;
         #[cfg(target_os = "macos")]
@@ -83,8 +84,13 @@ pub fn create_aux_windows(app: &AppHandle) -> tauri::Result<()> {
             use tauri_nspanel::{CollectionBehavior, PanelLevel, StyleMask, WebviewWindowExt};
             let panel = window.to_panel::<MinutaePanel>()?;
             panel.set_level(PanelLevel::Status.value());
-            if let Err(e) = panel.add_style_mask(StyleMask::empty().nonactivating_panel().value()) {
-                tracing::warn!(?e, "nonactivating panel style");
+            match panel.add_style_mask(StyleMask::empty().nonactivating_panel().value()) {
+                Ok(()) if label == HUD => app
+                    .state::<AppState>()
+                    .hud_interactive
+                    .store(true, std::sync::atomic::Ordering::Relaxed),
+                Err(e) => tracing::warn!(?e, "nonactivating panel style"),
+                _ => {}
             }
             panel.set_collection_behavior(
                 CollectionBehavior::new()
@@ -95,8 +101,28 @@ pub fn create_aux_windows(app: &AppHandle) -> tauri::Result<()> {
             );
             panel.set_hides_on_deactivate(false);
         }
-        #[cfg(not(target_os = "macos"))]
-        let _ = window;
+        #[cfg(target_os = "windows")]
+        if label == HUD {
+            let interactive = window
+                .hwnd()
+                .is_ok_and(|hwnd| windows_hud::enable_clicks(hwnd.0.cast()));
+            app.state::<AppState>()
+                .hud_interactive
+                .store(interactive, std::sync::atomic::Ordering::Relaxed);
+            if !interactive {
+                window.set_ignore_cursor_events(true)?;
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if label == HUD && minutae_dictation::session_kind() == minutae_dictation::SessionKind::X11
+        {
+            use gtk::prelude::*;
+            let gtk_window = window.gtk_window()?;
+            gtk_window.set_focus_on_map(false);
+            gtk_window.set_accept_focus(false);
+            gtk_window.realize();
+            gtk_window.input_shape_combine_region(Some(&gtk::cairo::Region::create()));
+        }
     }
     #[cfg(target_os = "macos")]
     create_tray_panel(app)?;
@@ -230,8 +256,60 @@ fn place(app: &AppHandle, label: &str) {
     let _ = w.set_position(LogicalPosition::new(x, y));
 }
 
+pub fn hud_can_show(app: &AppHandle) -> bool {
+    if cfg!(target_os = "macos") {
+        return hud_interactive(app);
+    }
+    minutae_dictation::session_kind() != minutae_dictation::SessionKind::Wayland
+}
+
+pub fn hud_interactive(app: &AppHandle) -> bool {
+    app.state::<AppState>()
+        .hud_interactive
+        .load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(target_os = "windows")]
+mod windows_hud {
+    use windows_sys::Win32::{
+        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+        UI::{
+            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+            WindowsAndMessaging::{MA_NOACTIVATE, WM_MOUSEACTIVATE, WM_NCDESTROY},
+        },
+    };
+
+    unsafe extern "system" fn no_activate(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        id: usize,
+        _: usize,
+    ) -> LRESULT {
+        if msg == WM_MOUSEACTIVATE {
+            return MA_NOACTIVATE as LRESULT;
+        }
+        // SAFETY: the subclass is installed on this HWND and runs on its owning UI thread.
+        unsafe {
+            if msg == WM_NCDESTROY {
+                RemoveWindowSubclass(hwnd, Some(no_activate), id);
+            }
+            DefSubclassProc(hwnd, msg, wparam, lparam)
+        }
+    }
+
+    pub(super) fn enable_clicks(hwnd: HWND) -> bool {
+        // SAFETY: called at window creation on the owning UI thread; no callback data.
+        unsafe { SetWindowSubclass(hwnd, Some(no_activate), 1, 0) != 0 }
+    }
+}
+
 /// Show an auxiliary window without activating the app.
 pub fn show_aux(app: &AppHandle, label: &'static str) {
+    if label == HUD && !hud_can_show(app) {
+        return;
+    }
     let a = app.clone();
     let _ = app.run_on_main_thread(move || {
         place(&a, label);
@@ -244,6 +322,15 @@ pub fn show_aux(app: &AppHandle, label: &'static str) {
             }
         }
         if let Some(w) = a.get_webview_window(label) {
+            #[cfg(target_os = "windows")]
+            if label == HUD {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, ShowWindow};
+                if let Ok(hwnd) = w.hwnd() {
+                    // SAFETY: this is the live HUD HWND, on its UI thread.
+                    unsafe { ShowWindow(hwnd.0.cast(), SW_SHOWNOACTIVATE) };
+                }
+                return;
+            }
             let _ = w.show();
         }
     });
@@ -261,6 +348,15 @@ pub fn hide_aux(app: &AppHandle, label: &'static str) {
             }
         }
         if let Some(w) = a.get_webview_window(label) {
+            #[cfg(target_os = "windows")]
+            if label == HUD {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
+                if let Ok(hwnd) = w.hwnd() {
+                    // SAFETY: this is the live HUD HWND, on its UI thread.
+                    unsafe { ShowWindow(hwnd.0.cast(), SW_HIDE) };
+                }
+                return;
+            }
             let _ = w.hide();
         }
     });

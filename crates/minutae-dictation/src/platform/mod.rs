@@ -2,9 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-use crate::insert::CopyReason;
-use crate::insert::Preflight;
+use crate::insert::{CopyReason, Preflight, UndoTarget};
 
 pub mod identity;
 #[cfg(target_os = "macos")]
@@ -64,7 +62,9 @@ pub fn session_kind() -> SessionKind {
 
 pub fn insertion_support() -> InsertionSupport {
     match session_kind() {
-        SessionKind::Wayland => InsertionSupport::CopyOnly,
+        SessionKind::Wayland | SessionKind::X11 | SessionKind::Unknown => {
+            InsertionSupport::CopyOnly
+        }
         _ => InsertionSupport::Paste,
     }
 }
@@ -97,16 +97,44 @@ pub fn frontmost_app_name() -> Option<String> {
     None
 }
 
-pub(crate) fn preflight() -> Preflight {
+pub(crate) fn preflight(_process: u32) -> Preflight {
     #[cfg(target_os = "macos")]
-    return macos::preflight();
+    return macos::preflight(_process);
     #[cfg(target_os = "windows")]
-    return windows::preflight();
+    return windows::preflight(_process);
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     match session_kind() {
         SessionKind::Wayland => Preflight::CopyOnly(CopyReason::Wayland),
-        _ => Preflight::Paste,
+        _ => Preflight::CopyOnly(CopyReason::UnverifiedField),
     }
+}
+
+pub(crate) fn send_paste(_process: u32) -> Result<(), CopyReason> {
+    #[cfg(target_os = "macos")]
+    {
+        let code = paste_keycode();
+        if code < 128 {
+            macos::send_command(_process, code, None)
+        } else {
+            Err(CopyReason::PasteFailed)
+        }
+    }
+    #[cfg(target_os = "windows")]
+    return windows::paste(_process);
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    Err(CopyReason::UnverifiedField)
+}
+
+pub(crate) fn undo(_target: UndoTarget) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let code = UNDO_KEYCODE.load(std::sync::atomic::Ordering::Relaxed);
+        code < 128
+            && matches!(preflight(_target.process), Preflight::Paste)
+            && macos::send_command(_target.process, code, Some(_target.launched_at)).is_ok()
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
 }
 
 /// macOS: cached keycode for the "v" of ⌘V in the current keyboard layout (QWERTY's 9 until
@@ -114,6 +142,20 @@ pub(crate) fn preflight() -> Preflight {
 #[cfg(target_os = "macos")]
 static PASTE_KEYCODE: std::sync::atomic::AtomicU16 =
     std::sync::atomic::AtomicU16::new(macos::ANSI_V);
+
+#[cfg(target_os = "macos")]
+static UNDO_KEYCODE: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(u16::MAX);
+
+pub(crate) fn undo_target(_process: u32) -> Option<UndoTarget> {
+    #[cfg(target_os = "macos")]
+    if UNDO_KEYCODE.load(std::sync::atomic::Ordering::Relaxed) < 128 {
+        return Some(UndoTarget {
+            process: _process,
+            launched_at: macos::frontmost_launch_time(_process)?,
+        });
+    }
+    None
+}
 
 /// Re-reads which key types "v" in the current keyboard layout (Dvorak, AZERTY, …) so the
 /// simulated ⌘V works there. Returns the cached keycode (macOS) or `None` elsewhere.
@@ -127,10 +169,15 @@ pub fn refresh_paste_keycode() -> Option<u16> {
     #[cfg(target_os = "macos")]
     {
         use std::sync::atomic::Ordering;
-        if macos::is_main_thread()
-            && let Some(code) = macos::lookup_v_keycode()
-        {
-            PASTE_KEYCODE.store(code, Ordering::Relaxed);
+        if macos::is_main_thread() {
+            PASTE_KEYCODE.store(
+                macos::lookup_keycode("v").unwrap_or(u16::MAX),
+                Ordering::Relaxed,
+            );
+            UNDO_KEYCODE.store(
+                macos::lookup_keycode("z").unwrap_or(u16::MAX),
+                Ordering::Relaxed,
+            );
         }
         Some(PASTE_KEYCODE.load(Ordering::Relaxed))
     }

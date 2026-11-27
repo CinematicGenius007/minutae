@@ -25,7 +25,8 @@ import s from "./dictate.module.css";
 
 export default function DictateScreen() {
   const platform = usePlatform();
-  const copyOnly = usePlatformInfo()?.sessionKind === "wayland";
+  const session = usePlatformInfo()?.sessionKind;
+  const copyOnly = session === "wayland" || session === "x11";
   const toast = useToast();
   const { settings } = useSettings();
   const shortcuts = useShortcutStatus();
