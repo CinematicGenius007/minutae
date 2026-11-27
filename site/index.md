@@ -10,28 +10,36 @@ A meeting recorder and dictation app that runs on your computer. It writes plain
 
 ## Install
 
-**macOS / Linux:**
+No release has been published yet. [Build from source](https://github.com/CinematicGenius007/minutae/blob/main/docs/install/source.md) to install today.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/CinematicGenius007/minutae/main/scripts/install.sh | sh
-```
-
-**Windows:**
-
-```powershell
-scoop install https://github.com/CinematicGenius007/minutae/releases/latest/download/minutae.json
-```
-
-**Source:**
+**Source, macOS / Linux (works today):**
 
 ```sh
 git clone https://github.com/CinematicGenius007/minutae && cd minutae && sh scripts/install.sh --from-source
 ```
 
-**Ask your agent:**
+**Source, Windows (works today):**
+
+```powershell
+git clone https://github.com/CinematicGenius007/minutae; cd minutae; bun install; bun run build
+```
+
+**Ask your agent (it builds from source until the first release):**
 
 ```text
 Install Minutae for me. Follow docs/agents/INSTALL.md in github.com/CinematicGenius007/minutae
+```
+
+**macOS / Linux (works from the first release):**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/CinematicGenius007/minutae/main/scripts/install.sh | sh
+```
+
+**Windows (works from the first release):**
+
+```powershell
+scoop install https://github.com/CinematicGenius007/minutae/releases/latest/download/minutae.json
 ```
 
 ## 00:04 — It asks first.
@@ -79,6 +87,6 @@ This is the one step that can leave your computer. Pick Ollama and it doesn't. P
 
 - [Install guides](https://github.com/CinematicGenius007/minutae/tree/main/docs/install)
 - [Read the source](https://github.com/CinematicGenius007/minutae)
-- [Releases](https://github.com/CinematicGenius007/minutae/releases)
+- [Releases (none published yet)](https://github.com/CinematicGenius007/minutae/releases)
 - [AI agent guide](https://minutae.vercel.app/agents.md)
 - [llms.txt](https://minutae.vercel.app/llms.txt)

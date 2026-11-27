@@ -1,12 +1,11 @@
-/* ==========================================================================
-   Minutae — Self-hosted subsetted fonts (OFL) + metric-matched fallbacks
-   ========================================================================== */
+/* Order: fonts, tokens, base, layout, components, breakpoints, accessibility. */
+
+/* Fonts: subsetted, self-hosted (OFL), with metric-matched fallbacks. */
 
 @font-face {
   font-family: "Geist";
-  font-style: normal;
-  font-display: swap;
   font-weight: 300 700;
+  font-display: swap;
   src: url("./fonts/geist.woff2") format("woff2");
 }
 
@@ -21,19 +20,18 @@
 
 @font-face {
   font-family: "Geist Mono";
-  font-style: normal;
-  font-display: swap;
   font-weight: 400 700;
+  font-display: swap;
   src: url("./fonts/geist-mono.woff2") format("woff2");
 }
 
+/* Arrows, and the box drawing of the file tree. */
 @font-face {
   font-family: "Geist Mono";
-  font-style: normal;
-  font-display: swap;
   font-weight: 400 700;
-  src: url("./fonts/geist-mono-box.woff2") format("woff2");
-  unicode-range: U+2500, U+2502, U+2514, U+251C;
+  font-display: swap;
+  src: url("./fonts/geist-mono-symbols.woff2") format("woff2");
+  unicode-range: U+2192, U+2197, U+2500, U+2502, U+2514, U+251C;
 }
 
 @font-face {
@@ -47,17 +45,16 @@
 
 @font-face {
   font-family: "Newsreader";
-  font-style: normal;
-  font-display: swap;
   font-weight: 400;
+  font-display: swap;
   src: url("./fonts/newsreader.woff2") format("woff2");
 }
 
 @font-face {
   font-family: "Newsreader";
   font-style: italic;
-  font-display: swap;
   font-weight: 400;
+  font-display: swap;
   src: url("./fonts/newsreader-italic.woff2") format("woff2");
 }
 
@@ -70,89 +67,65 @@
   line-gap-override: 0%;
 }
 
-/* ==========================================================================
-   Canonical tokens (DESIGN-LANGUAGE.md §13)
-   ========================================================================== */
+/* Tokens (docs/DESIGN-LANGUAGE.md §13). Dark is a token swap, listed twice:
+   once for the explicit choice and once for the system preference. */
 
 :root {
-  /* colour, light */
   --bg: #ffffff;
   --ink: #111111;
   --muted: #6b6b6b;
-  --faint: #b5b5b0;
   --surface: #f4f4f2;
   --raised: #ffffff;
   --line: #e6e6e3;
   --line-strong: #d9d9d5;
   --on-ink: #ffffff;
   --onair: #ff3b1f;
-  --onair-fill: #db2f17;
   --on-onair: #ffffff;
-  --destructive: #c8321f;
-  --ok: #2bb673;
   --hud: #111111;
-
-  /* derived component surfaces (light) */
   --panel-bg: var(--bg);
-  --prompt-shadow: 0 16px 40px rgb(0 0 0 / 0.1);
 
-  /* type */
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.08);
+  --prompt-shadow: 0 16px 40px rgb(0 0 0 / 0.1);
+  --dock-shadow: 0 -4px 20px rgb(0 0 0 / 0.06);
+
   --font-sans: "Geist", "Geist Fallback", system-ui, sans-serif;
   --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
   --font-serif: "Newsreader", "Newsreader Fallback", Georgia, serif;
 
-  /* space (4 px base) */
-  --s-1: 2px;
-  --s-2: 4px;
-  --s-3: 8px;
-  --s-4: 12px;
-  --s-5: 16px;
-  --s-6: 20px;
-  --s-7: 24px;
-  --s-8: 28px;
-  --s-9: 36px;
-  --s-10: 44px;
-  --s-11: 56px;
-  --s-12: 72px;
-
-  /* shape */
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-full: 999px;
-  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.08);
-  --shadow-2:
-    0 12px 32px rgb(0 0 0 / 0.1),
-    0 2px 6px rgb(0 0 0 / 0.06);
 
-  /* motion */
   --t-fast: 120ms ease-out;
   --t-base: 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
   --t-slow: 320ms cubic-bezier(0.2, 0.8, 0.2, 1);
 
-  /* layout */
   --page-pad: 72px;
   --page-max: 1440px;
 }
 
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
 :root[data-theme="dark"] {
+  color-scheme: dark;
+
   --bg: #0d0d0c;
   --ink: #edede8;
   --muted: #8e8e88;
-  --faint: #4a4a47;
   --surface: #181817;
   --raised: #2a2a28;
   --line: #262624;
   --line-strong: #3a3a38;
   --on-ink: #0d0d0c;
   --onair: #ff4a2e;
-  --onair-fill: #db2f17;
-  --destructive: #f0624d;
   --hud: #262624;
-
   --panel-bg: var(--surface);
+
   --prompt-shadow:
-    0 16px 40px rgb(0 0 0 / 0.45),
-    0 0 0 0.5px var(--line-strong);
+    0 16px 40px rgb(0 0 0 / 0.45), 0 0 0 0.5px var(--line-strong);
+  --dock-shadow: 0 -4px 24px rgb(0 0 0 / 0.35);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -160,34 +133,22 @@
     --bg: #0d0d0c;
     --ink: #edede8;
     --muted: #8e8e88;
-    --faint: #4a4a47;
     --surface: #181817;
     --raised: #2a2a28;
     --line: #262624;
     --line-strong: #3a3a38;
     --on-ink: #0d0d0c;
     --onair: #ff4a2e;
-    --onair-fill: #db2f17;
-    --destructive: #f0624d;
     --hud: #262624;
-
     --panel-bg: var(--surface);
+
     --prompt-shadow:
-      0 16px 40px rgb(0 0 0 / 0.45),
-      0 0 0 0.5px var(--line-strong);
+      0 16px 40px rgb(0 0 0 / 0.45), 0 0 0 0.5px var(--line-strong);
+    --dock-shadow: 0 -4px 24px rgb(0 0 0 / 0.35);
   }
 }
 
-/* View Transitions API circular reveal */
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation: none;
-  mix-blend-mode: normal;
-}
-
-/* ==========================================================================
-   Reset & Base
-   ========================================================================== */
+/* Base */
 
 *,
 *::before,
@@ -199,7 +160,6 @@ html {
   background-color: var(--bg);
   color: var(--ink);
   font-family: var(--font-sans);
-  font-size: 16px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -210,8 +170,6 @@ html {
 
 body {
   margin: 0;
-  background-color: var(--bg);
-  color: var(--ink);
   min-height: 100vh;
   overflow-x: clip;
 }
@@ -237,41 +195,42 @@ button {
   cursor: pointer;
 }
 
+code {
+  font: inherit;
+}
+
 svg {
   display: block;
   flex-shrink: 0;
 }
 
-/* Focus ring (DESIGN-LANGUAGE §7) */
-:focus-visible {
-  outline: none;
-  box-shadow:
-    0 0 0 2px var(--bg),
-    0 0 0 4px var(--ink);
+[hidden] {
+  display: none !important;
+}
+
+.mono {
+  font-family: var(--font-mono);
 }
 
 .sr-only {
   position: absolute;
   width: 1px;
   height: 1px;
-  padding: 0;
   margin: -1px;
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
-  border: 0;
 }
 
 .skip-link {
   position: fixed;
-  top: var(--s-4);
-  left: var(--s-4);
+  top: 12px;
+  left: 12px;
   z-index: 100;
-  padding: var(--s-3) var(--s-5);
+  padding: 8px 16px;
   border-radius: var(--radius-full);
   background: var(--ink);
   color: var(--on-ink);
-  font-family: var(--font-sans);
   font-size: 14px;
   font-weight: 500;
   transform: translateY(-200%);
@@ -279,28 +238,94 @@ svg {
 }
 
 .skip-link:focus {
-  transform: translateY(0);
+  transform: none;
 }
 
-/* ==========================================================================
-   Buttons
-   ========================================================================== */
+/* The theme switcher sets the new theme inside a view transition and reveals it with a circle. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
 
-.btn-primary,
-.btn-secondary {
+/* Layout */
+
+.page {
+  max-width: var(--page-max);
+  margin-inline: auto;
+  padding-inline: var(--page-pad);
+}
+
+.chapter {
+  border-bottom: 1px solid var(--line);
+}
+
+.chapter-inner {
+  padding-block: 96px;
+}
+
+.chapter-row {
+  display: flex;
+  align-items: center;
+}
+
+.chapter-time {
+  width: 312px;
+  flex-shrink: 0;
+  font-size: 72px;
+  font-weight: 300;
+  letter-spacing: -0.05em;
+  line-height: 72px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chapter-copy {
+  width: 520px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chapter-title {
+  font-size: 32px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 38px;
+}
+
+.chapter-body {
+  width: 400px;
+  max-width: 100%;
+  font-size: 17px;
+  line-height: 28px;
+  color: var(--muted);
+}
+
+.chapter-demo {
+  width: 464px;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Buttons */
+
+.btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   border-radius: var(--radius-full);
-  font-family: var(--font-sans);
-  font-weight: 500;
-  line-height: 18px;
   white-space: nowrap;
   transition:
     opacity var(--t-fast),
-    background-color var(--t-fast),
     border-color var(--t-fast),
     transform var(--t-fast);
+}
+
+.btn:active {
+  transform: scale(var(--press, 0.985));
 }
 
 .btn-primary {
@@ -312,13 +337,7 @@ svg {
   opacity: 0.85;
 }
 
-.btn-primary:active {
-  transform: scale(0.985);
-}
-
 .btn-secondary {
-  background-color: var(--bg);
-  color: var(--ink);
   border: 1px solid var(--line-strong);
 }
 
@@ -326,24 +345,32 @@ svg {
   border-color: var(--ink);
 }
 
-.btn-secondary:active {
-  transform: scale(0.985);
+.btn-nav,
+.btn-closer {
+  font-weight: 500;
+  line-height: 18px;
 }
 
-/* ==========================================================================
-   Header
-   ========================================================================== */
+.btn-nav {
+  height: 36px;
+  padding-inline: 18px;
+  font-size: 14px;
+}
+
+.btn-closer {
+  height: 48px;
+  padding-inline: 28px;
+  font-size: 15px;
+}
+
+/* Header and footer */
 
 .site-header {
   border-bottom: 1px solid var(--line);
-  background-color: var(--bg);
 }
 
 .header-inner {
-  max-width: var(--page-max);
-  margin-inline: auto;
-  height: 71px; /* 71 + 1px border-bottom = 72px total */
-  padding-inline: var(--page-pad);
+  height: 71px; /* 72 with the border */
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -363,45 +390,36 @@ svg {
   flex-shrink: 0;
   min-height: 28px;
   border-radius: var(--radius-sm);
-}
-
-.wordmark-text {
-  font-family: var(--font-sans);
   font-size: 22px;
   font-weight: 700;
   letter-spacing: -0.035em;
   line-height: 28px;
-  color: var(--ink);
 }
 
-.wordmark-mark {
-  width: 7px;
-  height: 7px;
-  color: var(--ink);
-  flex-shrink: 0;
-  position: relative;
-  top: 5px;
-}
-
-.primary-nav {
+.primary-nav,
+.footer-links {
   display: flex;
   align-items: center;
   gap: 28px;
 }
 
-.primary-nav a {
+.primary-nav a,
+.footer-links a {
   display: inline-flex;
   align-items: center;
   min-height: 28px;
-  font-family: var(--font-mono);
-  font-size: 13px;
+  border-radius: var(--radius-sm);
   line-height: 18px;
   color: var(--muted);
-  border-radius: var(--radius-sm);
   transition: color var(--t-fast);
 }
 
-.primary-nav a:hover {
+.primary-nav a {
+  font-size: 13px;
+}
+
+.primary-nav a:hover,
+.footer-links a:hover {
   color: var(--ink);
 }
 
@@ -413,7 +431,6 @@ svg {
 
 .theme-switcher {
   display: flex;
-  align-items: center;
   gap: 2px;
   padding: 3px;
   border-radius: var(--radius-full);
@@ -423,11 +440,11 @@ svg {
 .theme-option {
   width: 30px;
   height: 28px;
+  flex-shrink: 0;
   border-radius: var(--radius-full);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
   color: var(--muted);
   transition:
     color var(--t-fast),
@@ -445,20 +462,32 @@ svg {
   color: var(--ink);
 }
 
-.btn-nav {
-  height: 36px;
-  padding-inline: 18px;
-  font-size: 14px;
+.theme-option svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-/* ==========================================================================
-   Hero
-   ========================================================================== */
+.footer-inner {
+  padding-block: 27px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.footer-left {
+  color: var(--muted);
+}
+
+/* Hero */
 
 .hero-top {
-  max-width: var(--page-max);
-  margin-inline: auto;
-  padding: 88px var(--page-pad) 64px;
+  padding-block: 88px 64px;
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
@@ -468,34 +497,27 @@ svg {
 .hero-headline {
   flex-shrink: 0;
   width: 930px;
-  font-family: var(--font-sans);
   font-size: 92px;
   font-weight: 700;
   letter-spacing: -0.05em;
   line-height: 96px;
-  color: var(--ink);
 }
 
 .hero-lead {
   flex-shrink: 0;
   width: 320px;
   padding-bottom: 10px;
-  font-family: var(--font-sans);
   font-size: 17px;
-  font-weight: 400;
   line-height: 28px;
   color: var(--muted);
 }
 
-/* ==========================================================================
-   Hero Tape
-   ========================================================================== */
+/* Tape: two waveforms, the playhead and the transcript. Positioned as drawn at 1440. */
 
 .tape-band {
   position: relative;
   border-top: 1px solid var(--ink);
   border-bottom: 1px solid var(--line);
-  background-color: var(--bg);
   user-select: none;
 }
 
@@ -505,58 +527,71 @@ svg {
   z-index: 2;
   width: 100%;
   height: 100%;
-  cursor: pointer;
-}
-
-.tape-toggle:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--ink);
 }
 
 .tape-inner {
-  max-width: var(--page-max);
-  margin-inline: auto;
-  height: 230px; /* 230 + 2px top/bottom borders = 232px */
+  height: 230px; /* 232 with the borders */
   position: relative;
 }
 
-.tape-tracks {
+.tape-tracks,
+.tape-output,
+.tape-transcript {
   position: absolute;
   inset: 0;
-  pointer-events: none;
 }
 
 .tape-track {
   position: absolute;
   left: 72px;
+  height: 64px;
   display: flex;
   align-items: center;
 }
 
 .tape-track-them {
   top: 43px;
-  height: 64px;
 }
 
 .tape-track-you {
   top: 125px;
-  height: 64px;
+}
+
+.tape-label,
+.tape-status,
+.pane-overline,
+.closer-status,
+.closer-meta {
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: 0.08em;
 }
 
 .tape-label {
   width: 88px;
   flex-shrink: 0;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  line-height: 16px;
   color: var(--muted);
 }
 
 .tape-wave {
   width: 560px;
   height: 64px;
-  color: var(--ink);
   overflow: visible;
+}
+
+.tape-wave path,
+.hud-bars path {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+}
+
+.tape-wave path {
+  stroke-width: 3;
+}
+
+.hud-bars path {
+  stroke-width: 2;
 }
 
 .tape-playhead {
@@ -568,12 +603,6 @@ svg {
   background-color: var(--onair);
 }
 
-.tape-output {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
 .tape-status {
   position: absolute;
   left: 757px;
@@ -581,56 +610,16 @@ svg {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.onair-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-full);
-  background-color: var(--onair);
-  flex-shrink: 0;
-}
-
-.onair-dot.is-pulsing,
-.prompt-dot.is-pulsing,
-.hud-dot.is-pulsing {
-  animation: onair-pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes onair-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
-}
-
-.tape-status-text {
-  font-family: var(--font-mono);
-  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  line-height: 16px;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-}
-
-.tape-transcript {
-  position: absolute;
-  inset: 0;
 }
 
 .tape-line {
   position: absolute;
   left: 784px;
   width: 584px;
-  min-height: 48px;
-  font-family: var(--font-mono);
+  min-height: 48px; /* two lines, reserved while the text types */
   font-size: 16px;
   line-height: 24px;
-  color: var(--ink);
   white-space: pre-wrap;
 }
 
@@ -642,14 +631,27 @@ svg {
   top: 145px;
 }
 
-/* ==========================================================================
-   Install Row
-   ========================================================================== */
+/* Red dots mean recording or listening. */
+
+.dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  background-color: var(--onair);
+}
+
+@keyframes onair-pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* Install */
 
 .install-row {
-  max-width: var(--page-max);
-  margin-inline: auto;
-  padding: 36px var(--page-pad) 48px;
+  /* 22 + the 26 px note keeps the section at its drawn height. */
+  padding-block: 36px 22px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -666,9 +668,8 @@ svg {
 
 .install-tabs {
   display: flex;
-  align-items: center;
-  gap: 4px;
   flex-wrap: wrap;
+  gap: 4px;
 }
 
 .install-tab {
@@ -677,7 +678,6 @@ svg {
   min-height: 28px;
   padding: 6px 10px;
   border-radius: var(--radius-sm);
-  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 16px;
   color: var(--muted);
@@ -702,56 +702,38 @@ svg {
   padding: 14px 14px 14px 20px;
   border-radius: var(--radius-md);
   background-color: var(--surface);
-  max-width: 100%;
+  font-size: 14px;
+  line-height: 20px;
 }
 
 .install-prompt {
-  font-family: var(--font-mono);
-  font-size: 14px;
-  line-height: 20px;
   color: var(--muted);
-  flex-shrink: 0;
   user-select: none;
 }
 
-.install-prompt[hidden] {
-  display: none;
-}
-
 .install-command {
-  font-family: var(--font-mono);
-  font-size: 14px;
-  line-height: 20px;
-  color: var(--ink);
+  font-size: 13px; /* the source command fits at 1440 */
   white-space: nowrap;
   overflow-x: auto;
   scrollbar-width: thin;
 }
 
 .copy-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  --press: 0.97;
   min-height: 32px;
   padding: 6px 14px;
-  border-radius: var(--radius-full);
-  background-color: var(--ink);
-  color: var(--on-ink);
-  font-family: var(--font-mono);
   font-size: 12px;
-  line-height: 20px;
-  flex-shrink: 0;
-  transition:
-    opacity var(--t-fast),
-    transform var(--t-fast);
 }
 
-.copy-btn:hover {
-  opacity: 0.85;
+.install-note {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--muted);
 }
 
-.copy-btn:active {
-  transform: scale(0.97);
+.install-note a {
+  text-decoration: underline;
 }
 
 .install-meta {
@@ -760,111 +742,65 @@ svg {
   align-items: flex-end;
   gap: 4px;
   flex-shrink: 0;
-  font-family: var(--font-mono);
+  margin-bottom: 26px; /* stays centred on the tabs and command, not the note */
   font-size: 12px;
   line-height: 18px;
   color: var(--muted);
 }
 
-/* ==========================================================================
-   Transport Bar
-   ========================================================================== */
+/* Transport: in flow under the hero, docked to the bottom once scrolled past. */
 
-.transport-slot {
+.transport-slot,
+.transport {
   height: 64px;
-  position: relative;
 }
 
 .transport {
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
+  border-block: 1px solid var(--line);
   background-color: var(--bg);
-  height: 64px;
 }
 
 .transport.is-docked {
   position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: auto 0 0;
   z-index: 40;
   border-bottom: none;
-  box-shadow: 0 -4px 20px rgb(0 0 0 / 0.06);
-  animation: transport-dock var(--t-base) both;
-}
-
-:root[data-theme="dark"] .transport.is-docked {
-  box-shadow: 0 -4px 24px rgb(0 0 0 / 0.35);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .transport.is-docked {
-    box-shadow: 0 -4px 24px rgb(0 0 0 / 0.35);
-  }
+  box-shadow: var(--dock-shadow);
 }
 
 @keyframes transport-dock {
   from {
     transform: translateY(100%);
   }
-  to {
-    transform: translateY(0);
-  }
 }
 
 .transport-inner {
-  max-width: var(--page-max);
-  margin-inline: auto;
   height: 100%;
-  padding-inline: var(--page-pad);
   display: flex;
   align-items: center;
   gap: 24px;
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .transport-play {
+  --press: 0.95;
   width: 32px;
   height: 32px;
-  border-radius: var(--radius-full);
-  background-color: var(--ink);
-  color: var(--on-ink);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  transition:
-    opacity var(--t-fast),
-    transform var(--t-fast);
 }
 
-.transport-play:hover {
-  opacity: 0.85;
-}
-
-.transport-play:active {
-  transform: scale(0.95);
-}
-
-.transport-play .icon-pause {
+.transport-play .icon-pause,
+.transport-play[data-playing] .icon-play {
   display: none;
 }
 
-.transport-play[aria-pressed="true"] .icon-play {
-  display: none;
-}
-
-.transport-play[aria-pressed="true"] .icon-pause {
+.transport-play[data-playing] .icon-pause {
   display: block;
 }
 
 .transport-time {
   width: 104px;
   flex-shrink: 0;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 16px;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
 }
 
 .transport-segments {
@@ -875,60 +811,57 @@ svg {
   min-width: 0;
 }
 
+/* Segment widths follow the length of each chapter. */
 .transport-seg {
-  flex: var(--seg-weight, 1) 1 0;
+  flex: 100 1 0;
   min-width: 0;
+  min-height: 28px;
   display: flex;
   flex-direction: column;
+  justify-content: center;
   gap: 6px;
   padding-block: 4px;
-  min-height: 28px;
-  justify-content: center;
-  text-align: left;
   border-radius: 3px;
 }
 
-.transport-seg-1 {
-  --seg-weight: 100;
-  --progress: 1;
+.transport-seg:nth-child(2) {
+  flex-grow: 180;
 }
-.transport-seg-2 {
-  --seg-weight: 180;
+
+.transport-seg:nth-child(3) {
+  flex-grow: 210;
 }
-.transport-seg-3 {
-  --seg-weight: 210;
+
+.transport-seg:nth-child(4),
+.transport-seg:nth-child(5) {
+  flex-grow: 190;
 }
-.transport-seg-4 {
-  --seg-weight: 190;
-}
-.transport-seg-5 {
-  --seg-weight: 190;
-}
-.transport-seg-6 {
-  --seg-weight: 222;
+
+.transport-seg:nth-child(6) {
+  flex-grow: 222;
 }
 
 .transport-bar {
-  display: block;
-  width: 100%;
   height: 3px;
-  background-color: var(--line);
   position: relative;
   overflow: hidden;
+  background-color: var(--line);
 }
 
-.transport-bar-fill {
+.transport-bar::after {
+  content: "";
   position: absolute;
   inset: 0;
   background-color: var(--ink);
-  transform-origin: left center;
+  transform-origin: left;
   transform: scaleX(var(--progress, 0));
 }
 
+.transport-seg:first-child {
+  --progress: 1;
+}
+
 .transport-seg-label {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 16px;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -937,159 +870,67 @@ svg {
 }
 
 .transport-seg:hover .transport-seg-label,
-.transport-seg.is-active .transport-seg-label {
+.transport-seg[aria-current] .transport-seg-label {
   color: var(--ink);
 }
 
-/* ==========================================================================
-   Chapters (Shared)
-   ========================================================================== */
-
-.chapter {
-  border-bottom: 1px solid var(--line);
-  background-color: var(--bg);
-}
-
-.chapter-inner {
-  max-width: var(--page-max);
-  margin-inline: auto;
-  padding: 96px var(--page-pad);
-}
-
-.chapter-row {
-  display: flex;
-  align-items: center;
-}
-
-.chapter-time {
-  width: 312px;
-  flex-shrink: 0;
-  font-family: var(--font-sans);
-  font-size: 72px;
-  font-weight: 300;
-  letter-spacing: -0.05em;
-  line-height: 72px;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-}
-
-.chapter-copy {
-  width: 520px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.chapter-copy-wide {
-  width: 640px;
-}
-
-.chapter-title {
-  font-family: var(--font-sans);
-  font-size: 32px;
-  font-weight: 600;
-  letter-spacing: -0.025em;
-  line-height: 38px;
-  color: var(--ink);
-}
-
-.chapter-body {
-  width: 400px;
-  max-width: 100%;
-  font-family: var(--font-sans);
-  font-size: 17px;
-  font-weight: 400;
-  line-height: 28px;
-  color: var(--muted);
-}
-
-.chapter-body-wide {
-  width: 520px;
-}
-
-.chapter-demo {
-  width: 464px;
-  flex-shrink: 0;
-  display: flex;
-}
-
-.chapter-demo-end {
-  justify-content: flex-end;
-}
-
-/* ==========================================================================
-   00:04 Prompt Card
-   ========================================================================== */
+/* 00:04 prompt */
 
 .prompt-card {
   width: 384px;
   max-width: 100%;
-  padding: 20px;
-  border-radius: 14px;
-  border: 1px solid var(--line);
-  background-color: var(--panel-bg);
-  box-shadow: var(--prompt-shadow);
   display: flex;
   flex-direction: column;
   gap: 14px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background-color: var(--panel-bg);
+  box-shadow: var(--prompt-shadow);
   transition:
     transform var(--t-slow),
     opacity var(--t-slow);
 }
 
-.prompt-card.is-entering {
-  opacity: 0;
-  transform: translateY(-16px);
-}
-
-.prompt-card.is-dismissed {
+.prompt-card[data-state="dismissed"] {
   opacity: 0;
   transform: translateY(-14px);
   pointer-events: none;
 }
 
-.prompt-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
+.prompt-header,
 .prompt-title-group {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.prompt-header {
+  justify-content: space-between;
+}
+
+.prompt-title-group {
   min-width: 0;
 }
 
 .prompt-dot {
   width: 10px;
   height: 10px;
-  border-radius: var(--radius-full);
-  background-color: var(--onair);
-  flex-shrink: 0;
 }
 
 .prompt-title {
-  font-family: var(--font-sans);
   font-size: 15px;
   font-weight: 600;
   line-height: 20px;
-  color: var(--ink);
 }
 
 .prompt-timer {
-  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 16px;
   color: var(--muted);
-  font-variant-numeric: tabular-nums;
-  flex-shrink: 0;
 }
 
 .prompt-body {
-  font-family: var(--font-sans);
   font-size: 13px;
   line-height: 20px;
   color: var(--muted);
@@ -1101,60 +942,28 @@ svg {
 }
 
 .prompt-btn {
+  --press: 0.98;
   flex: 1 1 0;
   min-height: 34px;
-  border-radius: var(--radius-full);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-sans);
+  padding-block: 7px;
   font-size: 13px;
   font-weight: 500;
   line-height: 18px;
-  transition:
-    opacity var(--t-fast),
-    border-color var(--t-fast),
-    background-color var(--t-fast),
-    transform var(--t-fast);
 }
 
-.prompt-btn-primary {
-  background-color: var(--ink);
-  color: var(--on-ink);
-  padding-block: 8px;
+.prompt-btn.btn-secondary {
+  border-color: var(--line);
 }
 
-.prompt-btn-primary:hover {
-  opacity: 0.85;
-}
-
-.prompt-btn-secondary {
-  border: 1px solid var(--line);
-  color: var(--ink);
-  padding-block: 7px;
-}
-
-.prompt-btn-secondary:hover {
+.prompt-btn.btn-secondary:hover {
   border-color: var(--ink);
 }
 
-.prompt-btn:active {
-  transform: scale(0.98);
-}
-
-.prompt-btn[hidden] {
-  display: none;
-}
-
-/* ==========================================================================
-   12:04 Speaker List
-   ========================================================================== */
+/* 12:04 speakers */
 
 .speaker-list {
   width: 384px;
   max-width: 100%;
-  display: flex;
-  flex-direction: column;
 }
 
 .speaker-row {
@@ -1162,19 +971,17 @@ svg {
   align-items: center;
   padding-block: 14px;
   border-bottom: 1px solid var(--line);
-  font-family: var(--font-mono);
   font-size: 13px;
   line-height: 20px;
 }
 
-.speaker-row-first {
+.speaker-row:first-child {
   border-top: 1px solid var(--ink);
 }
 
 .speaker-name {
   width: 160px;
   flex-shrink: 0;
-  color: var(--ink);
 }
 
 .speaker-track {
@@ -1187,18 +994,13 @@ svg {
   width: 80px;
   flex-shrink: 0;
   text-align: right;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
 }
 
-.speaker-row-muted .speaker-name,
-.speaker-row-muted .speaker-dur {
+.speaker-row.is-muted {
   color: var(--muted);
 }
 
-/* ==========================================================================
-   32:14 File Viewer
-   ========================================================================== */
+/* 32:14 file viewer */
 
 .chapter-file-inner {
   display: flex;
@@ -1211,126 +1013,99 @@ svg {
   align-items: center;
 }
 
-.file-viewer {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  display: flex;
-  overflow: hidden;
-  background-color: var(--bg);
+.chapter-file-header .chapter-copy {
+  width: 640px;
 }
 
-.file-pane {
+.chapter-file-header .chapter-body {
+  width: 520px;
+}
+
+.file-viewer {
   display: flex;
-  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
 }
 
 .file-tree {
   width: 320px;
   flex-shrink: 0;
   padding: 28px;
-  background-color: var(--surface);
   overflow-x: auto;
+  background-color: var(--surface);
 }
 
 .tree-line {
-  font-family: var(--font-mono);
   font-size: 13px;
   line-height: 30px;
-  color: var(--muted);
   white-space: pre;
-  transition:
-    opacity var(--t-base),
-    transform var(--t-base);
+  color: var(--muted);
 }
 
-.tree-line-ink {
+.tree-line.is-ink {
   color: var(--ink);
 }
 
-.tree-line-bold {
+.tree-line.is-new {
   font-weight: 700;
-}
-
-.file-tree.is-pending .tree-line {
-  opacity: 0;
-  transform: translateY(4px);
-}
-
-.file-tree.is-pending .tree-line.is-visible {
-  opacity: 1;
-  transform: translateY(0);
 }
 
 .file-raw {
   width: 488px;
   flex-shrink: 0;
   padding: 28px 32px;
-  border-left: 1px solid var(--line);
-  border-right: 1px solid var(--line);
   overflow-x: auto;
+  border-inline: 1px solid var(--line);
 }
 
 .pane-overline {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  line-height: 16px;
   color: var(--muted);
 }
 
-.raw-overline {
+.file-raw .pane-overline {
   line-height: 28px;
   padding-bottom: 8px;
 }
 
-.raw-lines {
-  display: flex;
-  flex-direction: column;
-}
-
 .raw-line {
-  font-family: var(--font-mono);
   font-size: 13px;
   line-height: 28px;
-  color: var(--ink);
   white-space: pre;
 }
 
-.raw-muted {
+.raw-line.is-muted {
   color: var(--muted);
 }
 
-.raw-bold {
+.raw-line.is-bold {
   font-weight: 700;
 }
 
 .file-read {
   flex: 1 1 0;
   min-width: 0;
-  padding: 28px 32px;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
+  padding: 28px 32px;
 }
 
 .read-title {
-  font-family: var(--font-sans);
   font-size: 28px;
   font-weight: 700;
   letter-spacing: -0.025em;
   line-height: 34px;
-  color: var(--ink);
+}
+
+.read-summary,
+.read-check-label {
+  font-family: var(--font-serif);
 }
 
 .read-summary {
-  font-family: var(--font-serif);
   font-size: 20px;
-  font-weight: 400;
   line-height: 30px;
-  color: var(--ink);
-}
-
-.read-actions {
-  display: flex;
-  flex-direction: column;
 }
 
 .read-check-row {
@@ -1338,8 +1113,8 @@ svg {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding-block: 10px;
   min-height: 44px;
+  padding-block: 10px;
   border-top: 1px solid var(--line);
   cursor: pointer;
 }
@@ -1352,23 +1127,25 @@ svg {
   margin: 0;
 }
 
-.read-check-box {
-  width: 14px;
-  height: 14px;
-  border-radius: 4px;
-  border: 1.5px solid var(--ink);
-  flex-shrink: 0;
+/* Checkbox drawing shared by the file viewer and the closer. */
+
+.check {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
+  border: solid var(--ink);
   color: var(--on-ink);
-  background-color: transparent;
   transition:
     background-color var(--t-fast),
-    border-color var(--t-fast);
+    transform var(--t-fast);
 }
 
-.read-check-box svg {
+.check svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
   opacity: 0;
   transform: scale(0.7);
   transition:
@@ -1376,54 +1153,55 @@ svg {
     transform var(--t-fast);
 }
 
-.read-check-input:checked + .read-check-box {
+:checked + .check,
+[aria-checked="true"] > .check {
   background-color: var(--ink);
 }
 
-.read-check-input:checked + .read-check-box svg {
+:checked + .check svg,
+[aria-checked="true"] > .check svg {
   opacity: 1;
-  transform: scale(1);
+  transform: none;
 }
 
-.read-check-input:focus-visible + .read-check-box {
-  box-shadow:
-    0 0 0 2px var(--bg),
-    0 0 0 4px var(--ink);
+.read-check-box {
+  width: 14px;
+  height: 14px;
+  border-width: 1.5px;
+  border-radius: 4px;
+}
+
+.read-check-box svg {
+  stroke-width: 2;
 }
 
 .read-check-label {
-  font-family: var(--font-serif);
   font-size: 17px;
   line-height: 24px;
-  color: var(--ink);
   transition: color var(--t-fast);
 }
 
-.read-check-input:checked ~ .read-check-label {
+:checked ~ .read-check-label {
   color: var(--muted);
   text-decoration: line-through;
 }
 
-/* ==========================================================================
-   Option Space — Dictation
-   ========================================================================== */
-
-.chapter-keycap-col {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-}
+/* Option Space: dictation */
 
 .keycap-btn {
   width: 200px;
   height: 72px;
-  border-radius: 12px;
-  background-color: var(--panel-bg);
-  border: 1px solid var(--line-strong);
-  box-shadow: 0 4px 0 var(--line-strong);
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background-color: var(--panel-bg);
+  box-shadow: 0 4px 0 var(--line-strong);
+  font-size: 24px;
+  font-weight: 400;
+  line-height: 28px;
+  letter-spacing: 0;
   user-select: none;
   touch-action: manipulation;
   transition:
@@ -1442,15 +1220,6 @@ svg {
   box-shadow: 0 1px 0 var(--line-strong);
 }
 
-.keycap-text {
-  font-family: var(--font-mono);
-  font-size: 24px;
-  font-weight: 400;
-  line-height: 28px;
-  letter-spacing: 0;
-  color: var(--ink);
-}
-
 .chapter-dictate-demo {
   flex-direction: column;
   align-items: center;
@@ -1460,65 +1229,53 @@ svg {
 .dictate-field {
   width: 464px;
   max-width: 100%;
+  padding: 20px;
   border: 1.5px solid var(--ink);
   border-radius: var(--radius-md);
-  padding: 20px;
-  background-color: var(--bg);
-}
-
-.dictate-field-inner {
-  position: relative;
-  font-family: var(--font-sans);
   font-size: 15px;
   line-height: 24px;
-  color: var(--ink);
 }
 
-.dictate-placeholder {
-  display: block;
+/* Holds the space of the words not typed yet. */
+.dictate-rest {
   visibility: hidden;
-}
-
-.dictate-live {
-  position: absolute;
-  inset: 0;
-  display: block;
 }
 
 .dictate-hud {
   height: 40px;
-  padding-inline: 18px;
-  border-radius: var(--radius-full);
-  background-color: var(--hud);
-  color: var(--on-onair);
   display: inline-flex;
   align-items: center;
   gap: 12px;
   flex-shrink: 0;
+  padding-inline: 18px;
+  border-radius: var(--radius-full);
+  background-color: var(--hud);
+  color: var(--on-onair);
 }
 
 .hud-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-full);
-  background-color: var(--onair);
-  flex-shrink: 0;
+  background-color: var(--muted);
 }
 
 .hud-label {
-  font-family: var(--font-sans);
+  min-width: 58px; /* the wider "Listening" */
   font-size: 13px;
   line-height: 18px;
-  color: var(--on-onair);
 }
 
 .hud-bars {
+  color: var(--muted);
+}
+
+.dictate-hud[data-state="listening"] .hud-dot {
+  background-color: var(--onair);
+}
+
+.dictate-hud[data-state="listening"] .hud-bars {
   color: var(--on-onair);
 }
 
-/* ==========================================================================
-   32:40 What runs, and where.
-   ========================================================================== */
+/* 32:40 what runs where */
 
 .chapter-privacy-inner {
   display: flex;
@@ -1526,7 +1283,6 @@ svg {
 }
 
 .privacy-content {
-  width: 984px;
   flex: 1 1 0;
   min-width: 0;
   display: flex;
@@ -1534,33 +1290,26 @@ svg {
   gap: 28px;
 }
 
-.privacy-table {
-  display: flex;
-  flex-direction: column;
-}
-
 .privacy-row {
   display: flex;
   align-items: baseline;
   padding-block: 16px;
   border-top: 1px solid var(--line);
-  font-family: var(--font-mono);
   font-size: 14px;
   line-height: 20px;
 }
 
-.privacy-row-first {
-  border-top: 1px solid var(--ink);
+.privacy-row:first-child {
+  border-top-color: var(--ink);
 }
 
-.privacy-row-last {
+.privacy-row:last-child {
   border-bottom: 1px solid var(--line);
 }
 
 .privacy-step {
   width: 240px;
   flex-shrink: 0;
-  color: var(--ink);
 }
 
 .privacy-detail {
@@ -1573,33 +1322,27 @@ svg {
   width: 184px;
   flex-shrink: 0;
   text-align: right;
-  color: var(--ink);
 }
 
-.privacy-where-bold {
+.privacy-where.is-choice {
   font-weight: 700;
 }
 
 .privacy-note {
   max-width: 640px;
-  font-family: var(--font-sans);
   font-size: 15px;
   line-height: 24px;
   color: var(--muted);
 }
 
-/* ==========================================================================
-   Closer
-   ========================================================================== */
+/* Closer */
 
 .closer {
   background-color: var(--surface);
 }
 
 .closer-inner {
-  max-width: var(--page-max);
-  margin-inline: auto;
-  padding: 120px var(--page-pad);
+  padding-block: 120px;
   display: flex;
   align-items: flex-start;
 }
@@ -1607,42 +1350,28 @@ svg {
 .closer-status {
   width: 312px;
   flex-shrink: 0;
-  padding-top: 20px;
   display: flex;
   align-items: center;
   gap: 10px;
+  padding-top: 20px;
+  font-weight: 600;
 }
 
 .stop-square {
   width: 10px;
   height: 10px;
+  flex-shrink: 0;
   border-radius: 2px;
   background-color: var(--ink);
-  flex-shrink: 0;
-}
-
-.closer-status-text {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  line-height: 16px;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
 }
 
 .closer-content {
-  width: 984px;
   flex: 1 1 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 28px;
-}
-
-.closer-check-wrap {
-  display: flex;
-  align-items: center;
 }
 
 .closer-toggle {
@@ -1656,53 +1385,24 @@ svg {
 .closer-checkbox {
   width: 36px;
   height: 36px;
+  border-width: 2.5px;
   border-radius: 8px;
-  border: 2.5px solid var(--ink);
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--on-ink);
-  background-color: transparent;
-  transition:
-    background-color var(--t-fast),
-    transform var(--t-fast);
 }
 
 .closer-checkbox svg {
-  opacity: 0;
-  transform: scale(0.7);
-  transition:
-    opacity var(--t-fast),
-    transform var(--t-fast);
-}
-
-.closer-toggle[aria-checked="true"] .closer-checkbox {
-  background-color: var(--ink);
-}
-
-.closer-toggle[aria-checked="true"] .closer-checkbox svg {
-  opacity: 1;
-  transform: scale(1);
-}
-
-.closer-title-wrap {
-  position: relative;
-  display: inline-block;
+  stroke-width: 2.75;
 }
 
 .closer-title {
   position: relative;
-  display: inline-block;
   font-family: var(--font-serif);
   font-size: 64px;
-  font-weight: 400;
   font-style: italic;
   line-height: 68px;
-  color: var(--ink);
   transition: color var(--t-base);
 }
 
+/* The strike through "Install Minutae." */
 .closer-title::after {
   content: "";
   position: absolute;
@@ -1710,93 +1410,40 @@ svg {
   right: 0;
   top: 54%;
   height: 2.5px;
-  background-color: var(--ink);
-  transform-origin: left center;
+  background-color: var(--muted);
+  transform-origin: left;
   transform: scaleX(0);
   transition: transform var(--t-slow);
 }
 
-.closer-toggle[aria-checked="true"] .closer-title {
+[aria-checked="true"] > .closer-title {
   color: var(--muted);
 }
 
-.closer-toggle[aria-checked="true"] .closer-title::after {
-  background-color: var(--muted);
-  transform: scaleX(1);
+[aria-checked="true"] > .closer-title::after {
+  transform: none;
+}
+
+.closer-meta,
+.closer-actions {
+  padding-left: 60px;
 }
 
 .closer-meta {
-  padding-left: 60px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  line-height: 16px;
   color: var(--muted);
 }
 
 .closer-actions {
-  padding-left: 60px;
   display: flex;
-  gap: 12px;
   flex-wrap: wrap;
+  gap: 12px;
 }
 
-.btn-closer {
-  height: 48px;
-  padding-inline: 28px;
-  font-size: 15px;
-}
-
-/* ==========================================================================
-   Footer
-   ========================================================================== */
-
-.site-footer {
+.closer-actions .btn-secondary {
   background-color: var(--bg);
 }
 
-.footer-inner {
-  max-width: var(--page-max);
-  margin-inline: auto;
-  padding: 27px var(--page-pad);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-}
-
-.footer-left {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--muted);
-}
-
-.footer-links {
-  display: flex;
-  align-items: center;
-  gap: 28px;
-}
-
-.footer-links a {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--muted);
-  border-radius: var(--radius-sm);
-  transition: color var(--t-fast);
-}
-
-.footer-links a:hover {
-  color: var(--ink);
-}
-
-/* ==========================================================================
-   Responsive: 1200–1439px (fluid fit below 1440 before tablet breakpoint)
-   ========================================================================== */
+/* Fluid fit below the drawn 1440 width */
 
 @media (max-width: 1439px) {
   .hero-headline {
@@ -1809,21 +1456,40 @@ svg {
   .tape-inner {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 2px minmax(0, 1fr);
-    padding-inline: var(--page-pad);
-    column-gap: 24px;
     align-items: center;
+    column-gap: 24px;
   }
 
-  .tape-tracks {
+  .tape-tracks,
+  .tape-track,
+  .tape-playhead,
+  .tape-output,
+  .tape-status,
+  .tape-transcript,
+  .tape-line {
     position: static;
+  }
+
+  .tape-tracks,
+  .tape-output,
+  .tape-transcript {
     display: flex;
     flex-direction: column;
     gap: 18px;
+  }
+
+  .tape-tracks,
+  .tape-output {
     min-width: 0;
   }
 
+  .tape-output {
+    height: 100%;
+    justify-content: center;
+    padding-block: 12px;
+  }
+
   .tape-track {
-    position: static;
     width: 100%;
     gap: 16px;
   }
@@ -1838,49 +1504,17 @@ svg {
     min-width: 0;
   }
 
-  .tape-playhead {
-    position: static;
-    height: 100%;
-    width: 2px;
-  }
-
-  .tape-output {
-    position: static;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    gap: 18px;
-    min-width: 0;
-    height: 100%;
-    padding-block: 12px;
-  }
-
-  .tape-status {
-    position: static;
-  }
-
-  .tape-transcript {
-    position: static;
-    display: flex;
-    flex-direction: column;
-    gap: 18px;
-  }
-
   .tape-line {
-    position: static;
     width: auto;
     font-size: 15px;
   }
 
-  .chapter-copy {
+  .chapter-copy,
+  .chapter-file-header .chapter-copy {
     flex: 1 1 0;
     width: auto;
     min-width: 0;
     padding-right: 24px;
-  }
-
-  .chapter-copy-wide {
-    width: auto;
   }
 
   .chapter-demo {
@@ -1900,26 +1534,21 @@ svg {
   }
 }
 
-/* ==========================================================================
-   Responsive: 900–1199px
-   ========================================================================== */
-
 @media (max-width: 1199px) {
   :root {
     --page-pad: 40px;
-  }
-
-  .wordmark {
-    width: auto;
   }
 
   .header-left {
     gap: 32px;
   }
 
+  .wordmark {
+    width: auto;
+  }
+
   .hero-top {
-    padding-top: 64px;
-    padding-bottom: 48px;
+    padding-block: 64px 48px;
   }
 
   .hero-headline {
@@ -1933,12 +1562,10 @@ svg {
   .install-row {
     flex-direction: column;
     align-items: flex-start;
+    padding-bottom: 48px;
   }
 
-  .install-control {
-    width: 100%;
-  }
-
+  .install-control,
   .install-box {
     width: 100%;
   }
@@ -1951,6 +1578,7 @@ svg {
     flex-direction: row;
     align-items: center;
     gap: 16px;
+    margin-bottom: 0;
   }
 
   .chapter-inner {
@@ -1963,17 +1591,14 @@ svg {
     line-height: 56px;
   }
 
+  .chapter-demo {
+    width: 360px;
+  }
+
   .keycap-btn {
     width: 156px;
     height: 64px;
-  }
-
-  .keycap-text {
     font-size: 20px;
-  }
-
-  .chapter-demo {
-    width: 360px;
   }
 
   .speaker-name {
@@ -1984,18 +1609,18 @@ svg {
     width: 124px;
   }
 
-  /* Three-part file viewer: stack READ pane under tree + RAW */
+  /* The READ pane moves under the tree and RAW panes. */
   .file-viewer {
     display: grid;
     grid-template-columns: 280px minmax(0, 1fr);
   }
 
-  .file-tree {
+  .file-tree,
+  .file-raw {
     width: auto;
   }
 
   .file-raw {
-    width: auto;
     border-right: none;
   }
 
@@ -2021,10 +1646,7 @@ svg {
   }
 }
 
-/* ==========================================================================
-   Responsive: < 900px
-   ========================================================================== */
-
+/* Narrow: every row stacks and hit targets grow to 44 px. */
 @media (max-width: 899px) {
   :root {
     --page-pad: 20px;
@@ -2032,6 +1654,10 @@ svg {
 
   .header-inner {
     height: 64px;
+  }
+
+  .wordmark {
+    min-height: 44px;
   }
 
   .primary-nav {
@@ -2055,14 +1681,12 @@ svg {
   .hero-top {
     flex-direction: column;
     align-items: flex-start;
-    padding-top: 44px;
-    padding-bottom: 36px;
     gap: 20px;
+    padding-block: 44px 36px;
   }
 
   .hero-headline {
     font-size: clamp(40px, 11vw, 56px);
-    line-height: 1.04;
     letter-spacing: -0.04em;
   }
 
@@ -2072,14 +1696,12 @@ svg {
     padding-bottom: 0;
   }
 
-  /* Tape: full width, transcript under waveforms */
   .tape-inner {
     display: flex;
     flex-direction: column;
-    height: auto;
-    padding: 24px var(--page-pad);
-    gap: 0;
     align-items: stretch;
+    height: auto;
+    padding-block: 24px;
   }
 
   .tape-tracks {
@@ -2100,15 +1722,14 @@ svg {
     height: 2px;
   }
 
-  .tape-output {
-    height: auto;
-    padding-top: 18px;
-    padding-bottom: 4px;
+  .tape-output,
+  .tape-transcript {
     gap: 14px;
   }
 
-  .tape-transcript {
-    gap: 14px;
+  .tape-output {
+    height: auto;
+    padding-block: 18px 4px;
   }
 
   .tape-line {
@@ -2118,8 +1739,7 @@ svg {
   }
 
   .install-row {
-    padding-top: 28px;
-    padding-bottom: 36px;
+    padding-block: 28px 36px;
   }
 
   .install-tab {
@@ -2128,17 +1748,17 @@ svg {
   }
 
   .install-box {
-    padding: 10px 10px 10px 14px;
     gap: 10px;
-  }
-
-  .install-command {
-    font-size: 13px;
+    padding: 10px 10px 10px 14px;
   }
 
   .copy-btn {
     min-height: 44px;
     padding-inline: 16px;
+  }
+
+  .install-note {
+    min-height: 36px; /* every note takes two lines on a phone */
   }
 
   .install-meta {
@@ -2147,7 +1767,6 @@ svg {
     gap: 2px;
   }
 
-  /* Transport: play, timecode, progress segments without labels */
   .transport-slot,
   .transport {
     height: 60px;
@@ -2174,7 +1793,6 @@ svg {
     display: none;
   }
 
-  /* Chapters: stack timestamp, text, component */
   .chapter-inner {
     padding-block: 56px;
   }
@@ -2197,7 +1815,8 @@ svg {
     line-height: 48px;
   }
 
-  .chapter-copy {
+  .chapter-copy,
+  .chapter-file-header .chapter-copy {
     width: 100%;
     padding-right: 0;
   }
@@ -2208,7 +1827,7 @@ svg {
   }
 
   .chapter-body,
-  .chapter-body-wide {
+  .chapter-file-header .chapter-body {
     width: 100%;
     font-size: 16px;
     line-height: 26px;
@@ -2219,7 +1838,10 @@ svg {
     justify-content: flex-start;
   }
 
-  .prompt-card {
+  .prompt-card,
+  .speaker-list,
+  .privacy-content,
+  .closer-content {
     width: 100%;
   }
 
@@ -2227,15 +1849,7 @@ svg {
     min-height: 44px;
   }
 
-  .speaker-list {
-    width: 100%;
-  }
-
-  .speaker-name {
-    flex: 1 1 0;
-    width: auto;
-  }
-
+  .speaker-name,
   .speaker-track {
     flex: 1 1 0;
     width: auto;
@@ -2255,15 +1869,10 @@ svg {
   .file-read {
     width: 100%;
     padding: 20px;
-    border-left: none;
-    border-right: none;
+    border-inline: none;
   }
 
   .file-raw {
-    border-top: 1px solid var(--line);
-  }
-
-  .file-read {
     border-top: 1px solid var(--line);
   }
 
@@ -2282,33 +1891,24 @@ svg {
     height: 60px;
   }
 
-  .privacy-content {
-    width: 100%;
-  }
-
   .privacy-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    row-gap: 4px;
-    column-gap: 12px;
+    gap: 4px 12px;
   }
 
   .privacy-step {
     width: auto;
-    grid-column: 1;
-    grid-row: 1;
     font-weight: 600;
   }
 
   .privacy-where {
     width: auto;
-    grid-column: 2;
-    grid-row: 1;
+    grid-area: 1 / 2;
   }
 
   .privacy-detail {
     grid-column: 1 / -1;
-    grid-row: 2;
   }
 
   .closer-inner {
@@ -2320,10 +1920,6 @@ svg {
   .closer-status {
     width: auto;
     padding-top: 0;
-  }
-
-  .closer-content {
-    width: 100%;
   }
 
   .closer-toggle {
@@ -2350,7 +1946,7 @@ svg {
     flex-direction: column;
     align-items: flex-start;
     gap: 16px;
-    padding-bottom: 84px; /* clearance when transport docks on narrow screens */
+    padding-bottom: 84px; /* clear of the docked transport */
   }
 
   .footer-links {
@@ -2363,9 +1959,60 @@ svg {
   }
 }
 
-/* ==========================================================================
-   Accessibility: Reduced Motion & Forced Colors
-   ========================================================================== */
+/* The header still fits a 360 px phone. */
+@media (max-width: 389px) {
+  .wordmark {
+    font-size: 20px;
+  }
+
+  .header-right {
+    gap: 8px;
+  }
+
+  .theme-switcher {
+    gap: 0;
+    padding: 2px;
+  }
+
+  .theme-option {
+    width: 34px;
+  }
+
+  .btn-nav {
+    padding-inline: 12px;
+  }
+}
+
+/* Accessibility */
+
+/* Focus ring (DESIGN-LANGUAGE §7). Last, and prefixed, so no component shadow can hide it.
+   The transparent outline is what forced-colors mode paints. */
+:root :focus-visible,
+:root .read-check-input:focus-visible + .check {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  box-shadow:
+    0 0 0 2px var(--bg),
+    0 0 0 4px var(--ink);
+}
+
+/* The tape spans the page, so its ring is drawn inside. */
+:root .tape-toggle:focus-visible {
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .transport.is-docked {
+    animation: transport-dock var(--t-base) both;
+  }
+
+  .tape-band.is-live .dot,
+  .prompt-card[data-state="recording"] .dot,
+  .dictate-hud[data-state="listening"] .dot {
+    animation: onair-pulse 1.6s ease-in-out infinite;
+  }
+}
 
 @media (prefers-reduced-motion: reduce) {
   html {
@@ -2375,49 +2022,19 @@ svg {
   *,
   *::before,
   *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-
-  .onair-dot.is-pulsing,
-  .prompt-dot.is-pulsing,
-  .hud-dot.is-pulsing {
-    animation: none !important;
-    opacity: 1;
-  }
-
-  .file-tree.is-pending .tree-line {
-    opacity: 1;
-    transform: none;
-  }
-
-  .prompt-card.is-entering {
-    opacity: 1;
-    transform: none;
+    transition: none !important;
   }
 }
 
 @media (forced-colors: active) {
-  :focus-visible {
-    outline: 2px solid Highlight;
-    outline-offset: 2px;
-    box-shadow: none;
-  }
-
-  .read-check-input:focus-visible + .read-check-box {
-    outline: 2px solid Highlight;
-    outline-offset: 2px;
-    box-shadow: none;
-  }
-
-  .tape-playhead,
-  .onair-dot,
-  .prompt-dot,
-  .hud-dot,
-  .transport-bar-fill,
-  .wordmark-mark,
-  .stop-square {
+  .dot,
+  .tape-playhead {
     forced-color-adjust: none;
+  }
+
+  .stop-square,
+  .transport-bar::after,
+  .closer-title::after {
+    background-color: CanvasText;
   }
 }

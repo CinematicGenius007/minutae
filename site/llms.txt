@@ -1,6 +1,6 @@
 # Minutae
 
-> A local-first meeting recorder and dictation app that runs on your computer and writes plain Markdown. Free, MIT-licensed, open source, no account.
+> A local-first meeting recorder and dictation app that runs on your computer and writes plain Markdown. Free, MIT-licensed, open source, no account. No release is published yet; build it from source.
 
 ## What it does
 
@@ -28,7 +28,23 @@ Data folders (untouched by installs, updates, or uninstalls):
 - Windows: `%APPDATA%\Minutae\`
 - Linux: `$XDG_DATA_HOME/minutae/` (default `~/.local/share/minutae/`)
 
-## Install commands
+## Install
+
+No release has been published yet. Today Minutae is installed by building it from source, which needs Rust, Bun and cmake (see the [source build guide](https://github.com/CinematicGenius007/minutae/blob/main/docs/install/source.md)).
+
+macOS 13+ and Linux (x86_64 and arm64):
+
+```sh
+git clone https://github.com/CinematicGenius007/minutae && cd minutae && sh scripts/install.sh --from-source
+```
+
+Windows 10/11 (PowerShell). The installer is written to `target\release\bundle\nsis\`:
+
+```powershell
+git clone https://github.com/CinematicGenius007/minutae; cd minutae; bun install; bun run build
+```
+
+The two commands below work only after the first release is published.
 
 macOS 13+ and Linux x86_64:
 
@@ -42,12 +58,6 @@ Windows 10/11 (x64, via Scoop):
 scoop install https://github.com/CinematicGenius007/minutae/releases/latest/download/minutae.json
 ```
 
-Build from source (macOS / Linux):
-
-```sh
-git clone https://github.com/CinematicGenius007/minutae && cd minutae && sh scripts/install.sh --from-source
-```
-
 ## Links
 
 - [Home page](https://minutae.vercel.app/)
@@ -55,5 +65,5 @@ git clone https://github.com/CinematicGenius007/minutae && cd minutae && sh scri
 - [Install brief for AI agents](https://minutae.vercel.app/agents.md)
 - [Authoritative agent install guide in repository](https://github.com/CinematicGenius007/minutae/blob/main/docs/agents/INSTALL.md)
 - [Install guides](https://github.com/CinematicGenius007/minutae/tree/main/docs/install)
-- [Releases](https://github.com/CinematicGenius007/minutae/releases)
+- [Releases (none published yet)](https://github.com/CinematicGenius007/minutae/releases)
 - [Source repository (MIT)](https://github.com/CinematicGenius007/minutae)
