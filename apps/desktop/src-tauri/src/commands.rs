@@ -153,7 +153,11 @@ pub async fn update_settings(app: AppHandle, patch: serde_json::Value) -> R<AppS
         )?;
     }
     if old.summaries_path != new.summaries_path || old.recordings_path != new.recordings_path {
-        meeting_content::remember_storage(&st, &old).await?;
+        let folders = meeting_content::ContentFolders::current(&old);
+        st.store
+            .call(move |store| meeting_content::remember_storage(store, &folders))
+            .await
+            .map_err(err)?;
     }
     let shortcuts_changed =
         old.record_shortcut != new.record_shortcut || old.dictation_hotkey != new.dictation_hotkey;
@@ -180,6 +184,9 @@ pub async fn update_settings(app: AppHandle, patch: serde_json::Value) -> R<AppS
     *st.settings.write().unwrap_or_else(|e| e.into_inner()) = new.clone();
     crate::apply_settings(&app, &old, &new);
     let _ = app.emit(ev::SETTINGS_CHANGED, &new);
+    if old.summaries_path != new.summaries_path || old.recordings_path != new.recordings_path {
+        crate::spawn_export_backfill(&app);
+    }
     if old.dictation_retention_days != new.dictation_retention_days {
         crate::dictation::prune(&app).await;
     }
@@ -538,7 +545,7 @@ pub async fn retry_meeting(app: AppHandle, id: String) -> R<()> {
 }
 
 #[tauri::command]
-pub async fn set_action_done(app: AppHandle, id: String, done: bool) -> R<()> {
+pub async fn set_action_done(app: AppHandle, id: String, done: bool) -> R<dto::ActionChangeResult> {
     crate::meeting_content::set_action_done(&app, &id, done).await
 }
 

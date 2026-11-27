@@ -77,6 +77,18 @@ pub(crate) fn write_summary(tx: &rusqlite::Connection, s: &Summary) -> Result<()
     Ok(())
 }
 
+/// A checklist with a completed item is the user's, as in the V5 migration, so a
+/// later summary doesn't replace it.
+pub(crate) fn curate_completed(tx: &rusqlite::Connection, id: MeetingId) -> Result<()> {
+    tx.execute(
+        "UPDATE meetings SET checklist_curated=1 WHERE id=?1 AND EXISTS (
+           SELECT 1 FROM action_items WHERE meeting_id=?1 AND done=1
+         )",
+        [id.to_string()],
+    )?;
+    Ok(())
+}
+
 /// User changes curate the whole checklist, including intentional deletions.
 pub enum ActionChange {
     Add(ActionItem, Option<u64>),

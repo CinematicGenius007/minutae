@@ -73,16 +73,35 @@ impl Store {
         })
     }
 
-    /// A known folder was offline while legacy exports had no tracked paths.
-    pub fn defer_summary_scan(&self, folder: &str) -> Result<()> {
-        self.write(|c| {
-            c.execute(
-                "INSERT OR IGNORE INTO pending_summary_scans (meeting_id, folder)
-                 SELECT m.id, ?1 FROM meetings m JOIN summaries s ON s.meeting_id=m.id
-                 WHERE m.markdown_file IS NULL AND m.markdown_removed=0",
+    /// Remember a summaries folder. The first time, every meeting that may still
+    /// have an untracked export there is queued to be searched for in it.
+    pub fn remember_summaries_folder(&self, folder: &str) -> Result<()> {
+        self.transaction(|tx| {
+            let added = tx.execute(
+                "INSERT OR IGNORE INTO storage_folders VALUES ('summaries', ?1)",
                 [folder],
             )?;
+            if added == 1 {
+                tx.execute(
+                    "INSERT OR IGNORE INTO pending_summary_scans (meeting_id, folder)
+                     SELECT m.id, ?1 FROM meetings m JOIN summaries s ON s.meeting_id=m.id
+                     WHERE m.markdown_file IS NULL AND m.markdown_removed=0",
+                    [folder],
+                )?;
+            }
             Ok(())
+        })
+    }
+
+    /// Every folder search still owed to a meeting.
+    pub fn all_pending_summary_scans(&self) -> Result<Vec<(MeetingId, String)>> {
+        self.read(|c| {
+            let mut stmt = c.prepare("SELECT meeting_id, folder FROM pending_summary_scans")?;
+            Ok(stmt
+                .query_map([], |r| {
+                    Ok((crate::parse_uuid(&r.get::<_, String>(0)?)?, r.get(1)?))
+                })?
+                .collect::<rusqlite::Result<_>>()?)
         })
     }
 

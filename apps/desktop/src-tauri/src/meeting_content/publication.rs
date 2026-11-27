@@ -7,7 +7,9 @@ use std::path::Path;
 use minutae_core::{Meeting, MeetingId, Summary};
 use minutae_store::{ActionItemRow, Store, StoreError};
 
-use super::files::{ExportChange, LocalMeetingFiles, MeetingFiles, change_export, present};
+use super::files::{
+    ExportChange, LocalMeetingFiles, MeetingFiles, change_export, not_owned, present,
+};
 use super::markdown_path;
 use crate::pipeline::summary_file_name;
 
@@ -29,6 +31,10 @@ fn checklist_lines(actions: &[ActionItemRow], newline: &str) -> String {
 }
 
 const ACTION_HEADING: &str = "## Action Items";
+
+const CHECKLIST_NOTICE: &str = "Saved in Minutae. The Markdown file was left unchanged because its Action Items checklist couldn’t be identified safely.";
+const UNVERIFIED_NOTICE: &str = "Saved in Minutae. The Markdown file was left unchanged because it can’t be verified as this meeting’s export.";
+const DETACHED_NOTICE: &str = "Saved in Minutae. The Markdown file was left unchanged because the summary it came from was removed from Minutae.";
 
 fn edit_checklist(markdown: &str, actions: &[ActionItemRow]) -> io::Result<Option<String>> {
     use pulldown_cmark::{Event, Options, Parser, Tag};
@@ -136,17 +142,28 @@ fn edit_checklist(markdown: &str, actions: &[ActionItemRow]) -> io::Result<Optio
     Ok(Some(result))
 }
 
-fn render_actions(markdown: &str, actions: &[ActionItemRow]) -> io::Result<String> {
-    if let Some(edited) = edit_checklist(markdown, actions)? {
-        return Ok(edited);
+/// The checklist brought up to date, or None when it cannot be located safely.
+/// A missing section is only added to Markdown known to be Minutae's own text
+/// (`unedited`).
+fn update_checklist(markdown: &str, actions: &[ActionItemRow], unedited: bool) -> Option<String> {
+    match edit_checklist(markdown, actions) {
+        Ok(Some(edited)) => Some(edited),
+        Ok(None) if unedited && actions.is_empty() => Some(markdown.to_owned()),
+        Ok(None) if unedited => {
+            let appended = format!(
+                "{}\n\n{ACTION_HEADING}\n{}",
+                markdown.trim_end(),
+                checklist_lines(actions, "\n")
+            );
+            // An unclosed code fence, for one, would swallow the new section.
+            matches!(edit_checklist(&appended, actions), Ok(Some(again)) if again == appended)
+                .then_some(appended)
+        }
+        Ok(None) | Err(_) => None,
     }
-    Ok(format!(
-        "{}\n\n{ACTION_HEADING}\n{}",
-        markdown.trim_end(),
-        checklist_lines(actions, "\n")
-    ))
 }
 
+#[derive(Clone, Copy)]
 enum Publication<'a> {
     Checklist,
     Summary(Option<&'a str>),
@@ -157,15 +174,28 @@ fn publish_export<T>(
     id: MeetingId,
     publication: Publication<'_>,
     update: impl FnOnce(&mut minutae_store::PublishChecklist<'_>) -> minutae_store::Result<T>,
-) -> minutae_store::Result<T> {
+) -> minutae_store::Result<(T, Option<&'static str>)> {
     let io_error =
         |e: io::Error| StoreError::Invalid(format!("The summary Markdown couldn't be saved: {e}"));
     let mut rollback = None;
+    let mut notice = None;
     let outcome = update(&mut |markdown, actions| {
-        let rendered = render_actions(markdown, actions).map_err(io_error)?;
+        // The copy in the database. A checklist change is saved even when this
+        // copy has no checklist that can be rewritten.
+        let rendered = match (update_checklist(markdown, actions, true), publication) {
+            (Some(rendered), _) => rendered,
+            (None, Publication::Checklist) => markdown.to_owned(),
+            (None, Publication::Summary(_)) => {
+                return Err(StoreError::Invalid(
+                    "The new summary has no usable Action Items checklist.".into(),
+                ));
+            }
+        };
         if let Some(path) = path {
             let mut change = None;
-            change_export(path, id, |previous| {
+            let mut inspected = false;
+            let result = change_export(path, id, |previous| {
+                inspected = true;
                 let (bytes, keep_edited_copy) = match publication {
                     Publication::Summary(baseline) => (
                         rendered.as_bytes().to_vec(),
@@ -175,13 +205,23 @@ fn publish_export<T>(
                         let Some(previous) = previous else {
                             return Ok(None);
                         };
-                        let text = std::str::from_utf8(previous).map_err(io::Error::other)?;
-                        let updated = edit_checklist(text, actions)?.ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "The Markdown export has no Action Items section.",
-                            )
-                        })?;
+                        // No stored summary: this export outlived it, and its
+                        // checklist is no longer the app's to rewrite.
+                        if markdown.is_empty() {
+                            notice = Some(DETACHED_NOTICE);
+                            return Ok(None);
+                        }
+                        let unedited = previous == markdown.as_bytes();
+                        let Some(updated) = std::str::from_utf8(previous)
+                            .ok()
+                            .and_then(|text| update_checklist(text, actions, unedited))
+                        else {
+                            notice = Some(CHECKLIST_NOTICE);
+                            return Ok(None);
+                        };
+                        if updated.as_bytes() == previous {
+                            return Ok(None);
+                        }
                         (updated.into_bytes(), false)
                     }
                 };
@@ -190,8 +230,17 @@ fn publish_export<T>(
                     bytes,
                     keep_edited_copy,
                 }))
-            })
-            .map_err(io_error)?;
+            });
+            match result {
+                Err(error)
+                    if !inspected
+                        && matches!(publication, Publication::Checklist)
+                        && not_owned(&error) =>
+                {
+                    notice = Some(UNVERIFIED_NOTICE);
+                }
+                result => result.map_err(io_error)?,
+            }
             rollback = change;
         }
         Ok(rendered)
@@ -214,14 +263,16 @@ fn publish_export<T>(
         })
         .map_err(io_error)?;
     }
-    outcome
+    outcome.map(|value| (value, notice))
 }
 
+/// Saves a checklist change. The second value explains why an existing Markdown
+/// file was left as it was.
 pub(super) fn publish_checklist<T>(
     path: Option<&Path>,
     id: MeetingId,
     update: impl FnOnce(&mut minutae_store::PublishChecklist<'_>) -> minutae_store::Result<T>,
-) -> minutae_store::Result<T> {
+) -> minutae_store::Result<(T, Option<&'static str>)> {
     publish_export(path, id, Publication::Checklist, update)
 }
 
@@ -253,4 +304,5 @@ pub fn publish_summary(
         Publication::Summary(baseline.as_ref().map(|s| s.markdown.as_str())),
         |publish| store.publish_summary(summary, title, &path.to_string_lossy(), publish),
     )
+    .map(|(saved, _)| saved)
 }

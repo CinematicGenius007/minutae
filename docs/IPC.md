@@ -70,14 +70,19 @@ Mock switches for these screens: `?os=linux&session=wayland` (portal), `&portal=
   `seek(segment.startMs, true)`. Follow playback with `currentMs` and the segment’s half-open
   interval. A timestamp can still be displayed when audio is unavailable.
 - `add_action_item(id, item)`, `edit_action_item(id, itemId, item)` and
-  `delete_action_item(id, itemId)` manage the checklist. Add and edit return an `ActionItem`.
-  `ActionItemInput` is a full replacement for text, owner, due and the optional `sourceMs`.
-  Omitted or null optional fields clear their value. Edit preserves completion. Existing
-  `set_action_done` also synchronizes the checklist. The saved summary and its existing Markdown
-  export reflect every change. For the file on disk, only the checklist is replaced. If Minutae
-  cannot identify one unambiguous Action Items checklist in a verified export, the command
-  returns an error and leaves the file and in-app checklist as they were. An edit leaves an
-  absent export absent.
+  `delete_action_item(id, itemId)` manage the checklist. Add and edit return a
+  `SavedActionItem { item, markdownNotice }`; delete and the existing `set_action_done` return
+  `ActionChangeResult { markdownNotice }`. `ActionItemInput` is a full replacement for text,
+  owner, due and the optional `sourceMs`. Omitted or null optional fields clear their value.
+  Edit preserves completion. Every change is saved in the app. In the Markdown file only the
+  checklist is replaced; an export that is byte for byte what Minutae saved, but has no
+  Action Items section, gains one. `markdownNotice` is a sentence to show the user when an
+  existing file was left unchanged: it was edited and no single checklist can be located, it
+  can't be verified as this meeting's export, or it was kept after the in-app summary was
+  deleted. Otherwise it is null. A saved summary whose own checklist is ambiguous (older
+  imports) keeps its text and never blocks a change. A command fails, with the database and
+  file unchanged, only on a real read or write failure such as an unavailable folder. An edit
+  leaves an absent export absent.
 - `summarize_again(id)` queues a summary job for a finished meeting with a saved transcript.
   The meeting stays `done` with progress while the job runs. On failure, `meeting.failure` reports
   the error and the previous summary and export remain available. A successful rerun writes the
@@ -93,10 +98,13 @@ Mock switches for these screens: `?os=linux&session=wayland` (portal), `&portal=
   independent of database pages and indexes. A null size indicates a file could not be measured.
   `blockedReason` explains why a part cannot be removed. `markdownNotice` is a message when no
   export was found in known folders, otherwise null. On upgrade Minutae searches the current
-  and default folders and records verified paths. It remembers previous configured folders
-  from then on. If a known folder was offline during the scan, legacy exports with no saved
-  path can remain pending until the folder is available. Custom folders changed before this
-  upgrade may be unknown to Minutae.
+  and default folders in the background and records verified paths. It remembers previous
+  configured folders from then on. A newly remembered folder is searched once for meetings with
+  no saved path; busy meetings are returned to later, and opening, changing or deleting a
+  meeting searches its known folders first. Changing storage settings and starting a recording
+  wait for none of this. If a known folder is offline, legacy exports with no saved path remain
+  pending until the folder is available. Custom folders changed before this upgrade may be
+  unknown to Minutae.
 - `delete_meeting_parts(id, parts) → MeetingDeletion` accepts any nonempty selection on a saved
   meeting. Audio, transcript, in-app summary and Markdown are independent. The summary includes
   decisions, action items and marks. An export kept during summary deletion remains readable.
@@ -105,7 +113,8 @@ Mock switches for these screens: `?os=linux&session=wayland` (portal), `&portal=
   `markdownNotice` explains the absence and Markdown is omitted from `deleted`. File cleanup uses the default or configured storage folders
   and locations saved for the meeting, including folders used before a settings change.
   User-chosen storage roots may resolve through symlinks. Cleanup opens files and directories
-  below the root without following symlinks. It removes only recorder-owned names from the
+  below the root without following symlinks. Exports are moved into place without replacing
+  anything, including on FAT, exFAT and network disks. It removes only recorder-owned names from the
   meeting's ID directory, plus the exact imported audio filename when an import record verifies
   it. Non-empty directories are left in place. Markdown must have a complete frontmatter block
   with exactly one matching meeting ID. If cleanup is interrupted, the next file operation can
@@ -128,5 +137,5 @@ Mock switches for these screens: `?os=linux&session=wayland` (portal), `&portal=
   reports the affected locations or errors even if the library was erased.
 
 Browser mock switches include `?tape=ready|missing|deleted|unreadable`,
-`?meetingDelete=blocked|partial`, `?resummarize=failed|running` and
+`?meetingDelete=blocked|partial`, `?resummarize=failed|running`, `?checklist=unchanged` and
 `?state=recording&discard=blocked|cleanupError`.

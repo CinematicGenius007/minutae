@@ -7,7 +7,7 @@ import type {
   HudState, InputDevice, LevelFrame, MeetingDetail, Moment, ModelInfo, Permissions, PlatformInfo, Progress,
   ProviderStatus, RecordingState, SearchHit, SearchKind, ShortcutStatus, StorageUsage, UsageMonth, Uuid, WhisperModel, Route,
   Meeting, LegacyScan, ImportProgress, ImportFinished, UpdateStatus,
-  ActionItem, ActionItemInput, MeetingContents, MeetingDeletion, MeetingPart, MeetingWaveform,
+  ActionChangeResult, SavedActionItem, ActionItemInput, MeetingContents, MeetingDeletion, MeetingPart, MeetingWaveform,
   RecordingDiscard, RecordingDiscardInfo, WaveformRange,
 } from "./types";
 import { mockInvoke, mockListen } from "./mock";
@@ -69,16 +69,17 @@ export const api = {
   renameMeeting: (id: Uuid, title: string) => call<void>("rename_meeting", { id, title }),
   deleteMeeting: (id: Uuid) => call<void>("delete_meeting", { id }),
   retryMeeting: (id: Uuid) => call<void>("retry_meeting", { id }),
-  setActionDone: (id: Uuid, done: boolean) => call<void>("set_action_done", { id, done }),
+  setActionDone: (id: Uuid, done: boolean) => call<ActionChangeResult>("set_action_done", { id, done }),
   renameSpeaker: (speakerId: Uuid, name: string) => call<void>("rename_speaker", { speakerId, name }),
   summaryMarkdown: (id: Uuid) => call<string>("summary_markdown", { id }),
 
   // meeting tape and content management
   meetingWaveformLevels: (id: Uuid, buckets: number, range?: WaveformRange) =>
     call<MeetingWaveform>("meeting_waveform_levels", { id, buckets, range: range ?? null }),
-  addActionItem: (id: Uuid, item: ActionItemInput) => call<ActionItem>("add_action_item", { id, item }),
-  editActionItem: (id: Uuid, itemId: Uuid, item: ActionItemInput) => call<ActionItem>("edit_action_item", { id, itemId, item }),
-  deleteActionItem: (id: Uuid, itemId: Uuid) => call<void>("delete_action_item", { id, itemId }),
+  /** Checklist changes (and `setActionDone`) report when the Markdown file was left unchanged. */
+  addActionItem: (id: Uuid, item: ActionItemInput) => call<SavedActionItem>("add_action_item", { id, item }),
+  editActionItem: (id: Uuid, itemId: Uuid, item: ActionItemInput) => call<SavedActionItem>("edit_action_item", { id, itemId, item }),
+  deleteActionItem: (id: Uuid, itemId: Uuid) => call<ActionChangeResult>("delete_action_item", { id, itemId }),
   summarizeAgain: (id: Uuid) => call<void>("summarize_again", { id }),
   /** Includes a notice when no Markdown export was found in known folders. */
   meetingContents: (id: Uuid) => call<MeetingContents>("meeting_contents", { id }),

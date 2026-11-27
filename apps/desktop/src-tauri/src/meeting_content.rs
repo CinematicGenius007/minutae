@@ -11,10 +11,12 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::commands::uuid;
 use crate::dto::{
-    ActionItem, ActionItemInput, MeetingContents, MeetingDeletion, MeetingPart, MeetingPartFailure,
-    MeetingPartInfo,
+    ActionChangeResult, ActionItem, ActionItemInput, MeetingContents, MeetingDeletion, MeetingPart,
+    MeetingPartFailure, MeetingPartInfo, SavedActionItem,
 };
-use crate::state::{AppState, emit_meetings_changed, recordings_root, summaries_root};
+use crate::state::{
+    AppState, MeetingOperations, emit_meetings_changed, recordings_root, summaries_root,
+};
 
 mod erase;
 mod files;
@@ -56,10 +58,16 @@ fn known_roots(
     Ok(roots)
 }
 
+/// The app's own summaries folder holds nothing to search for until it exists.
+fn nothing_to_search(root: &Path, default: &Path, error: &io::Error) -> bool {
+    root == default && error.kind() == io::ErrorKind::NotFound
+}
+
 fn known_markdown_paths(
     store: &Store,
     files: &LocalMeetingFiles,
     roots: &BTreeSet<PathBuf>,
+    default: &Path,
     id: MeetingId,
 ) -> minutae_store::Result<BTreeSet<PathBuf>> {
     let mut paths: BTreeSet<_> = store
@@ -73,8 +81,10 @@ fn known_markdown_paths(
         .map(PathBuf::from)
         .collect();
     for root in roots {
-        let Ok(found) = files.find_markdowns(root, id) else {
-            continue;
+        let found = match files.find_markdowns(root, id) {
+            Ok(found) => found,
+            Err(error) if nothing_to_search(root, default, &error) => Vec::new(),
+            Err(_) => continue,
         };
         for path in found {
             if paths.insert(path.clone()) {
@@ -102,8 +112,9 @@ fn saved_markdown_path(
     {
         return Ok(primary);
     }
-    let roots = known_roots(store, "summaries", dir, paths::summaries_dir())?;
-    let paths = known_markdown_paths(store, files, &roots, id)?;
+    let default = paths::summaries_dir();
+    let roots = known_roots(store, "summaries", dir, default.clone())?;
+    let paths = known_markdown_paths(store, files, &roots, &default, id)?;
     Ok(paths
         .into_iter()
         .find(|path| {
@@ -118,11 +129,11 @@ async fn change_action(
     app: &AppHandle,
     id: MeetingId,
     change: ActionChange,
-) -> R<Option<ActionItem>> {
+) -> R<(Option<ActionItem>, ActionChangeResult)> {
     let st = app.state::<AppState>();
     let _operation = st.meeting_ops.lock(id).await;
     let dir = summaries_root(&st.settings());
-    let row = st
+    let (row, notice) = st
         .store
         .call(move |store| {
             let path = markdown_path(store, &dir, id)?;
@@ -133,7 +144,22 @@ async fn change_action(
         .await
         .map_err(|e| e.to_string())?;
     emit_meetings_changed(app, Some(id));
-    Ok(row.as_ref().map(ActionItem::from))
+    Ok((
+        row.as_ref().map(ActionItem::from),
+        ActionChangeResult {
+            markdown_notice: notice,
+        },
+    ))
+}
+
+fn saved_action(
+    (item, change): (Option<ActionItem>, ActionChangeResult),
+    missing: &str,
+) -> R<SavedActionItem> {
+    Ok(SavedActionItem {
+        item: item.ok_or_else(|| missing.to_string())?,
+        markdown_notice: change.markdown_notice,
+    })
 }
 
 fn action_input(item: ActionItemInput) -> R<(minutae_core::ActionItem, Option<u64>)> {
@@ -164,11 +190,14 @@ fn action_id(id: &str) -> R<i64> {
 }
 
 #[tauri::command]
-pub async fn add_action_item(app: AppHandle, id: String, item: ActionItemInput) -> R<ActionItem> {
+pub async fn add_action_item(
+    app: AppHandle,
+    id: String,
+    item: ActionItemInput,
+) -> R<SavedActionItem> {
     let (item, source) = action_input(item)?;
-    change_action(&app, uuid(&id)?, ActionChange::Add(item, source))
-        .await?
-        .ok_or_else(|| "The action item couldn't be added.".into())
+    let saved = change_action(&app, uuid(&id)?, ActionChange::Add(item, source)).await?;
+    saved_action(saved, "The action item couldn't be added.")
 }
 
 #[tauri::command]
@@ -177,25 +206,29 @@ pub async fn edit_action_item(
     id: String,
     item_id: String,
     item: ActionItemInput,
-) -> R<ActionItem> {
+) -> R<SavedActionItem> {
     let (item, source) = action_input(item)?;
-    change_action(
+    let saved = change_action(
         &app,
         uuid(&id)?,
         ActionChange::Edit(action_id(&item_id)?, item, source),
     )
-    .await?
-    .ok_or_else(|| "The action item couldn't be edited.".into())
+    .await?;
+    saved_action(saved, "The action item couldn't be edited.")
 }
 
 #[tauri::command]
-pub async fn delete_action_item(app: AppHandle, id: String, item_id: String) -> R<()> {
+pub async fn delete_action_item(
+    app: AppHandle,
+    id: String,
+    item_id: String,
+) -> R<ActionChangeResult> {
     change_action(&app, uuid(&id)?, ActionChange::Delete(action_id(&item_id)?))
         .await
-        .map(|_| ())
+        .map(|(_, change)| change)
 }
 
-pub async fn set_action_done(app: &AppHandle, id: &str, done: bool) -> R<()> {
+pub async fn set_action_done(app: &AppHandle, id: &str, done: bool) -> R<ActionChangeResult> {
     let row = action_id(id)?;
     let mid = app
         .state::<AppState>()
@@ -205,7 +238,7 @@ pub async fn set_action_done(app: &AppHandle, id: &str, done: bool) -> R<()> {
         .map_err(|e| e.to_string())?;
     change_action(app, mid, ActionChange::SetDone(row, done))
         .await
-        .map(|_| ())
+        .map(|(_, change)| change)
 }
 
 #[tauri::command]
@@ -410,15 +443,11 @@ fn ledger(
         audio_blocked,
     );
 
-    let roots = known_roots(
-        store,
-        "summaries",
-        &folders.summaries,
-        folders.data.join("summaries"),
-    )
-    .map_err(|e| e.to_string())?;
-    let markdown =
-        known_markdown_paths(store, &LocalMeetingFiles, &roots, id).map_err(|e| e.to_string())?;
+    let default = folders.data.join("summaries");
+    let roots = known_roots(store, "summaries", &folders.summaries, default.clone())
+        .map_err(|e| e.to_string())?;
+    let markdown = known_markdown_paths(store, &LocalMeetingFiles, &roots, &default, id)
+        .map_err(|e| e.to_string())?;
     let mut markdown_path = None;
     let mut markdown_bytes = None;
     let mut markdown_error = None;
@@ -697,52 +726,84 @@ pub async fn delete_entire_meeting(app: AppHandle, id: String) -> R<()> {
     }
 }
 
-/// Save verified paths as well as the folder itself. A folder that is offline
-/// during a settings change is still searched when it becomes available.
-pub(crate) async fn remember_storage(state: &AppState, settings: &AppSettings) -> R<()> {
-    let folders = ContentFolders::current(settings);
-    let scan = state
-        .store
-        .call(move |store| scan_storage(store, &folders))
-        .await
-        .map_err(|e| e.to_string())?;
-    for (id, path) in scan {
-        let operation = state.meeting_ops.lock(id).await;
-        state
-            .store
-            .call(move |store| {
-                let _operation = operation;
-                if LocalMeetingFiles
-                    .markdown_bytes(&path, id)
-                    .is_ok_and(|size| size.is_some())
-                {
-                    store.remember_meeting_export(id, &path.to_string_lossy())?;
-                }
-                Ok(())
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+/// Record where meeting files may be. This runs under `storage_ops`, which
+/// starting a recording also takes, so it must never touch the filesystem or
+/// wait for a meeting. [`backfill_exports`] searches the folders afterwards.
+pub(crate) fn remember_storage(
+    store: &Store,
+    folders: &ContentFolders,
+) -> minutae_store::Result<()> {
+    store.remember_storage_folder("recordings", &folders.recordings.to_string_lossy())?;
+    for root in BTreeSet::from([folders.data.join("summaries"), folders.summaries.clone()]) {
+        store.remember_summaries_folder(&root.to_string_lossy())?;
     }
     Ok(())
 }
 
-fn scan_storage(
+/// Search the folders still owed to meetings and save the verified exports.
+/// Busy meetings are skipped; the number skipped is returned so the caller can
+/// come back. An unavailable folder stays queued. Do not hold `storage_ops`.
+pub(crate) async fn backfill_exports(
     store: &Store,
-    folders: &ContentFolders,
-) -> minutae_store::Result<Vec<(MeetingId, PathBuf)>> {
-    store.remember_storage_folder("recordings", &folders.recordings.to_string_lossy())?;
-    store.remember_storage_folder("summaries", &folders.summaries.to_string_lossy())?;
-    let ids = store.meeting_ids()?;
-    let default = folders.data.join("summaries");
-    let mut verified = Vec::new();
-    for root in BTreeSet::from([default.clone(), folders.summaries.clone()]) {
-        match LocalMeetingFiles.scan_markdowns(&root, &ids) {
-            Ok(found) => verified.extend(found),
-            Err(_) if root != default => store.defer_summary_scan(&root.to_string_lossy())?,
-            Err(_) => {}
+    operations: &MeetingOperations,
+    default: &Path,
+) -> minutae_store::Result<usize> {
+    let pending = store.call(Store::all_pending_summary_scans).await?;
+    let mut folders = BTreeMap::<String, Vec<MeetingId>>::new();
+    for (id, folder) in pending {
+        folders.entry(folder).or_default().push(id);
+    }
+    let mut busy = BTreeSet::new();
+    for (folder, ids) in folders {
+        let root = PathBuf::from(&folder);
+        let default = default.to_path_buf();
+        let (scan_root, scan_ids) = (root.clone(), ids.clone());
+        let scan = store
+            .call(move |_| {
+                Ok(
+                    match LocalMeetingFiles.scan_markdowns(&scan_root, &scan_ids) {
+                        Ok(found) => Some(found),
+                        Err(error) if nothing_to_search(&scan_root, &default, &error) => {
+                            Some(Vec::new())
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "could not search for meeting exports");
+                            None
+                        }
+                    },
+                )
+            })
+            .await?;
+        let Some(found) = scan else { continue };
+        for id in ids {
+            let Some(operation) = operations.try_lock(id) else {
+                busy.insert(id);
+                continue;
+            };
+            let paths: Vec<_> = found
+                .iter()
+                .filter(|(owner, _)| *owner == id)
+                .map(|(_, path)| path.clone())
+                .collect();
+            let folder = folder.clone();
+            store
+                .call(move |store| {
+                    let _operation = operation;
+                    for path in paths {
+                        // The file may have changed since the folder was listed.
+                        if LocalMeetingFiles
+                            .markdown_bytes(&path, id)
+                            .is_ok_and(|size| size.is_some())
+                        {
+                            store.remember_meeting_export(id, &path.to_string_lossy())?;
+                        }
+                    }
+                    store.finish_summary_scan(id, &folder)
+                })
+                .await?;
         }
     }
-    Ok(verified)
+    Ok(busy.len())
 }
 
 pub(crate) fn prune_audio(store: &Store, folders: &ContentFolders, id: MeetingId) -> R<()> {
@@ -814,6 +875,347 @@ mod tests {
         }
     }
 
+    fn change(
+        store: &Store,
+        path: &Path,
+        id: MeetingId,
+        change: ActionChange,
+    ) -> (Option<minutae_store::ActionItemRow>, Option<&'static str>) {
+        publish_checklist(Some(path), id, |publish| {
+            store.change_action(id, change, publish)
+        })
+        .unwrap()
+    }
+
+    fn new_action(text: &str) -> CoreAction {
+        CoreAction {
+            text: text.into(),
+            owner: None,
+            due: None,
+            done: false,
+        }
+    }
+
+    /// A summary written before the upgrade, when the meeting had no actions.
+    fn legacy_without_actions(store: &Store, root: &Path) -> (Meeting, Summary, PathBuf) {
+        let meeting = meeting(store, MeetingStatus::Done);
+        let mut old = summary(&meeting, "Legacy");
+        old.action_items.clear();
+        store.upsert_summary(&old).unwrap();
+        let path = root.join(summary_file_name(&meeting));
+        fs::write(&path, &old.markdown).unwrap();
+        (meeting, old, path)
+    }
+
+    #[test]
+    fn unedited_export_without_a_checklist_gains_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let (meeting, old, path) = legacy_without_actions(&store, tmp.path());
+        let id = meeting.id;
+
+        let (row, notice) = change(
+            &store,
+            &path,
+            id,
+            ActionChange::Add(new_action("Send notes"), None),
+        );
+        assert_eq!(notice, None);
+        let exported = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            exported,
+            format!(
+                "{}\n\n## Action Items\n- [ ] Send notes\n",
+                old.markdown.trim_end()
+            )
+        );
+        assert_eq!(store.get_summary(id).unwrap().unwrap().markdown, exported);
+        let row = row.unwrap();
+        assert_eq!(
+            change(&store, &path, id, ActionChange::SetDone(row.id, true)).1,
+            None
+        );
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("- [x] Send notes")
+        );
+    }
+
+    #[test]
+    fn hand_edited_export_without_a_locatable_checklist_is_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let (meeting, old, path) = legacy_without_actions(&store, tmp.path());
+        let id = meeting.id;
+        let handwritten = [
+            format!("{}\nMy own notes.\n", old.markdown).into_bytes(),
+            format!("{}\n## Action Items\n- Call back\n", old.markdown).into_bytes(),
+            format!(
+                "{}\n## Action Items\n- [ ] One\n\n## Action Items\n- [ ] Two\n",
+                old.markdown
+            )
+            .into_bytes(),
+            [old.markdown.as_bytes(), &[0xff, 0xfe]].concat(),
+            b"My notes, with the header removed.\n".to_vec(),
+            vec![0xff, 0xfe, b'-'],
+        ];
+        let mut row = None;
+        for (index, bytes) in handwritten.iter().enumerate() {
+            fs::write(&path, bytes).unwrap();
+            let action = new_action(&format!("Task {index}"));
+            let (saved, notice) = match row {
+                None => change(&store, &path, id, ActionChange::Add(action, None)),
+                Some(row) => change(&store, &path, id, ActionChange::Edit(row, action, None)),
+            };
+            row = Some(saved.unwrap().id);
+            assert!(notice.unwrap().contains("left unchanged"), "case {index}");
+            assert_eq!(&fs::read(&path).unwrap(), bytes, "case {index}");
+            assert_eq!(
+                store.list_action_items(id).unwrap()[0].item.text,
+                format!("Task {index}")
+            );
+        }
+        // Removing the last item still says the file was not touched.
+        let last = row.unwrap();
+        fs::write(&path, &handwritten[0]).unwrap();
+        let (_, notice) = change(&store, &path, id, ActionChange::Delete(last));
+        assert!(notice.unwrap().contains("left unchanged"));
+        assert_eq!(fs::read(&path).unwrap(), handwritten[0]);
+        let row = change(
+            &store,
+            &path,
+            id,
+            ActionChange::Add(new_action("Again"), None),
+        )
+        .0
+        .unwrap()
+        .id;
+
+        // Something that isn't a file at all is left alone too.
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let (_, notice) = change(&store, &path, id, ActionChange::Delete(row));
+        assert!(notice.unwrap().contains("left unchanged"));
+        assert!(path.is_dir());
+        assert!(store.list_action_items(id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn ambiguous_stored_markdown_never_blocks_a_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        for section in [
+            "- A legacy bullet\n",
+            "Prose about what to do.\n",
+            "- [ ] Send notes\n\n## Action Items\n- Again\n",
+        ] {
+            for exported in [false, true] {
+                let meeting = meeting(&store, MeetingStatus::Done);
+                let id = meeting.id;
+                let mut old = summary(&meeting, "Legacy");
+                old.markdown
+                    .push_str(&format!("\n## Action Items\n{section}"));
+                store.upsert_summary(&old).unwrap();
+                let path = tmp.path().join(summary_file_name(&meeting));
+                if exported {
+                    fs::write(&path, &old.markdown).unwrap();
+                }
+                let item = store.list_action_items(id).unwrap().pop().unwrap();
+                let mut notices = Vec::new();
+                let added = change(
+                    &store,
+                    &path,
+                    id,
+                    ActionChange::Add(new_action("Another"), None),
+                );
+                notices.push(added.1);
+                let added = added.0.unwrap();
+                for mutation in [
+                    ActionChange::Edit(added.id, new_action("Edited"), None),
+                    ActionChange::SetDone(item.id, true),
+                    ActionChange::Delete(added.id),
+                ] {
+                    notices.push(change(&store, &path, id, mutation).1);
+                }
+                let rows = store.list_action_items(id).unwrap();
+                assert_eq!(rows.len(), 1);
+                assert!(rows[0].item.done);
+                assert_eq!(
+                    store.get_summary(id).unwrap().unwrap().markdown,
+                    old.markdown
+                );
+                assert_eq!(notices.iter().all(Option::is_some), exported, "{section}");
+                assert_eq!(notices.iter().all(Option::is_none), !exported, "{section}");
+                if exported {
+                    assert_eq!(fs::read_to_string(&path).unwrap(), old.markdown);
+                } else {
+                    assert!(!path.exists());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unavailable_export_folder_fails_without_saving_half_a_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let (meeting, old, _) = legacy_without_actions(&store, tmp.path());
+        let id = meeting.id;
+        let offline = tmp.path().join("offline").join(summary_file_name(&meeting));
+        assert!(
+            publish_checklist(Some(&offline), id, |publish| {
+                store.change_action(id, ActionChange::Add(new_action("Lost"), None), publish)
+            })
+            .is_err()
+        );
+        assert!(store.list_action_items(id).unwrap().is_empty());
+        assert_eq!(
+            store.get_summary(id).unwrap().unwrap().markdown,
+            old.markdown
+        );
+    }
+
+    #[test]
+    fn export_kept_after_summary_deletion_is_not_rewritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let meeting = meeting(&store, MeetingStatus::Done);
+        let id = meeting.id;
+        publish_summary(
+            &store,
+            &meeting,
+            &summary(&meeting, "Saved"),
+            None,
+            tmp.path(),
+        )
+        .unwrap();
+        let path = markdown_path(&store, tmp.path(), id).unwrap().unwrap();
+        let kept = fs::read_to_string(&path).unwrap();
+        store.trim_meeting(id, false, false, true).unwrap();
+        let (_, notice) = change(
+            &store,
+            &path,
+            id,
+            ActionChange::Add(new_action("Later"), None),
+        );
+        assert!(notice.unwrap().contains("left unchanged"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), kept);
+    }
+
+    /// A summaries folder holding one export written before paths were recorded.
+    fn untracked_export(store: &Store, root: &Path) -> (Meeting, PathBuf) {
+        let meeting = meeting(store, MeetingStatus::Done);
+        let legacy = summary(&meeting, "Legacy");
+        store.upsert_summary(&legacy).unwrap();
+        let path = root.join(summary_file_name(&meeting));
+        fs::write(&path, legacy.markdown).unwrap();
+        (meeting, path)
+    }
+
+    #[test]
+    fn remembering_storage_only_records_folders_and_the_searches_owed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folders = test_folders(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let (meeting, _) = untracked_export(&store, &folders.summaries);
+        let default = folders.data.join("summaries");
+        remember_storage(&store, &folders).unwrap();
+        assert_eq!(store.meeting_markdown_file(meeting.id).unwrap(), None);
+        let mut owed = store.pending_summary_scans(meeting.id).unwrap();
+        owed.sort();
+        let mut expected = vec![
+            default.to_string_lossy().into_owned(),
+            folders.summaries.to_string_lossy().into_owned(),
+        ];
+        expected.sort();
+        assert_eq!(owed, expected);
+
+        // A folder that was already known is not searched all over again.
+        for folder in &owed {
+            store.finish_summary_scan(meeting.id, folder).unwrap();
+        }
+        remember_storage(&store, &folders).unwrap();
+        assert!(store.all_pending_summary_scans().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn export_backfill_skips_busy_meetings_and_finds_them_later() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folders = test_folders(tmp.path());
+        let default = folders.data.join("summaries");
+        let store = Store::open_in_memory().unwrap();
+        let operations = MeetingOperations::default();
+        let (busy, busy_path) = untracked_export(&store, &folders.summaries);
+        let (idle, idle_path) = untracked_export(&store, &folders.summaries);
+        remember_storage(&store, &folders).unwrap();
+        let job = operations.lock(busy.id).await;
+
+        let skipped = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            backfill_exports(&store, &operations, &default),
+        )
+        .await
+        .expect("a busy meeting must not be waited for")
+        .unwrap();
+        assert_eq!(skipped, 1);
+        assert_eq!(
+            store.meeting_markdown_file(idle.id).unwrap().as_deref(),
+            idle_path.to_str()
+        );
+        assert!(store.pending_summary_scans(idle.id).unwrap().is_empty());
+        assert_eq!(store.meeting_markdown_file(busy.id).unwrap(), None);
+        assert!(!store.pending_summary_scans(busy.id).unwrap().is_empty());
+
+        drop(job);
+        assert_eq!(
+            backfill_exports(&store, &operations, &default)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store.meeting_markdown_file(busy.id).unwrap().as_deref(),
+            busy_path.to_str()
+        );
+        assert!(store.all_pending_summary_scans().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn export_backfill_keeps_unavailable_folders_queued() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folders = test_folders(tmp.path());
+        let default = folders.data.join("summaries");
+        let store = Store::open_in_memory().unwrap();
+        let meeting = meeting(&store, MeetingStatus::Done);
+        store.upsert_summary(&summary(&meeting, "Legacy")).unwrap();
+        fs::remove_dir(&folders.summaries).unwrap();
+        remember_storage(&store, &folders).unwrap();
+        backfill_exports(&store, &MeetingOperations::default(), &default)
+            .await
+            .unwrap();
+        // The default folder does not exist yet, so it owes nothing.
+        assert_eq!(
+            store.pending_summary_scans(meeting.id).unwrap(),
+            [folders.summaries.to_string_lossy()]
+        );
+    }
+
+    #[test]
+    fn deleting_before_backfill_searches_every_recorded_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut folders = test_folders(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let (meeting, previous) = untracked_export(&store, &folders.summaries);
+        remember_storage(&store, &folders).unwrap();
+        folders.summaries = tmp.path().join("new-summaries");
+        fs::create_dir(&folders.summaries).unwrap();
+        let removed =
+            delete_parts(&store, &LocalMeetingFiles, &folders, meeting.id, &PARTS).unwrap();
+        assert!(removed.meeting_removed, "{:?}", removed.failures);
+        assert!(!previous.exists());
+    }
+
     #[test]
     fn rerun_preserves_curated_rows_and_failed_publish_rolls_back() {
         let tmp = tempfile::tempdir().unwrap();
@@ -830,21 +1232,16 @@ mod tests {
         .unwrap();
         let path = markdown_path(&store, tmp.path(), id).unwrap().unwrap();
         let generated = store.list_action_items(id).unwrap().pop().unwrap();
-        publish_checklist(Some(&path), id, |publish| {
-            store.change_action(id, ActionChange::Delete(generated.id), publish)
-        })
-        .unwrap();
+        change(&store, &path, id, ActionChange::Delete(generated.id));
         let manual = CoreAction {
             text: "Send the handoff".into(),
             owner: Some("Alice".into()),
             due: Some("Friday".into()),
             done: false,
         };
-        let row = publish_checklist(Some(&path), id, |publish| {
-            store.change_action(id, ActionChange::Add(manual, Some(724_000)), publish)
-        })
-        .unwrap()
-        .unwrap();
+        let row = change(&store, &path, id, ActionChange::Add(manual, Some(724_000)))
+            .0
+            .unwrap();
 
         let old_markdown = fs::read_to_string(&path).unwrap();
         fs::remove_file(&path).unwrap();
@@ -910,14 +1307,11 @@ mod tests {
 
         let ambiguous = ticked.clone() + "\n## Action Items\n- [ ] Duplicate\n";
         fs::write(&path, &ambiguous).unwrap();
-        assert!(
-            publish_checklist(Some(&path), id, |publish| {
-                store.change_action(id, ActionChange::SetDone(row.id, false), publish)
-            })
-            .is_err()
-        );
+        let (_, notice) = change(&store, &path, id, ActionChange::SetDone(row.id, false));
+        assert!(notice.is_some());
         assert_eq!(fs::read_to_string(&path).unwrap(), ambiguous);
-        assert!(store.list_action_items(id).unwrap()[0].item.done);
+        assert!(!store.list_action_items(id).unwrap()[0].item.done);
+        change(&store, &path, id, ActionChange::SetDone(row.id, true));
 
         fs::write(&path, &ticked).unwrap();
         for text in ["New summary", "Another summary"] {
@@ -1163,24 +1557,13 @@ mod tests {
         );
         let tail = "\r\n### Personal note\r\nKeep  exact spacing.\r\n";
         fs::write(&path, format!("{prefix}- [ ] Send notes\r\n{tail}")).unwrap();
-        let mutate = |change| {
-            publish_checklist(Some(&path), id, |publish| {
-                store.change_action(id, change, publish)
-            })
-            .unwrap()
-        };
-        let action = |text: &str| CoreAction {
-            text: text.into(),
-            owner: None,
-            due: None,
-            done: false,
-        };
-        let added = mutate(ActionChange::Add(action("New"), None)).unwrap();
+        let mutate = |mutation| change(&store, &path, id, mutation).0;
+        let added = mutate(ActionChange::Add(new_action("New"), None)).unwrap();
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             format!("{prefix}- [ ] Send notes\r\n- [ ] New\r\n{tail}")
         );
-        mutate(ActionChange::Edit(added.id, action("Updated"), None));
+        mutate(ActionChange::Edit(added.id, new_action("Updated"), None));
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             format!("{prefix}- [ ] Send notes\r\n- [ ] Updated\r\n{tail}")
@@ -1205,7 +1588,7 @@ mod tests {
         // unavailable at the time and its exports could not be backfilled.
         let old = folders.summaries.clone();
         fs::remove_dir(&old).unwrap();
-        assert!(scan_storage(&store, &folders).unwrap().is_empty());
+        remember_storage(&store, &folders).unwrap();
         folders.summaries = tmp.path().join("new-summaries");
         fs::create_dir(&folders.summaries).unwrap();
         let offline = delete_parts(&store, &LocalMeetingFiles, &folders, id, &PARTS).unwrap();

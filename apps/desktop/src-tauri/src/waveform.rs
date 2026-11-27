@@ -19,7 +19,7 @@ pub struct CachedWaveforms<'a>(pub &'a Store);
 
 impl WaveformSource for CachedWaveforms<'_> {
     fn read(&self, track: &TrackFile, range: WaveformRange, buckets: usize) -> TrackWaveform {
-        match self.peaks(track, range, buckets) {
+        match self.peaks(track, range, buckets, || std::fs::metadata(&track.path)) {
             Ok(Some(levels)) => TrackWaveform::Ready { levels },
             Ok(None) => TrackWaveform::Deleted,
             Err(reason) => TrackWaveform::Unreadable { reason },
@@ -33,6 +33,7 @@ impl CachedWaveforms<'_> {
         track: &TrackFile,
         range: WaveformRange,
         buckets: usize,
+        read_current: impl FnOnce() -> io::Result<Metadata>,
     ) -> Result<Option<Vec<f32>>, String> {
         match std::fs::metadata(&track.path) {
             Ok(meta) if !meta.is_file() => {
@@ -67,7 +68,11 @@ impl CachedWaveforms<'_> {
         let wav = hound::WavReader::new(BufReader::with_capacity(64 * 1024, &file))
             .map_err(|e| e.to_string())?;
         let levels = stream_peaks(wav, range, buckets).map_err(|e| e.to_string())?;
-        let current = std::fs::metadata(&track.path).map_err(|e| e.to_string())?;
+        let current = match read_current() {
+            Ok(current) => current,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.to_string()),
+        };
         if fingerprint != fingerprint_of(&track.path, &current) {
             return Err("This audio track changed while Minutae was reading it. Try again.".into());
         }
@@ -408,6 +413,7 @@ mod tests {
             bytes: None,
             deleted: false,
         };
+        store.upsert_track(&track).unwrap();
         let range = WaveformRange {
             start_ms: 1,
             end_ms: 9,
@@ -417,7 +423,17 @@ mod tests {
             levels: vec![0.5, 0.125, 0.0, 0.0],
         };
         assert_eq!(source.read(&track, range, 4), expected);
-        assert_eq!(source.read(&track, range, 4), expected);
+        let fingerprint = fingerprint_of(&track.path, &std::fs::metadata(&path).unwrap());
+        assert_eq!(
+            store
+                .waveform(meeting.id, "mic", &fingerprint, "1:9:4")
+                .unwrap(),
+            Some(vec![0.5, 0.125, 0.0, 0.0])
+        );
+        assert_eq!(
+            source.peaks(&track, range, 4, || panic!("cache hit must skip scanning")),
+            Ok(Some(vec![0.5, 0.125, 0.0, 0.0]))
+        );
         let replacement = temp.path().join("replacement.wav");
         write(&replacement, &[0; 6]);
         std::fs::remove_file(&path).unwrap();
@@ -428,6 +444,16 @@ mod tests {
                 levels: vec![0.0; 4]
             }
         );
+        let mut removed = false;
+        assert_eq!(
+            source.peaks(&track, range, 2, || {
+                removed = true;
+                std::fs::remove_file(&path)?;
+                std::fs::metadata(&path)
+            }),
+            Ok(None)
+        );
+        assert!(removed);
         std::fs::write(&path, b"not audio").unwrap();
         assert!(matches!(
             source.read(&track, range, 4),

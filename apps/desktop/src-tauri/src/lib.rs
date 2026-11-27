@@ -132,6 +132,26 @@ pub async fn run_retention(app: &AppHandle) {
     }
 }
 
+/// Find exports made before their paths were recorded, returning to busy
+/// meetings until each has been searched.
+pub(crate) fn spawn_export_backfill(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let st = app.state::<AppState>();
+        let default = paths::summaries_dir();
+        loop {
+            match meeting_content::backfill_exports(&st.store, &st.meeting_ops, &default).await {
+                Ok(0) => break,
+                Ok(_) => tokio::time::sleep(Duration::from_secs(60)).await,
+                Err(error) => {
+                    tracing::warn!(%error, "could not search for meeting exports");
+                    break;
+                }
+            }
+        }
+    });
+}
+
 fn spawn_background(
     app: &AppHandle,
     mut usage_rx: tokio::sync::mpsc::UnboundedReceiver<minutae_llm::UsageRecord>,
@@ -195,10 +215,27 @@ fn spawn_background(
             }
         });
         {
+            // Database rows only: nothing here may wait for a disk or a job.
             let _storage = st.storage_ops.lock().await;
-            if let Err(error) = meeting_content::remember_storage(&st, &st.settings()).await {
+            let folders = meeting_content::ContentFolders::current(&st.settings());
+            if let Err(error) = st
+                .store
+                .call(move |store| meeting_content::remember_storage(store, &folders))
+                .await
+            {
                 tracing::warn!(%error, "could not record meeting storage locations");
             }
+        }
+        match runner.start().await {
+            Ok(n) if n > 0 => tracing::info!(n, "resumed interrupted jobs"),
+            Ok(_) => {}
+            Err(e) => tracing::error!(error = %e, "job runner failed to start"),
+        }
+        // File cleanup and export discovery may sit on a slow mount, so they
+        // run beside recording recovery instead of ahead of it.
+        let cleanup = a.clone();
+        tauri::async_runtime::spawn(async move {
+            let st = cleanup.state::<AppState>();
             match meeting_content::recover_erased_files(&st).await {
                 Ok(errors) => {
                     for error in errors {
@@ -207,12 +244,8 @@ fn spawn_background(
                 }
                 Err(error) => tracing::warn!(%error, "could not load pending file cleanup"),
             }
-        }
-        match runner.start().await {
-            Ok(n) if n > 0 => tracing::info!(n, "resumed interrupted jobs"),
-            Ok(_) => {}
-            Err(e) => tracing::error!(error = %e, "job runner failed to start"),
-        }
+        });
+        spawn_export_backfill(&a);
         recording::recover(&a).await;
         let _ = runner; // keep alive in state
         loop {

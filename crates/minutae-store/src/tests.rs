@@ -514,6 +514,10 @@ fn legacy_meeting_import_is_atomic_and_idempotent() {
     );
     assert!(s.id_in_use(m.id).unwrap());
     assert_eq!(s.list_action_items(m.id).unwrap().len(), 1);
+    let imported_actions = s.list_action_items(m.id).unwrap();
+    s.upsert_summary(&summary(m.id, &[("A regenerated task", false)]))
+        .unwrap();
+    assert_eq!(s.list_action_items(m.id).unwrap(), imported_actions);
     // Imported text is searchable.
     let hits = s.search("budget", &SearchFilters::default()).unwrap();
     assert!(hits.iter().any(|h| h.meeting_id == Some(m.id)));

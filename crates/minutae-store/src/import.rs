@@ -149,6 +149,7 @@ impl Store {
             }
             if let Some(s) = &m.summary {
                 crate::summaries::write_summary(tx, s)?;
+                crate::summaries::curate_completed(tx, id)?;
             }
             map(
                 tx,

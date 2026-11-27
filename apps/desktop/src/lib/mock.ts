@@ -15,6 +15,7 @@
 //   ?tape=ready|missing|deleted|unreadable   waveform fixtures (missing/unreadable affect system only)
 //   ?meetingDelete=blocked|partial   an external Markdown path or a late audio deletion error
 //   ?resummarize=failed|running   exercise rerun errors or keep the rerun in progress
+//   ?checklist=unchanged   checklist changes save but leave the Markdown file alone, with a notice
 //   ?discard=blocked|cleanupError  refuse the discard or simulate deferred cleanup
 //   ?captions=off      live captions turned off (also: noModel = no Whisper model; none = on, nothing said yet)
 //   ?import=none       no older Minutae data (also: error, running, failed; see legacyScan below)
@@ -32,7 +33,7 @@ import type {
   Answer, AppSettings, CaptionLine, CaptionStatus, DayGroup, Dictation, ImportResult, LegacyScan, LegacySource, MeetingDetail,
   ModelInfo, Permissions, ProviderStatus, RecordingState, SearchHit, ShortcutStatus, Track,
   UpdateStatus, UsageMonth, ActionItem, ActionItemInput, MeetingContents, MeetingDeletion,
-  MeetingPart, MeetingPartFailure, TrackWaveform, WaveformRange,
+  MeetingPart, MeetingPartFailure, TrackWaveform, WaveformRange, ActionChangeResult,
 } from "./types";
 
 type Listener = (payload: unknown) => void;
@@ -195,6 +196,7 @@ const tapeMode = params.get("tape");
 const meetingDeleteMode = params.get("meetingDelete");
 const resummarizeMode = params.get("resummarize");
 const discardMode = params.get("discard");
+const checklistMode = params.get("checklist");
 const meetingParts: MeetingPart[] = ["audio", "transcript", "summary", "markdown"];
 const meetingDetails = new Map<string, MeetingDetail>();
 const exportsByMeeting = new Map<string, { path: string; text: string }>();
@@ -319,7 +321,7 @@ function syncActionMarkdown(d: MeetingDetail) {
   const markdown = content + (lines.length ? "\n\n## Action Items\n" + lines.join("\n") : "") + "\n";
   d.summary = { ...d.summary, markdown };
   const exported = exportsByMeeting.get(d.meeting.id);
-  if (exported) exported.text = markdown;
+  if (exported && checklistMode !== "unchanged") exported.text = markdown;
 }
 
 function updateAction(input: ActionItemInput, existing?: ActionItem): ActionItem {
@@ -333,10 +335,17 @@ function updateAction(input: ActionItemInput, existing?: ActionItem): ActionItem
     owner: line(input.owner), due: line(input.due), sourceMs: input.sourceMs ?? null };
 }
 
-function actionsChanged(d: MeetingDetail) {
+function actionsChanged(d: MeetingDetail): ActionChangeResult {
   curation.add(d.meeting.id);
+  const exported = exportsByMeeting.get(d.meeting.id);
+  // An export that outlived its summary, or can't be updated safely, stays as it is.
+  const markdownNotice = !exported ? null
+    : !d.summary ? "Saved in Minutae. The Markdown file was left unchanged because the summary it came from was removed from Minutae."
+    : checklistMode === "unchanged" ? "Saved in Minutae. The Markdown file was left unchanged because its Action Items checklist couldn’t be identified safely."
+    : null;
   syncActionMarkdown(d);
   meetingChanged(d.meeting.id);
+  return { markdownNotice };
 }
 
 function resummarize(d: MeetingDetail) {
@@ -713,20 +722,17 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
       if (cmd !== "add_action_item" && !existing) return fail("This action item no longer exists.");
       if (cmd === "delete_action_item") {
         d.actionItems = d.actionItems.filter((a) => a !== existing);
-        actionsChanged(d);
-        return r(undefined);
+        return r(actionsChanged(d));
       }
       const action = updateAction(args.item as ActionItemInput, existing);
       d.actionItems = existing ? d.actionItems.map((a) => a === existing ? action : a) : [...d.actionItems, action];
-      actionsChanged(d);
-      return r(action);
+      return r({ item: action, ...actionsChanged(d) });
     }
     case "set_action_done": {
       const d = [...meetingDetails.values()].find((m) => m.actionItems.some((a) => a.id === args.id));
       if (!d) return fail("This action item no longer exists.");
       d.actionItems = d.actionItems.map((a) => a.id === args.id ? { ...a, done: args.done as boolean } : a);
-      actionsChanged(d);
-      return r(undefined);
+      return r(actionsChanged(d));
     }
     case "rename_speaker":
       for (const d of meetingDetails.values()) {

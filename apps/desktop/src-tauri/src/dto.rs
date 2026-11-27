@@ -1462,6 +1462,21 @@ pub struct MeetingWaveform {
     pub system: TrackWaveform,
 }
 
+/// A saved checklist change.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionChangeResult {
+    /// Why an existing Markdown file was left unchanged.
+    pub markdown_notice: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedActionItem {
+    pub item: ActionItem,
+    pub markdown_notice: Option<&'static str>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionItemInput {

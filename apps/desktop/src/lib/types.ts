@@ -70,6 +70,9 @@ export type TrackWaveform =
   | { state: "unreadable"; reason: string };
 export interface MeetingWaveform { range: WaveformRange; mic: TrackWaveform; system: TrackWaveform }
 export interface ActionItemInput { text: string; owner?: string | null; due?: string | null; sourceMs?: number | null }
+/** The change is saved. `markdownNotice` says why an existing Markdown file was left unchanged. */
+export interface ActionChangeResult { markdownNotice: string | null }
+export interface SavedActionItem extends ActionChangeResult { item: ActionItem }
 
 export type MeetingPart = "audio" | "transcript" | "summary" | "markdown";
 export interface MeetingPartInfo {
