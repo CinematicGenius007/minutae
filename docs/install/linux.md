@@ -2,6 +2,8 @@
 
 x86_64. Tested on Ubuntu 22.04+ and Fedora; any distro with WebKitGTK 4.1 should work. Needs PulseAudio or PipeWire (with its Pulse layer) for meeting audio.
 
+Release installs become available once the first release is published. For now, see [Build from source](source.md).
+
 ## Install or update
 
 ```sh
@@ -20,7 +22,7 @@ Each release also has a `.deb` (Debian/Ubuntu) and `.rpm` (Fedora): `sudo apt in
 
 ## Check for updates
 
-Settings → General → **Check for updates**, or:
+Settings → General → **Check for updates** can install a signed AppImage update when available. Otherwise, quit Minutae and rerun the install command. To compare versions without installing anything:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/CinematicGenius007/minutae/main/scripts/check-update.sh | sh

@@ -19,16 +19,16 @@ import { useMemo, useState } from "react";
 import { api, events } from "../../lib/api";
 import type { Dictation } from "../../lib/types";
 import { toKitShortcut } from "../settings/shared/format";
-import { errorText, useEvent, useLoad, useSettings } from "../../hooks";
+import { errorText, useEvent, useLoad, usePlatformInfo, useSettings, useShortcutStatus } from "../../hooks";
 import p from "../settings/shared/page.module.css";
 import s from "./dictate.module.css";
 
-const PREVIEW_LEVELS = [0.3, 0.7, 1, 0.5, 0.8, 0.4, 0.6, 0.25];
-
 export default function DictateScreen() {
   const platform = usePlatform();
+  const copyOnly = usePlatformInfo()?.sessionKind === "wayland";
   const toast = useToast();
   const { settings } = useSettings();
+  const shortcuts = useShortcutStatus();
   const [list, reloadList] = useLoad(() => api.listDictations(100));
   const [stats, reloadStats] = useLoad(() => api.dictationStats());
   const [query, setQuery] = useState("");
@@ -44,8 +44,9 @@ export default function DictateScreen() {
 
   const hotkey = toKitShortcut(settings?.dictationHotkey ?? (platform === "mac" ? "Alt+Space" : "Ctrl+Space"));
   const keys = shortcutKeys(hotkey, platform);
-  const keyLabel = platform === "mac" ? keys.join(" ") : keys.join(" + ");
-  const toggle = settings?.dictationMode === "toggle";
+  const keyLabel = shortcuts?.dictateTrigger ?? (platform === "mac" ? keys.join(" ") : keys.join(" + "));
+  const toggle = shortcuts?.holdSupported === false || settings?.dictationMode === "toggle";
+  const hasShortcut = shortcuts?.backend !== "unavailable" && (shortcuts?.backend !== "portal" || shortcuts.dictateTrigger !== null);
 
   const rows = useMemo(() => {
     const all = list.data ?? [];
@@ -71,15 +72,15 @@ export default function DictateScreen() {
       .catch((e) => toast.show({ title: `Couldn't delete it. ${errorText(e)}` }));
   };
 
-  const keptFor =
-    settings?.deleteAudioAfterDays != null ? `Kept ${settings.deleteAudioAfterDays} days` : list.data ? `${list.data.length}` : "";
+  const retentionDays = settings?.dictationRetentionDays;
+  const historyLimit = retentionDays != null ? `Keep for ${retentionDays} days` : undefined;
 
   return (
     <section
       className={p.page}
       aria-labelledby="dictate-title"
       data-screen="dictate"
-      data-ready={String(list.status !== "loading" && stats.status !== "loading" && settings !== null)}
+      data-ready={String(list.status !== "loading" && stats.status !== "loading" && settings !== null && shortcuts !== null)}
     >
       <div className={cx(p.inner, s.stack)}>
         <div className={p.toolbar}>
@@ -97,7 +98,7 @@ export default function DictateScreen() {
         </div>
 
         <PageHeader
-          overline="Speak anywhere · Types where your cursor is"
+          overline={copyOnly ? "Speak anywhere · Copies to your clipboard" : "Speak anywhere · Types where your cursor is"}
           title={<span id="dictate-title">Dictate</span>}
           right={
             stats.data ? (
@@ -112,36 +113,31 @@ export default function DictateScreen() {
         <div className={s.body}>
           <section className={s.howto} aria-label="How to dictate">
             <div className={s.howtoLead}>
-              <div className={s.keyGroup}>
-                <KeyCap className={s.bigCap} aria-label={keys.join(" ")}>
-                  {keyLabel}
-                </KeyCap>
-                <span className={s.keyHint}>{toggle ? "press" : "hold"}</span>
-              </div>
+              {hasShortcut && (
+                <div className={s.keyGroup}>
+                  <KeyCap className={s.bigCap}>{keyLabel}</KeyCap>
+                  <span className={s.keyHint}>{toggle ? "press" : "hold"}</span>
+                </div>
+              )}
               <div className={s.howtoText}>
                 <p className={s.howtoTitle}>
-                  {toggle ? `Press ${keyLabel}, talk, press again.` : `Hold ${keyLabel}, talk, let go.`}
+                  {!hasShortcut
+                    ? "Set up a system shortcut to dictate."
+                    : toggle ? `Press ${keyLabel}, talk, press again.` : `Hold ${keyLabel}, talk, let go.`}
                 </p>
                 <p className={s.howtoBody}>
-                  Text lands in whatever app you're in.{" "}
-                  {toggle ? "Press once more to stop." : "Double-tap to keep listening hands-free."}
+                  {hasShortcut
+                    ? copyOnly ? "Paste the copied text into your app. " : "Text lands in whatever app you're in. "
+                    : "See Settings → Dictation. "}
+                  {hasShortcut && !toggle && "Double-tap to keep listening hands-free. "}
+                  {shortcuts?.cancelDetail ?? "Press Esc to cancel."}
                 </p>
               </div>
-            </div>
-            <div className={s.hudPreview} aria-hidden>
-              <span className={s.hudDot} />
-              <span className={s.hudBars}>
-                {PREVIEW_LEVELS.map((l, i) => (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: positional bars
-                  <span key={i} className={s.hudBar} style={{ height: `${Math.round(l * 100)}%` }} />
-                ))}
-              </span>
-              <span className={s.hudTime}>0:04</span>
             </div>
           </section>
 
           <section aria-labelledby="recent-label">
-            <GroupLabel id="recent-label" count={keptFor}>
+            <GroupLabel id="recent-label" count={historyLimit}>
               Recent
             </GroupLabel>
             {list.status === "loading" ? (
@@ -161,7 +157,7 @@ export default function DictateScreen() {
             ) : (list.data ?? []).length === 0 ? (
               <EmptyState
                 title="No dictations yet."
-                description={`${toggle ? "Press" : "Hold"} ${keyLabel} in any app, talk, and ${toggle ? "press it again" : "let go"}. The text lands where your cursor is.`}
+                description={hasShortcut ? "Completed dictations will appear here." : "Set up a shortcut in Settings → Dictation to get started."}
               />
             ) : rows.length === 0 ? (
               <EmptyState
@@ -222,7 +218,7 @@ export default function DictateScreen() {
           if (!o) setPendingDelete(null);
         }}
         title="Delete this dictation?"
-        description="The text is removed from Minutae. Anything already typed into other apps stays."
+        description="The text and any saved audio are removed from Minutae. Anything already typed into other apps stays."
         confirmLabel="Delete dictation"
         onConfirm={() => {
           if (pendingDelete) remove(pendingDelete);

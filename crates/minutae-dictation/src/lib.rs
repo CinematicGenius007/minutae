@@ -20,6 +20,7 @@ pub mod fakes;
 pub mod insert;
 pub mod platform;
 pub mod postprocess;
+pub mod shapes;
 pub mod shortcuts;
 pub mod source;
 
@@ -27,7 +28,7 @@ pub use controller::{
     DictationConfig, DictationController, DictationDeps, DictationEvent, DictationState,
     FinishedDictation, HudState,
 };
-pub use insert::{CopyReason, InsertOutcome, Inserter, SystemInserter};
+pub use insert::{CopyReason, InsertOutcome, Inserter, InsertionControl, SystemInserter};
 pub use platform::{
     InsertionSupport, SessionKind, accessibility_trusted, frontmost_app_name, insertion_support,
     prompt_accessibility, refresh_paste_keycode, session_kind,

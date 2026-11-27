@@ -92,8 +92,9 @@ pub fn retention_eligible(
     meeting.status == minutae_core::MeetingStatus::Done && meeting.started_at < cutoff
 }
 
-/// Delete audio older than `delete_audio_after_days` (transcripts and summaries stay).
+/// Prune expired dictations and meeting audio.
 pub async fn run_retention(app: &AppHandle) {
+    dictation::prune(app).await;
     let st = app.state::<AppState>();
     let Some(days) = st.settings().delete_audio_after_days else {
         return;
@@ -364,6 +365,7 @@ pub fn run() {
             commands::list_dictations,
             commands::dictation_stats,
             commands::delete_dictation,
+            commands::delete_all_dictations,
             commands::search,
             commands::ask,
             commands::list_models,

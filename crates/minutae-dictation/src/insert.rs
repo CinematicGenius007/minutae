@@ -9,10 +9,19 @@
 //! "copied — press Ctrl+V".
 //!
 //! Preserved: plain text, HTML (with its text alternative), file lists and images.
-//! Other formats (RTF-only, app-private types) cannot be read back; when nothing
-//! readable was there, the dictation is simply left on the clipboard.
+//! Other formats (RTF-only, app-private types) cannot be read back. An empty or
+//! unreadable clipboard is cleared after a paste or cancellation.
 
-use std::{borrow::Cow, path::PathBuf, thread, time::Duration};
+use std::{
+    borrow::Cow,
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -47,6 +56,44 @@ pub enum InsertOutcome {
     Copied(CopyReason),
     /// Nothing was typed or copied.
     Failed(String),
+    /// Cancellation won before a paste or copy was committed.
+    Cancelled,
+}
+
+/// Orders cancellation against the irreversible paste keystroke or clipboard copy.
+#[derive(Default)]
+pub struct InsertionControl {
+    committed: Mutex<bool>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl InsertionControl {
+    pub(crate) fn cancel(&self) -> bool {
+        let committed = self.committed.lock().unwrap_or_else(|e| e.into_inner());
+        if *committed {
+            return false;
+        }
+        self.cancelled.store(true, Ordering::Relaxed);
+        true
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn cancel_flag(&self) -> Arc<AtomicBool> {
+        self.cancelled.clone()
+    }
+
+    /// Run the irreversible part if cancellation has not won.
+    pub fn commit<T>(&self, action: impl FnOnce() -> T) -> Option<T> {
+        let mut committed = self.committed.lock().unwrap_or_else(|e| e.into_inner());
+        if *committed || self.is_cancelled() {
+            return None;
+        }
+        *committed = true;
+        Some(action())
+    }
 }
 
 /// Puts dictated text into the frontmost app.
@@ -57,9 +104,14 @@ pub trait Inserter: Send + Sync {
     fn target_app(&self) -> Option<String> {
         None
     }
-    async fn insert(&self, text: &str) -> InsertOutcome;
+    async fn insert(&self, text: &str, control: Arc<InsertionControl>) -> InsertOutcome;
     /// Put `text` on the clipboard only, without pasting it anywhere.
-    async fn copy(&self, text: &str, reason: CopyReason) -> InsertOutcome;
+    async fn copy(
+        &self,
+        text: &str,
+        reason: CopyReason,
+        control: Arc<InsertionControl>,
+    ) -> InsertOutcome;
 }
 
 /// What the platform layer decided before touching the clipboard.
@@ -174,7 +226,7 @@ impl Snapshot {
             }
             Snapshot::Files(f) => clipboard.set().file_list(&f),
             Snapshot::Image(i) => clipboard.set_image(i),
-            Snapshot::Unreadable => Ok(()),
+            Snapshot::Unreadable => clipboard.clear(),
         }
     }
 }
@@ -196,10 +248,13 @@ impl SystemInserter {
     }
 
     /// Blocking insertion. [`Inserter::insert`] runs this on a blocking thread.
-    pub fn insert_blocking(&self, text: &str) -> InsertOutcome {
+    fn insert_blocking(&self, text: &str, control: &InsertionControl) -> InsertOutcome {
+        if control.is_cancelled() {
+            return InsertOutcome::Cancelled;
+        }
         match platform::preflight() {
             Preflight::Paste => {}
-            Preflight::CopyOnly(reason) => return copy_only(text, reason),
+            Preflight::CopyOnly(reason) => return copy_only(text, reason, control),
             Preflight::Refuse(reason) => return InsertOutcome::Failed(reason),
         }
 
@@ -207,35 +262,78 @@ impl SystemInserter {
             Ok(c) => c,
             Err(e) => return InsertOutcome::Failed(format!("clipboard unavailable: {e}")),
         };
-        let saved = Snapshot::take(&mut clipboard);
         let restore_after = self.restore_delay_for(platform::frontmost_app_name().as_deref());
-        if let Err(e) = clipboard.set_text(text) {
-            return InsertOutcome::Failed(format!("couldn't write the clipboard: {e}"));
-        }
-        thread::sleep(self.settle);
-
-        if let Err(e) = send_paste() {
-            tracing::warn!("paste keystroke failed: {e}");
-            platform::keep_clipboard_alive(clipboard);
-            return InsertOutcome::Copied(CopyReason::PasteFailed);
-        }
-
-        thread::sleep(restore_after);
-        // Restore only if the clipboard still holds our text; if the user or
-        // another app copied something in the meantime, leave theirs alone.
-        if should_restore(&saved, clipboard.get_text().ok().as_deref(), text)
-            && let Err(e) = saved.restore(&mut clipboard)
-        {
-            tracing::warn!("couldn't restore the clipboard: {e}");
-        }
+        let outcome = paste_with_clipboard(
+            &mut clipboard,
+            text,
+            control,
+            || thread::sleep(self.settle),
+            send_paste,
+            || thread::sleep(restore_after),
+        );
         platform::keep_clipboard_alive(clipboard);
-        InsertOutcome::Inserted
+        outcome
     }
 }
 
-/// Restore when we have something to put back and the clipboard still holds our text.
-fn should_restore(saved: &Snapshot, current: Option<&str>, ours: &str) -> bool {
-    !matches!(saved, Snapshot::Unreadable) && current == Some(ours)
+trait PasteClipboard {
+    fn snapshot(&mut self) -> Snapshot;
+    fn read_text(&mut self) -> Option<String>;
+    fn write_text(&mut self, text: &str) -> Result<(), arboard::Error>;
+    fn restore(&mut self, saved: Snapshot) -> Result<(), arboard::Error>;
+}
+
+impl PasteClipboard for arboard::Clipboard {
+    fn snapshot(&mut self) -> Snapshot {
+        Snapshot::take(self)
+    }
+
+    fn read_text(&mut self) -> Option<String> {
+        self.get_text().ok()
+    }
+
+    fn write_text(&mut self, text: &str) -> Result<(), arboard::Error> {
+        self.set_text(text)
+    }
+
+    fn restore(&mut self, saved: Snapshot) -> Result<(), arboard::Error> {
+        saved.restore(self)
+    }
+}
+
+fn paste_with_clipboard(
+    clipboard: &mut impl PasteClipboard,
+    text: &str,
+    control: &InsertionControl,
+    settle: impl FnOnce(),
+    paste: impl FnOnce() -> Result<(), String>,
+    wait_for_paste: impl FnOnce(),
+) -> InsertOutcome {
+    let saved = clipboard.snapshot();
+    if let Err(e) = clipboard.write_text(text) {
+        return InsertOutcome::Failed(format!("couldn't write the clipboard: {e}"));
+    }
+    settle();
+
+    let outcome = match control.commit(paste) {
+        Some(Ok(())) => {
+            wait_for_paste();
+            InsertOutcome::Inserted
+        }
+        Some(Err(e)) => {
+            tracing::warn!("paste keystroke failed: {e}");
+            return InsertOutcome::Copied(CopyReason::PasteFailed);
+        }
+        None => InsertOutcome::Cancelled,
+    };
+
+    // Keep any clipboard change made by the user or another app while we were waiting.
+    if clipboard.read_text().as_deref() == Some(text)
+        && let Err(e) = clipboard.restore(saved)
+    {
+        tracing::warn!("couldn't restore the clipboard: {e}");
+    }
+    outcome
 }
 
 #[async_trait]
@@ -244,29 +342,39 @@ impl Inserter for SystemInserter {
         platform::frontmost_app_name()
     }
 
-    async fn insert(&self, text: &str) -> InsertOutcome {
+    async fn insert(&self, text: &str, control: Arc<InsertionControl>) -> InsertOutcome {
         let this = self.clone();
         let text = text.to_owned();
-        tokio::task::spawn_blocking(move || this.insert_blocking(&text))
+        tokio::task::spawn_blocking(move || this.insert_blocking(&text, &control))
             .await
             .unwrap_or_else(|e| InsertOutcome::Failed(format!("insertion thread failed: {e}")))
     }
 
-    async fn copy(&self, text: &str, reason: CopyReason) -> InsertOutcome {
+    async fn copy(
+        &self,
+        text: &str,
+        reason: CopyReason,
+        control: Arc<InsertionControl>,
+    ) -> InsertOutcome {
         let text = text.to_owned();
-        tokio::task::spawn_blocking(move || copy_only(&text, reason))
+        tokio::task::spawn_blocking(move || copy_only(&text, reason, &control))
             .await
             .unwrap_or_else(|e| InsertOutcome::Failed(format!("clipboard thread failed: {e}")))
     }
 }
 
-fn copy_only(text: &str, reason: CopyReason) -> InsertOutcome {
-    match arboard::Clipboard::new().and_then(|mut c| c.set_text(text).map(|()| c)) {
-        Ok(clipboard) => {
+fn copy_only(text: &str, reason: CopyReason, control: &InsertionControl) -> InsertOutcome {
+    let mut clipboard = match arboard::Clipboard::new() {
+        Ok(clipboard) => clipboard,
+        Err(e) => return InsertOutcome::Failed(format!("clipboard unavailable: {e}")),
+    };
+    match control.commit(|| clipboard.set_text(text)) {
+        Some(Ok(())) => {
             platform::keep_clipboard_alive(clipboard);
             InsertOutcome::Copied(reason)
         }
-        Err(e) => InsertOutcome::Failed(format!("couldn't copy to the clipboard: {e}")),
+        Some(Err(e)) => InsertOutcome::Failed(format!("couldn't copy to the clipboard: {e}")),
+        None => InsertOutcome::Cancelled,
     }
 }
 
@@ -349,20 +457,63 @@ mod tests {
         );
     }
 
+    struct FakeClipboard(Option<String>);
+
+    impl PasteClipboard for FakeClipboard {
+        fn snapshot(&mut self) -> Snapshot {
+            self.0.clone().map_or(Snapshot::Unreadable, Snapshot::Text)
+        }
+
+        fn read_text(&mut self) -> Option<String> {
+            self.0.clone()
+        }
+
+        fn write_text(&mut self, text: &str) -> Result<(), arboard::Error> {
+            self.0 = Some(text.into());
+            Ok(())
+        }
+
+        fn restore(&mut self, saved: Snapshot) -> Result<(), arboard::Error> {
+            self.0 = match saved {
+                Snapshot::Text(text) => Some(text),
+                Snapshot::Unreadable => None,
+                _ => unreachable!(),
+            };
+            Ok(())
+        }
+    }
+
     #[test]
-    fn restores_only_our_text_and_only_readable_snapshots() {
-        let text = Snapshot::Text("old".into());
-        assert!(should_restore(&text, Some("dictated"), "dictated"));
-        // Someone copied something else meanwhile.
-        assert!(!should_restore(&text, Some("theirs"), "dictated"));
-        assert!(!should_restore(&text, None, "dictated"));
-        // Nothing we could read back: leave the dictation rather than clear the clipboard.
-        assert!(!should_restore(
-            &Snapshot::Unreadable,
-            Some("dictated"),
-            "dictated"
-        ));
-        let files = Snapshot::Files(vec![PathBuf::from("/tmp/a")]);
-        assert!(should_restore(&files, Some("dictated"), "dictated"));
+    fn escape_after_staging_restores_the_previous_clipboard() {
+        for previous in [Some("previous".into()), None] {
+            let mut clipboard = FakeClipboard(previous.clone());
+            let control = InsertionControl::default();
+            let outcome = paste_with_clipboard(
+                &mut clipboard,
+                "dictation",
+                &control,
+                || assert!(control.cancel()),
+                || panic!("cancelled dictation must not paste"),
+                || panic!("cancelled dictation must not wait for paste"),
+            );
+            assert_eq!(outcome, InsertOutcome::Cancelled);
+            assert_eq!(clipboard.0, previous);
+        }
+    }
+
+    #[test]
+    fn escape_after_paste_still_restores_the_clipboard() {
+        let mut clipboard = FakeClipboard(Some("previous".into()));
+        let control = InsertionControl::default();
+        let outcome = paste_with_clipboard(
+            &mut clipboard,
+            "dictation",
+            &control,
+            || (),
+            || Ok(()),
+            || assert!(!control.cancel()),
+        );
+        assert_eq!(outcome, InsertOutcome::Inserted);
+        assert_eq!(clipboard.0.as_deref(), Some("previous"));
     }
 }

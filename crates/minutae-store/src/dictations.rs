@@ -74,6 +74,16 @@ impl Store {
         })
     }
 
+    /// IDs eligible for history cleanup, without loading their transcripts.
+    pub fn dictation_ids_before(&self, cutoff: Option<DateTime<Utc>>) -> Result<Vec<DictationId>> {
+        self.read(|c| {
+            let mut stmt =
+                c.prepare_cached("SELECT id FROM dictations WHERE ?1 IS NULL OR created_at < ?1")?;
+            let rows = stmt.query_map([cutoff.map(ms)], |r| parse_uuid(&r.get::<_, String>(0)?))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
     pub fn delete_dictation(&self, id: DictationId) -> Result<bool> {
         self.write(|c| Ok(c.execute("DELETE FROM dictations WHERE id = ?1", [id.to_string()])? > 0))
     }

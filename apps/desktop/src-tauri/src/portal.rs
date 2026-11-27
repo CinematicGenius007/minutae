@@ -67,6 +67,7 @@ pub fn status_after_bind(result: &Result<PortalBinding, PortalError>) -> Shortcu
             record_trigger: trigger(b, ShortcutId::Record),
             can_configure: b.can_configure,
             hold_supported: None,
+            cancel_detail: Some(crate::dto::PORTAL_CANCEL_DETAIL.into()),
             detail: None,
         },
         Err(PortalError::Cancelled) => ShortcutStatus {
@@ -75,6 +76,7 @@ pub fn status_after_bind(result: &Result<PortalBinding, PortalError>) -> Shortcu
             record_trigger: None,
             can_configure: false,
             hold_supported: None,
+            cancel_detail: Some(crate::dto::PORTAL_CANCEL_DETAIL.into()),
             detail: Some("The shortcut dialog was closed, so no keys are set. Restart Minutae to choose them.".into()),
         },
         Err(PortalError::Unavailable(e)) | Err(PortalError::Failed(e)) => ShortcutStatus {
@@ -83,6 +85,7 @@ pub fn status_after_bind(result: &Result<PortalBinding, PortalError>) -> Shortcu
             record_trigger: None,
             can_configure: false,
             hold_supported: None,
+            cancel_detail: Some(crate::dto::PORTAL_CANCEL_DETAIL.into()),
             detail: Some(e.clone()),
         },
     }
@@ -99,6 +102,13 @@ fn set_status(app: &AppHandle, status: ShortcutStatus) {
 
 /// Bind the portal shortcuts once, in the background (the portal may show a dialog).
 pub fn start(app: &AppHandle) {
+    {
+        let st = app.state::<AppState>();
+        let mut status = st.shortcut_status.lock().unwrap_or_else(|e| e.into_inner());
+        status.backend = ShortcutBackend::Portal;
+        status.hold_supported = None;
+        status.cancel_detail = Some(crate::dto::PORTAL_CANCEL_DETAIL.into());
+    }
     #[cfg(target_os = "linux")]
     let backend: Arc<dyn ShortcutPortal> =
         Arc::new(minutae_dictation::platform::portal::XdgShortcutPortal::default());

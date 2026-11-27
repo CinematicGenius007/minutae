@@ -11,7 +11,7 @@
 //   AZURE_CLIENT_ID / AZURE_CLIENT_SECRET / AZURE_TENANT_ID +
 //   AZURE_SIGNING_ENDPOINT / AZURE_SIGNING_ACCOUNT / AZURE_SIGNING_PROFILE
 //                               Windows: Azure Trusted Signing → bundle.windows.signCommand
-import { readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const env = (k: string) => process.env[k]?.trim() || "";
@@ -25,14 +25,18 @@ const notes: string[] = [];
 // Updater: artifacts (.app.tar.gz / .nsis.zip / .AppImage + .sig, latest.json) need the
 // private key at build time; the app needs the public key compiled in.
 const pubkey = env("TAURI_UPDATER_PUBKEY") || conf.plugins?.updater?.pubkey?.trim() || "";
-if (env("TAURI_SIGNING_PRIVATE_KEY") && pubkey) {
+// CI only passes a presence flag here. The private key goes to the build itself.
+const hasSigningKey = env("HAS_TAURI_SIGNING_KEY") === "true" || !!env("TAURI_SIGNING_PRIVATE_KEY");
+if (hasSigningKey && pubkey) {
   overlay.bundle = { ...overlay.bundle, createUpdaterArtifacts: true };
   overlay.plugins = { updater: { ...conf.plugins.updater, pubkey } };
   notes.push("updater: on (signed update artifacts + latest.json)");
-} else if (env("TAURI_SIGNING_PRIVATE_KEY") || pubkey) {
-  notes.push("updater: OFF — needs both TAURI_SIGNING_PRIVATE_KEY and the public key");
 } else {
-  notes.push("updater: off (no keys); the app shows 'This build doesn't update itself'");
+  const missing = [!hasSigningKey && "TAURI_SIGNING_PRIVATE_KEY", !pubkey && "the updater public key"].filter(Boolean).join(" and ");
+  const warning = `Missing ${missing}. This build can check for new releases, but cannot install updates in the app. See docs/RELEASE.md for setup.`;
+  notes.push(`updater: ${warning}`);
+  const summary = env("GITHUB_STEP_SUMMARY");
+  if (summary) appendFileSync(summary, `- **In-app updates disabled.** ${warning}\n`);
 }
 
 // Windows: Azure Trusted Signing through trusted-signing-cli (installed by the workflow).

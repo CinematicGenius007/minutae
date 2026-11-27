@@ -101,6 +101,8 @@ pub struct AppSettings {
     pub dictation_mode: HotkeyMode,
     pub tidy_dictation: bool,
     pub keep_dictation_audio: bool,
+    /// None = keep dictations and their audio forever.
+    pub dictation_retention_days: Option<u32>,
     pub vocabulary: Vec<String>,
     // Storage
     /// None = never delete audio.
@@ -139,6 +141,7 @@ impl Default for AppSettings {
             dictation_mode: HotkeyMode::Hold,
             tidy_dictation: true,
             keep_dictation_audio: false,
+            dictation_retention_days: None,
             vocabulary: vec![],
             delete_audio_after_days: Some(30),
             recordings_path: None,
@@ -154,6 +157,7 @@ mod tests {
     fn partial_json_fills_defaults() {
         let s: AppSettings = serde_json::from_str(r#"{"appearance":"dark"}"#).unwrap();
         assert_eq!(s.appearance, Appearance::Dark);
+        assert_eq!(s.dictation_retention_days, None);
         assert_eq!(s.prompt_delay_seconds, 5);
         assert_eq!(s.echo_cancellation, EchoCancelMode::Auto);
     }

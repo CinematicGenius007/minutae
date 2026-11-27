@@ -1,8 +1,10 @@
 import {
   Button,
+  ConfirmDialog,
   GroupLabel,
   KeyCap,
   Segmented,
+  Select,
   SettingRow,
   Tag,
   TextField,
@@ -22,6 +24,11 @@ import type { SectionProps } from "./types";
 
 const TOGGLE_DICTATION = "minutae --toggle-dictation";
 const TOGGLE_RECORDING = "minutae --toggle-recording";
+const RETENTION_SELECT_ID = "s-dictation-retention";
+const RETENTION_OPTIONS = [
+  { value: "forever", label: "Forever" },
+  ...[7, 30, 90].map((days) => ({ value: String(days), label: `${days} days` })),
+];
 
 function ModeControl({ settings, update, holdSupported }: SectionProps & { holdSupported: boolean | null }) {
   const noHold = holdSupported === false;
@@ -125,11 +132,31 @@ function NoPortalRows() {
 export function DictationSection({ settings, update }: SectionProps) {
   const platform = usePlatform();
   const shortcuts = useShortcutStatus();
+  const toast = useToast();
+  const [deleting, setDeleting] = useState(false);
+  const deleteAll = () => {
+    setDeleting(true);
+    api.deleteAllDictations()
+      .then(() => toast.show({ title: "Dictations deleted" }))
+      .catch((e) => toast.show({ title: errorText(e) }))
+      .finally(() => setDeleting(false));
+  };
   const [recording, setRecording] = useState(false);
   const [word, setWord] = useState("");
   // Inline error under the shortcut control: local validation or the backend's refusal.
   const [shortcutError, setShortcutError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [pendingRetention, setPendingRetention] = useState<number | null>(null);
+
+  const changeRetention = (value: string) => {
+    const days = value === "forever" ? null : Number(value);
+    if (days === settings.dictationRetentionDays) return;
+    if (days !== null && days < (settings.dictationRetentionDays ?? Infinity)) {
+      setPendingRetention(days);
+      return;
+    }
+    void update({ dictationRetentionDays: days });
+  };
 
   // Shortcut recorder: click the keycap, press the new combination; esc cancels.
   useEffect(() => {
@@ -222,6 +249,9 @@ export function DictationSection({ settings, update }: SectionProps) {
             }
           />
         )}
+        {shortcuts?.cancelDetail && (
+          <SettingRow title="Cancel with Esc" description={shortcuts.cancelDetail} />
+        )}
         <SettingRow
           title="Tidy up what I say"
           htmlFor="s-tidy"
@@ -234,6 +264,48 @@ export function DictationSection({ settings, update }: SectionProps) {
           description="Off by default. Only the text is saved."
           control={
             <Toggle id="s-keepaudio" checked={settings.keepDictationAudio} onCheckedChange={(v) => update({ keepDictationAudio: v })} />
+          }
+        />
+        <SettingRow
+          title="Keep dictations for"
+          htmlFor={RETENTION_SELECT_ID}
+          description="Minutae deletes older dictation text and any saved audio."
+          control={
+            <Select
+              id={RETENTION_SELECT_ID}
+              options={RETENTION_OPTIONS}
+              value={settings.dictationRetentionDays?.toString() ?? "forever"}
+              onValueChange={changeRetention}
+            />
+          }
+        />
+        <ConfirmDialog
+          open={pendingRetention !== null}
+          onOpenChange={(open) => {
+            if (!open) setPendingRetention(null);
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            document.getElementById(RETENTION_SELECT_ID)?.focus();
+          }}
+          title="Shorten dictation retention?"
+          description={`Minutae will permanently delete dictations older than ${pendingRetention} days, along with any saved audio. Text already typed into other apps stays.`}
+          confirmLabel="Shorten retention"
+          onConfirm={() => {
+            if (pendingRetention !== null) void update({ dictationRetentionDays: pendingRetention });
+          }}
+        />
+        <SettingRow
+          title="Delete all dictations"
+          description="Remove all saved dictation text and audio from this device."
+          control={
+            <ConfirmDialog
+              trigger={<Button variant="destructive" loading={deleting}>Delete all dictations…</Button>}
+              title="Delete all dictations?"
+              description="This permanently removes saved dictation text and audio from Minutae. Anything already typed into other apps stays."
+              confirmLabel="Delete all dictations"
+              onConfirm={deleteAll}
+            />
           }
         />
       </section>
