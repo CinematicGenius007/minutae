@@ -639,3 +639,23 @@ test("search params live in the hash and don't come back from the sidebar", asyn
   await expect(page).toHaveURL(/#\/library$/);
   await expect(page.getByRole("searchbox", { name: "Search or ask" })).toHaveValue("");
 });
+
+test("meeting cleanup reports an absent Markdown export separately from deletions", async ({ page }) => {
+  await page.goto('/#/meetings/' + MEETING);
+  const result = await page.evaluate(async (id) => {
+    const entrypoint = "/src/lib/api.ts";
+    const { api } = await import(entrypoint) as typeof import("../src/lib/api");
+    const first = await api.deleteMeetingParts(id, ["markdown"]);
+    const contents = await api.meetingContents(id);
+    const second = await api.deleteMeetingParts(id, ["markdown"]);
+    return { first, contents, second };
+  }, MEETING);
+
+  expect(result.first.deleted).toEqual(["markdown"]);
+  expect(result.first.markdownNotice).toBeNull();
+  expect(result.contents.markdownPath).toBeNull();
+  expect(result.contents.markdownNotice).toContain("No Markdown export was found");
+  expect(result.second.deleted).toEqual([]);
+  expect(result.second.failures).toEqual([]);
+  expect(result.second.markdownNotice).toBe(result.contents.markdownNotice);
+});

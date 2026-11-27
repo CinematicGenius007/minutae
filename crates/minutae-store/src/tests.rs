@@ -479,6 +479,7 @@ fn legacy_meeting_import_is_atomic_and_idempotent() {
             path: "/r/mic.wav".into(),
             duration_ms: Some(1000),
             bytes: Some(44),
+            deleted: false,
         }],
         transcript: Some(Transcript {
             meeting_id: m.id,
@@ -728,6 +729,14 @@ fn v2_migration_backfills_title_key() {
              ALTER TABLE meetings DROP COLUMN echo_cancel;
              ALTER TABLE meetings DROP COLUMN markdown_file;
              ALTER TABLE meetings DROP COLUMN checklist_curated;
+             ALTER TABLE meetings DROP COLUMN jobs_retired;
+             ALTER TABLE meetings DROP COLUMN audio_removed;
+             ALTER TABLE meetings DROP COLUMN markdown_removed;
+             ALTER TABLE tracks DROP COLUMN deleted;
+             DROP TABLE meeting_exports;
+             DROP TABLE storage_folders;
+             DROP TABLE pending_file_cleanup;
+             DROP TABLE pending_summary_scans;
              ALTER TABLE action_items DROP COLUMN source_ms;
              DROP TABLE meeting_waveforms;
              DROP TABLE discarded_recordings;
@@ -773,4 +782,68 @@ fn echo_cancel_report_round_trips_and_shows_in_detail() {
         Some(off)
     );
     assert_eq!(s.echo_cancel(Uuid::new_v4()).unwrap(), None);
+}
+
+#[test]
+fn v5_migration_curates_completed_checklists() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v4.db");
+    let s = Store::open(&path).unwrap();
+    let m = meeting("Call", Utc::now());
+    s.create_meeting(&m).unwrap();
+    s.write(|c| {
+        c.execute(
+            "INSERT INTO action_items (meeting_id, position, text, done, created_at)
+             VALUES (?1, 0, 'Send notes', 1, 0)",
+            [m.id.to_string()],
+        )?;
+        c.execute_batch(
+            "ALTER TABLE meetings DROP COLUMN markdown_file;
+             ALTER TABLE meetings DROP COLUMN checklist_curated;
+             ALTER TABLE meetings DROP COLUMN jobs_retired;
+             ALTER TABLE meetings DROP COLUMN audio_removed;
+             ALTER TABLE meetings DROP COLUMN markdown_removed;
+             ALTER TABLE tracks DROP COLUMN deleted;
+             DROP TABLE meeting_exports;
+             DROP TABLE storage_folders;
+             DROP TABLE pending_file_cleanup;
+             DROP TABLE pending_summary_scans;
+             ALTER TABLE action_items DROP COLUMN source_ms;
+             DROP TABLE meeting_waveforms;
+             DROP TABLE discarded_recordings;
+             PRAGMA user_version = 4;",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    drop(s);
+    let s = Store::open(&path).unwrap();
+    let old = s.list_action_items(m.id).unwrap();
+    assert!(old[0].item.done);
+    s.upsert_summary(&summary(m.id, &[("Regenerated task", false)]))
+        .unwrap();
+    assert_eq!(s.list_action_items(m.id).unwrap(), old);
+}
+
+#[test]
+fn stale_waveform_cannot_repopulate_cache_after_audio_deletion() {
+    let s = Store::open_in_memory().unwrap();
+    let m = meeting("Tape", Utc::now());
+    s.create_meeting(&m).unwrap();
+    s.upsert_track(&TrackFile {
+        meeting_id: m.id,
+        track: minutae_core::Track::Mic,
+        path: "mic.wav".into(),
+        duration_ms: None,
+        bytes: None,
+        deleted: false,
+    })
+    .unwrap();
+    s.cache_waveform(m.id, "mic", "current", "10", &[0.2])
+        .unwrap();
+    assert!(s.waveform(m.id, "mic", "current", "10").unwrap().is_some());
+    s.trim_meeting(m.id, true, false, false).unwrap();
+    s.cache_waveform(m.id, "mic", "current", "10", &[0.2])
+        .unwrap();
+    assert!(s.waveform(m.id, "mic", "current", "10").unwrap().is_none());
 }

@@ -80,7 +80,9 @@ export const api = {
   editActionItem: (id: Uuid, itemId: Uuid, item: ActionItemInput) => call<ActionItem>("edit_action_item", { id, itemId, item }),
   deleteActionItem: (id: Uuid, itemId: Uuid) => call<void>("delete_action_item", { id, itemId }),
   summarizeAgain: (id: Uuid) => call<void>("summarize_again", { id }),
+  /** Includes a notice when no Markdown export was found in known folders. */
   meetingContents: (id: Uuid) => call<MeetingContents>("meeting_contents", { id }),
+  /** markdownNotice describes an absent export when Markdown was selected for deletion. */
   deleteMeetingParts: (id: Uuid, parts: MeetingPart[]) => call<MeetingDeletion>("delete_meeting_parts", { id, parts }),
   recordingDiscardInfo: (id: Uuid) => call<RecordingDiscardInfo>("recording_discard_info", { id }),
   discardRecording: (id: Uuid) => call<RecordingDiscard>("discard_recording", { id }),
@@ -126,6 +128,7 @@ export const api = {
   storageUsage: () => call<StorageUsage>("storage_usage"),
   pickFolder: () => call<string | null>("pick_folder"),
   exportAll: () => call<string | null>("export_all"),
+  /** A cleanup error can be reported after the library and settings have been erased. */
   eraseAll: () => call<void>("erase_all"),
 
   // import from older Minutae apps (MIG-10)

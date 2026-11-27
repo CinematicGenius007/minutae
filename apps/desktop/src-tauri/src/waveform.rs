@@ -215,6 +215,9 @@ pub fn meeting_waveform(
             .map(|t| {
                 t.duration_ms
                     .or_else(|| {
+                        if t.deleted {
+                            return None;
+                        }
                         let path = Path::new(&t.path);
                         if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
                             return None;
@@ -231,7 +234,13 @@ pub fn meeting_waveform(
         tracks
             .iter()
             .find(|t| t.track == track)
-            .map_or(TrackWaveform::Missing, |t| source.read(t, range, buckets))
+            .map_or(TrackWaveform::Missing, |t| {
+                if t.deleted {
+                    TrackWaveform::Deleted
+                } else {
+                    source.read(t, range, buckets)
+                }
+            })
     };
     Ok(MeetingWaveform {
         range,
@@ -286,6 +295,7 @@ mod tests {
             path: String::new(),
             duration_ms: Some(900),
             bytes: None,
+            deleted: false,
         };
         let range = Some(WaveformRange {
             start_ms: 100,
@@ -300,6 +310,21 @@ mod tests {
         );
         assert_eq!(tape.system, TrackWaveform::Missing);
         assert!(meeting_waveform(&FakeWaveform, &[], 0, MAX_BUCKETS + 1, range).is_err());
+    }
+
+    #[test]
+    fn deleted_track_returns_without_invoking_the_waveform_source() {
+        let track = TrackFile {
+            meeting_id: uuid::Uuid::new_v4(),
+            track: Track::Mic,
+            path: "/unmounted/mic.wav".into(),
+            duration_ms: None,
+            bytes: None,
+            deleted: true,
+        };
+        let tape = meeting_waveform(&FakeWaveform, &[track], 800, 2, None).unwrap();
+        assert_eq!(tape.mic, TrackWaveform::Deleted);
+        assert_eq!(tape.range.end_ms, 800);
     }
 
     #[test]
@@ -381,6 +406,7 @@ mod tests {
             path: path.to_string_lossy().into_owned(),
             duration_ms: Some(6),
             bytes: None,
+            deleted: false,
         };
         let range = WaveformRange {
             start_ms: 1,

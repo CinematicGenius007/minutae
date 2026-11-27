@@ -247,6 +247,7 @@ function mockTrack(d: MeetingDetail, track: Track, buckets: number, range: Wavef
   }) };
 }
 
+const markdownNotFound = "No Markdown export was found in Minutae’s known folders.";
 const byteLength = (s: string) => new TextEncoder().encode(s).length;
 function contents(d: MeetingDetail): MeetingContents {
   const id = d.meeting.id;
@@ -268,7 +269,7 @@ function contents(d: MeetingDetail): MeetingContents {
     durationMs: d.durationMs, trackCount, lineCount: d.segments.length, speakerCount: d.speakers.length,
     transcriptExcerpt: d.segments[0]?.text ?? null, decisionCount: summary?.decisions.length ?? 0,
     actionCount: d.actionItems.length, markCount: d.moments.length, summaryExcerpt: summary?.overview ?? null,
-    markdownPath: exported?.path ?? null,
+    markdownPath: exported?.path ?? null, markdownNotice: exported ? null : markdownNotFound,
   };
 }
 
@@ -278,9 +279,13 @@ function removeParts(d: MeetingDetail, parts: MeetingPart[]): MeetingDeletion {
   if (!parts.length) throw new Error("Select at least one part to delete.");
   const deleted: MeetingPart[] = [];
   const failures: MeetingPartFailure[] = [];
-  d.progress = null;
-  if (d.meeting.status === "processing") d.meeting = { ...d.meeting, status: "done", failure: null };
-  for (const info of contents(d).parts) {
+  const before = contents(d);
+  if (before.parts.every((p) => !p.present) || before.parts.some((p) => p.present && parts.includes(p.part))) {
+    d.progress = null;
+    if (d.meeting.status === "processing") d.meeting = { ...d.meeting, status: "failed",
+      failure: { kind: "cancelled", message: "Processing stopped when meeting content was removed.", fix: null } };
+  }
+  for (const info of before.parts) {
     if (!parts.includes(info.part) || !info.present) continue;
     const reason = info.blockedReason ?? (info.part === "audio" && meetingDeleteMode === "partial" ? "An audio file could not be removed." : null);
     if (reason) { failures.push({ part: info.part, reason }); continue; }
@@ -299,7 +304,8 @@ function removeParts(d: MeetingDetail, parts: MeetingPart[]): MeetingDeletion {
   const meetingRemoved = !failures.length && remaining.parts.every((p) => !p.present);
   if (meetingRemoved) { removedMeetings.add(id); meetingDetails.delete(id); }
   meetingChanged(id);
-  return { deleted, failures, meetingRemoved, remaining: meetingRemoved ? null : remaining };
+  return { deleted, failures, meetingRemoved, remaining: meetingRemoved ? null : remaining,
+    markdownNotice: parts.includes("markdown") ? before.markdownNotice : null };
 }
 
 function syncActionMarkdown(d: MeetingDetail) {

@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 pub use audio::read_wav_16k_mono;
 pub use merge::{MAX_GAP_MS, YOU_LABEL, merge, merge_single_track};
+pub use models::download_files;
 pub use models::{
     DiarizeModelStatus, DiarizeModels, DownloadProgress, EMBEDDING_FILE, EMBEDDING_URL,
     SEGMENTATION_FILE, SEGMENTATION_URL,

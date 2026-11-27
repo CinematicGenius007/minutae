@@ -106,28 +106,29 @@ pub async fn run_retention(app: &AppHandle) {
     let Ok(meetings) = store.call(|s| s.list_meetings(100_000, 0)).await else {
         return;
     };
-    let mut removed = 0;
+    let folders = Arc::new(meeting_content::ContentFolders::current(&st.settings()));
     for item in meetings
         .into_iter()
         .filter(|m| retention_eligible(&m.meeting, cutoff))
     {
         let id = item.meeting.id;
-        let Ok(tracks) = store.call(move |s| s.list_tracks(id)).await else {
-            continue;
-        };
-        for t in tracks {
-            if std::fs::remove_file(&t.path).is_ok() {
-                removed += 1;
-            }
-            if t.track == minutae_core::Track::Mic {
-                let clean =
-                    std::path::Path::new(&t.path).with_file_name(minutae_aec::CLEAN_MIC_FILE);
-                let _ = std::fs::remove_file(clean);
-            }
+        let operation = st.meeting_ops.lock(id).await;
+        let folders = folders.clone();
+        let result = store
+            .call(move |s| {
+                let _operation = operation;
+                if s.get_meeting(id)?
+                    .is_some_and(|m| retention_eligible(&m, cutoff))
+                {
+                    meeting_content::prune_audio(s, &folders, id)
+                        .map_err(minutae_store::StoreError::Invalid)?;
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(error) = result {
+            tracing::warn!(%id, %error, "could not prune meeting audio");
         }
-    }
-    if removed > 0 {
-        tracing::info!(removed, days, "deleted old audio");
     }
 }
 
@@ -193,6 +194,20 @@ fn spawn_background(
                 }
             }
         });
+        {
+            let _storage = st.storage_ops.lock().await;
+            if let Err(error) = meeting_content::remember_storage(&st, &st.settings()).await {
+                tracing::warn!(%error, "could not record meeting storage locations");
+            }
+            match meeting_content::recover_erased_files(&st).await {
+                Ok(errors) => {
+                    for error in errors {
+                        tracing::warn!(%error, "could not finish meeting file cleanup");
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "could not load pending file cleanup"),
+            }
+        }
         match runner.start().await {
             Ok(n) if n > 0 => tracing::info!(n, "resumed interrupted jobs"),
             Ok(_) => {}

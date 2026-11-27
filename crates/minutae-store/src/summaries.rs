@@ -101,11 +101,14 @@ fn publish_checklist(
             |r| r.get(0),
         )
         .optional()?;
-    if let Some(markdown) = markdown {
-        let markdown = publish(&markdown, &action_rows(tx, id)?)?;
+    let rendered = publish(
+        markdown.as_deref().unwrap_or_default(),
+        &action_rows(tx, id)?,
+    )?;
+    if markdown.is_some() {
         tx.execute(
             "UPDATE summaries SET markdown = ?2, updated_at = ?3 WHERE meeting_id = ?1",
-            params![mid, markdown, now_ms()],
+            params![mid, rendered, now_ms()],
         )?;
     }
     Ok(())
@@ -131,7 +134,11 @@ impl Store {
         self.transaction(|tx| {
             write_summary(tx, summary)?;
             tx.execute(
-                "UPDATE meetings SET markdown_file=?2 WHERE id=?1",
+                "INSERT OR IGNORE INTO meeting_exports (meeting_id, path) VALUES (?1, ?2)",
+                params![summary.meeting_id.to_string(), markdown_path],
+            )?;
+            tx.execute(
+                "UPDATE meetings SET markdown_file=?2, markdown_removed=0 WHERE id=?1",
                 params![summary.meeting_id.to_string(), markdown_path],
             )?;
             if let Some(title) = title {

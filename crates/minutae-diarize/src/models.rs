@@ -307,6 +307,14 @@ async fn remove_if_exists(path: &Path) -> Result<()> {
     }
 }
 
+/// Names reserved for speaker models and their in-progress downloads.
+pub fn download_files() -> Vec<String> {
+    [SEGMENTATION_FILE, EMBEDDING_FILE, SEGMENTATION_ARCHIVE]
+        .into_iter()
+        .flat_map(|name| [name.to_owned(), format!("{name}.part")])
+        .collect()
+}
+
 fn part_path(dest: &Path) -> PathBuf {
     let mut s = dest.as_os_str().to_owned();
     s.push(".part");

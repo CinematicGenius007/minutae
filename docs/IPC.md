@@ -64,7 +64,8 @@ Mock switches for these screens: `?os=linux&session=wayland` (portal), `&portal=
   `system` (“Others”) on the same millisecond range. Each ready track has exactly 1–2048
   requested peak levels from 0–1. A shorter track is zero-padded. Omit `range` for the whole tape
   or pass a segment’s `{ startMs, endMs }` for the line. `missing` means no track was registered,
-  `deleted` means a registered file is gone, and `unreadable` includes a reason.
+  `deleted` means a registered file is gone or its deletion was recorded, and `unreadable` includes
+  a reason. A recorded deletion skips disk access and clears the cached levels.
 - Playback uses `getMeeting(id).audio`, `audioUrl(path)` and the existing player’s
   `seek(segment.startMs, true)`. Follow playback with `currentMs` and the segment’s half-open
   interval. A timestamp can still be displayed when audio is unavailable.
@@ -73,29 +74,46 @@ Mock switches for these screens: `?os=linux&session=wayland` (portal), `&portal=
   `ActionItemInput` is a full replacement for text, owner, due and the optional `sourceMs`.
   Omitted or null optional fields clear their value. Edit preserves completion. Existing
   `set_action_done` also synchronizes the checklist. The saved summary and its existing Markdown
-  export reflect every change. An edit leaves a deleted export absent.
+  export reflect every change. For the file on disk, only the checklist is replaced. If Minutae
+  cannot identify one unambiguous Action Items checklist in a verified export, the command
+  returns an error and leaves the file and in-app checklist as they were. An edit leaves an
+  absent export absent.
 - `summarize_again(id)` queues a summary job for a finished meeting with a saved transcript.
   The meeting stays `done` with progress while the job runs. On failure, `meeting.failure` reports
   the error and the previous summary and export remain available. A successful rerun writes the
-  new export. Until the first user checklist change, generated items can be replaced. After any
+  new export. When the existing file differs from the last saved Markdown, Minutae first saves
+  those bytes to a sibling `*.edited-<uuid>.md` copy that it will never replace or clean up. If the
+  saved path is missing and belongs to a previous folder, the rerun writes to the current
+  summaries folder. Until the first user checklist change, generated items can be replaced. After any
   add, edit, delete or completion change, the entire checklist is curated. Reruns preserve its
-  rows, IDs, timestamps, completion and deletions.
+  rows, IDs, timestamps, completion and deletions. On upgrade, a checklist containing any
+  completed item is already considered curated.
 - `meeting_contents(id) → MeetingContents` lists `audio`, `transcript`, `summary` and
   `markdown`. File sizes are measured on disk. SQLite parts show UTF-8 content payload sizes,
   independent of database pages and indexes. A null size indicates a file could not be measured.
-  `blockedReason` explains why a part cannot be removed.
+  `blockedReason` explains why a part cannot be removed. `markdownNotice` is a message when no
+  export was found in known folders, otherwise null. On upgrade Minutae searches the current
+  and default folders and records verified paths. It remembers previous configured folders
+  from then on. If a known folder was offline during the scan, legacy exports with no saved
+  path can remain pending until the folder is available. Custom folders changed before this
+  upgrade may be unknown to Minutae.
 - `delete_meeting_parts(id, parts) → MeetingDeletion` accepts any nonempty selection on a saved
   meeting. Audio, transcript, in-app summary and Markdown are independent. The summary includes
   decisions, action items and marks. An export kept during summary deletion remains readable.
-  When all content is gone the meeting row is removed. The result gives successful parts,
-  failures and the refreshed ledger. File cleanup uses the default or configured storage folders
+  When all known content is gone the meeting row is removed. The result gives successful parts,
+  failures and the refreshed ledger. If Markdown was selected and no export was found,
+  `markdownNotice` explains the absence and Markdown is omitted from `deleted`. File cleanup uses the default or configured storage folders
   and locations saved for the meeting, including folders used before a settings change.
   User-chosen storage roots may resolve through symlinks. Cleanup opens files and directories
   below the root without following symlinks. It removes only recorder-owned names from the
-  meeting's ID directory and leaves non-empty directories in place. Markdown must carry the
-  matching meeting ID in its frontmatter. If a storage folder needed to locate a part is
+  meeting's ID directory, plus the exact imported audio filename when an import record verifies
+  it. Non-empty directories are left in place. Markdown must have a complete frontmatter block
+  with exactly one matching meeting ID. If cleanup is interrupted, the next file operation can
+  recover an adjacent `.minutae-pending-…` folder. After successful deletion the saved path is cleared. If a storage folder needed to locate a part is
   unavailable, the part and its meeting record remain available for retry. Deletion waits for
-  active processing and retires queued work before changing inputs.
+  active processing and retires queued work before changing inputs. Retiring jobs does not make
+  audio eligible for retention. A meeting whose processing was retired moves to `failed` and can
+  be retried explicitly.
 - `recording_discard_info(id) → RecordingDiscardInfo` reads active duration, WAV bytes on disk,
   track count, visible caption line count and marks. It can be refreshed while the prompt is
   open. `discard_recording(id) → RecordingDiscard` confirms for that ID, stops capture without
@@ -103,6 +121,11 @@ Mock switches for these screens: `?os=linux&session=wayland` (portal), `&portal=
   folder selected when recording began. If cleanup fails, including when that folder is
   unavailable, `cleanupError` explains why and Minutae keeps a pending cleanup record to retry
   on startup.
+
+- `erase_all()` applies the same file checks across known storage folders and pending discards,
+  then erases the library and resets settings. It retains file cleanup records for unavailable
+  meeting storage and retries them on startup. If anything could not be removed, the command
+  reports the affected locations or errors even if the library was erased.
 
 Browser mock switches include `?tape=ready|missing|deleted|unreadable`,
 `?meetingDelete=blocked|partial`, `?resummarize=failed|running` and

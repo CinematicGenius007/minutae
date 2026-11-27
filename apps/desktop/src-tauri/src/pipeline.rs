@@ -145,7 +145,7 @@ async fn transcribe(host: &dyn Host, ctx: &JobContext, id: MeetingId) -> Result<
         .map_err(store_failure)?;
     let files: Vec<(Track, PathBuf, u64)> = tracks
         .iter()
-        .filter(|t| Path::new(&t.path).exists())
+        .filter(|t| !t.deleted && Path::new(&t.path).exists())
         .map(|t| {
             (
                 t.track,
@@ -168,7 +168,7 @@ async fn transcribe(host: &dyn Host, ctx: &JobContext, id: MeetingId) -> Result<
     if let Some(mic) = files.iter_mut().find(|f| f.0 == Track::Mic) {
         let system = tracks
             .iter()
-            .find(|t| t.track == Track::System)
+            .find(|t| t.track == Track::System && !t.deleted)
             .map(|t| PathBuf::from(&t.path));
         if let Some(clean) = echo_cancel(host, &store, id, &settings, &mic.1, system).await? {
             mic.1 = clean;
@@ -340,7 +340,7 @@ async fn diarize(host: &dyn Host, ctx: &JobContext, id: MeetingId) -> Result<(),
         .partition(|s| s.track == Track::Mic);
     let system_path = tracks
         .iter()
-        .find(|t| t.track == Track::System)
+        .find(|t| t.track == Track::System && !t.deleted)
         .map(|t| PathBuf::from(&t.path))
         .filter(|p| p.exists());
 
@@ -433,9 +433,9 @@ pub fn summary_file_name(m: &Meeting) -> String {
 }
 
 /// Existing markdown file for a meeting (title may have changed since it was written).
-pub fn find_summary_file(dir: &Path, id: MeetingId) -> Option<PathBuf> {
-    crate::meeting_content::LocalMeetingFiles(minutae_core::paths::data_dir())
-        .find_markdown(dir, id)
+#[cfg(test)]
+fn find_summary_file(dir: &Path, id: MeetingId) -> Option<PathBuf> {
+    crate::meeting_content::LocalMeetingFiles.find_markdown(dir, id)
 }
 
 async fn summarize_step(
@@ -944,6 +944,7 @@ mod tests {
                     path: p.to_string_lossy().into(),
                     duration_ms: Some(4000),
                     bytes: None,
+                    deleted: false,
                 })
                 .unwrap();
         }

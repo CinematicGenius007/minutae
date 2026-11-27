@@ -136,6 +136,7 @@ fn copy_audio(src_file: &Path, root: &Path, id: Uuid) -> std::io::Result<(TrackF
             path: dest.to_string_lossy().into_owned(),
             duration_ms: crate::wav::duration_ms(&dest),
             bytes: Some(bytes),
+            deleted: false,
         },
         bytes,
     ))

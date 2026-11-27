@@ -11,6 +11,7 @@ mod dictations;
 mod import;
 mod jobs;
 mod meeting_content;
+pub use meeting_content::PendingFileCleanup;
 mod meetings;
 pub mod schema;
 mod search;

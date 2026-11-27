@@ -139,6 +139,7 @@ pub async fn start(
     from_call: bool,
 ) -> Result<dto::Meeting, String> {
     let st = app.state::<AppState>();
+    let _storage = st.storage_ops.lock().await;
     let mut guard = st.recording.lock().await;
     if let Some(r) = guard.as_ref() {
         if r.phase == RecordingPhase::Stopping {
@@ -355,7 +356,7 @@ pub async fn recording_discard_info(
     let live_line_count = r.live_lines.lock().unwrap_or_else(|e| e.into_inner()).len();
     drop(guard);
     let (audio_bytes, track_count) = tokio::task::spawn_blocking(move || {
-        LocalMeetingFiles(minutae_core::paths::data_dir())
+        LocalMeetingFiles
             .recording_sizes(&dir, id)
             .unwrap_or_else(|error| {
                 tracing::warn!(%id, %error, "could not measure audio before discard");
@@ -418,13 +419,7 @@ async fn discard_active(app: &AppHandle, id: MeetingId) -> Result<dto::Recording
     emit_state(app).await;
     let store = st.store.clone();
     let cleanup_error = tokio::task::spawn_blocking(move || {
-        let result = finish_discard(
-            &store,
-            Some(&*handle),
-            &LocalMeetingFiles(minutae_core::paths::data_dir()),
-            id,
-            &dir,
-        );
+        let result = finish_discard(&store, Some(&*handle), &LocalMeetingFiles, id, &dir);
         if let Some(engine) = captions {
             engine.stop();
         }
@@ -464,13 +459,15 @@ fn finish_discard(
     if let Some(capture) = capture {
         capture.discard_capture()?;
     }
-    files.delete_audio(dir, id).map_err(|e| e.to_string())?;
+    files
+        .delete_audio(dir, id, None)
+        .map_err(|e| e.to_string())?;
     store
         .finish_recording_discard(id)
         .map_err(|e| e.to_string())
 }
 
-async fn recover_discards(store: &Store, data_dir: &Path, operations: &MeetingOperations) {
+async fn recover_discards(store: &Store, operations: &MeetingOperations) {
     let discards = match store.call(Store::pending_recording_discards).await {
         Ok(discards) => discards,
         Err(error) => {
@@ -482,7 +479,7 @@ async fn recover_discards(store: &Store, data_dir: &Path, operations: &MeetingOp
         // A live discard may have written its pending row during startup.
         let operation = operations.lock(id).await;
         let store = store.clone();
-        let files = LocalMeetingFiles(data_dir.to_path_buf());
+        let files = LocalMeetingFiles;
         let result = tokio::task::spawn_blocking(move || {
             let _operation = operation;
             finish_discard(&store, None, &files, id, Path::new(&dir))
@@ -519,6 +516,7 @@ pub async fn finish_recorded(
             path: tracks.mic.to_string_lossy().into(),
             duration_ms: Some(tracks.duration_ms),
             bytes: size(&tracks.mic),
+            deleted: false,
         });
     }
     if let Some(sys) = &tracks.system {
@@ -528,6 +526,7 @@ pub async fn finish_recorded(
             path: sys.to_string_lossy().into(),
             duration_ms: Some(tracks.duration_ms),
             bytes: size(sys),
+            deleted: false,
         });
     }
     store
@@ -788,7 +787,7 @@ pub async fn recover(app: &AppHandle) {
     let st = app.state::<AppState>();
     let store = st.store.clone();
     let settings = st.settings();
-    recover_discards(&store, &minutae_core::paths::data_dir(), &st.meeting_ops).await;
+    recover_discards(&store, &st.meeting_ops).await;
     let Ok(meetings) = store.call(|s| s.list_meetings(10_000, 0)).await else {
         return;
     };
@@ -870,10 +869,12 @@ pub async fn recover(app: &AppHandle) {
             }
             MeetingStatus::Processing if item.progress.is_none() => {
                 let id = m.id;
-                let jobs = store
-                    .call(move |s| s.jobs_for_meeting(id))
+                let Ok((false, jobs)) = store
+                    .call(move |s| Ok((s.jobs_retired(id)?, s.jobs_for_meeting(id)?)))
                     .await
-                    .unwrap_or_default();
+                else {
+                    continue;
+                };
                 let active = jobs.iter().any(|j| {
                     matches!(
                         j.state,
@@ -990,7 +991,7 @@ mod tests {
         std::fs::write(dir.join("chunks/mic-000000.wav"), b"audio").unwrap();
         let store = Store::open_in_memory().unwrap();
         queue_test_discard(&store, id, &dir);
-        let files = LocalMeetingFiles(tmp.path().join("minutae"));
+        let files = LocalMeetingFiles;
         let fake = FakeDiscardCapture(std::cell::Cell::new(false));
         finish_discard(&store, Some(&fake), &files, id, &dir).unwrap();
         assert!(fake.0.get());
@@ -1004,7 +1005,6 @@ mod tests {
     async fn unavailable_discard_folder_does_not_prevent_stop_and_retries_at_startup() {
         use std::fs;
         let tmp = tempfile::tempdir().unwrap();
-        let data = tmp.path().join("minutae");
         let root = tmp.path().join("custom-recordings");
         let unplugged = tmp.path().join("unplugged-recordings");
         let id = Uuid::new_v4();
@@ -1017,27 +1017,21 @@ mod tests {
             fs::rename(&root, &unplugged).unwrap();
             queue_test_discard(&store, id, &dir);
             let fake = FakeDiscardCapture(std::cell::Cell::new(false));
-            let error = finish_discard(
-                &store,
-                Some(&fake),
-                &LocalMeetingFiles(data.clone()),
-                id,
-                &dir,
-            )
-            .unwrap_err();
+            let error =
+                finish_discard(&store, Some(&fake), &LocalMeetingFiles, id, &dir).unwrap_err();
             assert!(fake.0.get());
             assert!(error.contains("storage folder"));
             assert!(error.contains("unavailable"));
         }
         let store = Store::open(db).unwrap();
         let operations = MeetingOperations::default();
-        recover_discards(&store, &data, &operations).await;
+        recover_discards(&store, &operations).await;
         assert_eq!(
             store.pending_recording_discards().unwrap(),
             [(id, dir.to_string_lossy().into_owned())]
         );
         fs::rename(unplugged, root).unwrap();
-        recover_discards(&store, &data, &operations).await;
+        recover_discards(&store, &operations).await;
         assert!(!dir.exists());
         assert!(store.pending_recording_discards().unwrap().is_empty());
         assert!(store.get_meeting(id).unwrap().is_none());

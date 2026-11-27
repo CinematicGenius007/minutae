@@ -23,6 +23,8 @@ pub struct Track {
     pub path: String,
     pub duration_ms: Option<u64>,
     pub bytes: Option<u64>,
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 /// Row for the Meetings list (Paper 01).
@@ -163,10 +165,10 @@ pub(crate) fn insert_meeting(c: &rusqlite::Connection, m: &Meeting) -> Result<()
 
 pub(crate) fn write_track(c: &rusqlite::Connection, t: &Track) -> Result<()> {
     c.execute(
-        "INSERT INTO tracks (meeting_id, track, path, duration_ms, bytes) VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO tracks (meeting_id, track, path, duration_ms, bytes, deleted) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(meeting_id, track) DO UPDATE SET path = excluded.path,
-           duration_ms = excluded.duration_ms, bytes = excluded.bytes",
-        params![t.meeting_id.to_string(), enum_str(&t.track), t.path, t.duration_ms, t.bytes],
+           duration_ms = excluded.duration_ms, bytes = excluded.bytes, deleted = excluded.deleted",
+        params![t.meeting_id.to_string(), enum_str(&t.track), t.path, t.duration_ms, t.bytes, t.deleted],
     )?;
     Ok(())
 }
@@ -232,7 +234,8 @@ impl Store {
         let failure = failure.map(serde_json::to_string).transpose()?;
         self.write(|c| {
             let n = c.execute(
-                "UPDATE meetings SET status = ?2, failure = ?3, updated_at = ?4 WHERE id = ?1",
+                "UPDATE meetings SET status = ?2, failure = ?3, updated_at = ?4,
+                  jobs_retired = CASE WHEN ?2 = 'processing' THEN 0 ELSE jobs_retired END WHERE id = ?1",
                 params![id.to_string(), enum_str(&status), failure, now_ms()],
             )?;
             expect_one(n, id)
@@ -361,7 +364,7 @@ impl Store {
 
     pub fn list_tracks(&self, id: MeetingId) -> Result<Vec<Track>> {
         self.read(|c| {
-            let mut stmt = c.prepare_cached("SELECT meeting_id, track, path, duration_ms, bytes FROM tracks WHERE meeting_id = ?1 ORDER BY track")?;
+            let mut stmt = c.prepare_cached("SELECT meeting_id, track, path, duration_ms, bytes, deleted FROM tracks WHERE meeting_id = ?1 ORDER BY track")?;
             let rows = stmt.query_map([id.to_string()], |r| {
                 Ok(Track {
                     meeting_id: parse_uuid(&r.get::<_, String>(0)?)?,
@@ -369,6 +372,7 @@ impl Store {
                     path: r.get(2)?,
                     duration_ms: r.get(3)?,
                     bytes: r.get(4)?,
+                    deleted: r.get(5)?,
                 })
             })?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

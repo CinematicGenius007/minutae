@@ -1,13 +1,12 @@
 //! Meeting-owned files and the content ledger. File work runs on the blocking pool.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
-use minutae_core::{AppSettings, Meeting, MeetingId, MeetingStatus, Summary, paths};
+use minutae_core::{AppSettings, MeetingId, MeetingStatus, paths};
 use minutae_jobs::{JobKind, JobState};
-use minutae_store::{ActionChange, ActionItemRow, Store, StoreError, TrackFile};
+use minutae_store::{ActionChange, Store, StoreError, TrackFile};
 use tauri::{AppHandle, Manager, State};
 
 use crate::commands::uuid;
@@ -15,12 +14,17 @@ use crate::dto::{
     ActionItem, ActionItemInput, MeetingContents, MeetingDeletion, MeetingPart, MeetingPartFailure,
     MeetingPartInfo,
 };
-use crate::pipeline::summary_file_name;
 use crate::state::{AppState, emit_meetings_changed, recordings_root, summaries_root};
 
+mod erase;
 mod files;
-pub use files::{LocalMeetingFiles, MeetingFiles, summary_belongs_to};
-use files::{present, unsafe_path};
+mod publication;
+#[cfg(test)]
+pub(crate) use erase::erase_meeting_files;
+pub(crate) use erase::{erase_meetings, recover_erased_files};
+pub use files::{LocalMeetingFiles, MeetingFiles, read_export, summary_belongs_to};
+use publication::publish_checklist;
+pub use publication::publish_summary;
 
 type R<T> = Result<T, String>;
 
@@ -31,12 +35,57 @@ const PARTS: [MeetingPart; 4] = [
     MeetingPart::Markdown,
 ];
 
+const MARKDOWN_NOT_FOUND: &str = "No Markdown export was found in Minutae’s known folders.";
+
 pub fn markdown_path(
     store: &Store,
     dir: &Path,
     id: MeetingId,
 ) -> minutae_store::Result<Option<PathBuf>> {
-    saved_markdown_path(store, &LocalMeetingFiles(paths::data_dir()), dir, id)
+    saved_markdown_path(store, &LocalMeetingFiles, dir, id)
+}
+
+fn known_roots(
+    store: &Store,
+    kind: &str,
+    current: &Path,
+    default: PathBuf,
+) -> minutae_store::Result<BTreeSet<PathBuf>> {
+    let mut roots = BTreeSet::from([current.to_path_buf(), default]);
+    roots.extend(store.storage_folders(kind)?.into_iter().map(PathBuf::from));
+    Ok(roots)
+}
+
+fn known_markdown_paths(
+    store: &Store,
+    files: &LocalMeetingFiles,
+    roots: &BTreeSet<PathBuf>,
+    id: MeetingId,
+) -> minutae_store::Result<BTreeSet<PathBuf>> {
+    let mut paths: BTreeSet<_> = store
+        .meeting_exports(id)?
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+    let pending: BTreeSet<_> = store
+        .pending_summary_scans(id)?
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+    for root in roots {
+        let Ok(found) = files.find_markdowns(root, id) else {
+            continue;
+        };
+        for path in found {
+            if paths.insert(path.clone()) {
+                store.remember_meeting_export(id, &path.to_string_lossy())?;
+            }
+        }
+        if pending.contains(root) {
+            store.finish_summary_scan(id, &root.to_string_lossy())?;
+        }
+    }
+    Ok(paths)
 }
 
 fn saved_markdown_path(
@@ -45,123 +94,24 @@ fn saved_markdown_path(
     dir: &Path,
     id: MeetingId,
 ) -> minutae_store::Result<Option<PathBuf>> {
-    let tracked = store.meeting_markdown_file(id)?.map(PathBuf::from);
-    Ok(tracked
-        .or_else(|| files.find_markdown(dir, id))
-        .or_else(|| {
-            let default = files.0.join("summaries");
-            (dir != default)
-                .then(|| files.find_markdown(&default, id))
-                .flatten()
-        }))
-}
-
-fn render_actions(markdown: &str, actions: &[ActionItemRow]) -> String {
-    let heading = "## Action Items";
-    let mut result = markdown.to_string();
-    if let Some(start) = markdown
-        .split_inclusive('\n')
-        .scan(0, |offset, line| {
-            let start = *offset;
-            *offset += line.len();
-            Some((start, line))
-        })
-        .find_map(|(offset, line)| {
-            (line.trim_end_matches(['\r', '\n']) == heading).then_some(offset)
-        })
+    let primary = store.meeting_markdown_file(id)?.map(PathBuf::from);
+    if let Some(path) = &primary
+        && files
+            .markdown_bytes(path, id)
+            .is_ok_and(|size| size.is_some())
     {
-        let end = markdown[start + heading.len()..]
-            .find("\n## ")
-            .map_or(markdown.len(), |offset| start + heading.len() + offset + 1);
-        result.replace_range(start..end, "");
+        return Ok(primary);
     }
-    if actions.is_empty() {
-        return result.trim_end().to_string() + "\n";
-    }
-    result.truncate(result.trim_end().len());
-    result.push_str("\n\n## Action Items\n");
-    for row in actions {
-        let check = if row.item.done { 'x' } else { ' ' };
-        let label = minutae_llm::summary::checklist_text(&row.item);
-        result.push_str(&format!(
-            "- [{check}] {}",
-            label.split_whitespace().collect::<Vec<_>>().join(" ")
-        ));
-        if let Some(ms) = row.source_ms {
-            result.push_str(&format!(" · {}:{:02}", ms / 60_000, ms / 1000 % 60));
-        }
-        result.push('\n');
-    }
-    result
-}
-
-fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
-    let parent = path.parent().ok_or_else(unsafe_path)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-    tmp.write_all(content)?;
-    tmp.as_file().sync_all()?;
-    tmp.persist(path).map_err(|e| e.error)?;
-    Ok(())
-}
-
-/// Leaves the old export in place until a complete replacement is ready, and
-/// restores it if the SQLite transaction cannot commit.
-fn publish_checklist<T>(
-    path: Option<&Path>,
-    id: MeetingId,
-    update: impl FnOnce(&mut minutae_store::PublishChecklist<'_>) -> minutae_store::Result<T>,
-) -> minutae_store::Result<T> {
-    let io_error =
-        |e: io::Error| StoreError::Invalid(format!("The summary Markdown couldn't be saved: {e}"));
-    let mut backup = None;
-    let outcome = update(&mut |markdown, actions| {
-        let rendered = render_actions(markdown, actions);
-        if let Some(path) = path {
-            let previous = present(fs::symlink_metadata(path)).map_err(io_error)?;
-            let bytes = if previous.is_some() {
-                if !summary_belongs_to(path, id).map_err(io_error)? {
-                    return Err(io_error(unsafe_path()));
-                }
-                Some(fs::read(path).map_err(io_error)?)
-            } else {
-                None
-            };
-            atomic_write(path, rendered.as_bytes()).map_err(io_error)?;
-            backup = Some(bytes);
-        }
-        Ok(rendered)
-    });
-    if outcome.is_err()
-        && let (Some(path), Some(backup)) = (path, backup)
-    {
-        let restore = match backup {
-            Some(bytes) => atomic_write(path, &bytes),
-            None => fs::remove_file(path),
-        };
-        if let Err(e) = restore {
-            return Err(io_error(e));
-        }
-    }
-    outcome
-}
-
-pub fn publish_summary(
-    store: &Store,
-    meeting: &Meeting,
-    summary: &Summary,
-    title: Option<&str>,
-    dir: &Path,
-) -> minutae_store::Result<()> {
-    let path = markdown_path(store, dir, meeting.id)?
-        .unwrap_or_else(|| dir.join(summary_file_name(meeting)));
-    fs::create_dir_all(
-        path.parent()
-            .ok_or_else(|| StoreError::Invalid("Invalid summary folder.".into()))?,
-    )
-    .map_err(|e| StoreError::Invalid(format!("The summary folder couldn't be created: {e}")))?;
-    publish_checklist(Some(&path), meeting.id, |publish| {
-        store.publish_summary(summary, title, &path.to_string_lossy(), publish)
-    })
+    let roots = known_roots(store, "summaries", dir, paths::summaries_dir())?;
+    let paths = known_markdown_paths(store, files, &roots, id)?;
+    Ok(paths
+        .into_iter()
+        .find(|path| {
+            files
+                .markdown_bytes(path, id)
+                .is_ok_and(|size| size.is_some())
+        })
+        .or(primary))
 }
 
 async fn change_action(
@@ -176,12 +126,9 @@ async fn change_action(
         .store
         .call(move |store| {
             let path = markdown_path(store, &dir, id)?;
-            // If the user deleted the export, editing the checklist only updates SQLite.
-            let path = path.as_deref().filter(|p| match fs::symlink_metadata(p) {
-                Err(e) => e.kind() != io::ErrorKind::NotFound,
-                Ok(_) => true,
-            });
-            publish_checklist(path, id, |publish| store.change_action(id, change, publish))
+            publish_checklist(path.as_deref(), id, |publish| {
+                store.change_action(id, change, publish)
+            })
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -308,44 +255,73 @@ pub async fn summarize_again(app: AppHandle, id: String) -> R<()> {
     Ok(())
 }
 
+#[derive(Default)]
+struct AudioLocation {
+    required: bool,
+    imported: Option<String>,
+}
+
 fn audio_directories(
     id: MeetingId,
     tracks: &[TrackFile],
     folders: &ContentFolders,
-) -> (BTreeMap<PathBuf, bool>, Option<String>) {
+    imported: bool,
+    removed: bool,
+) -> (BTreeMap<PathBuf, AudioLocation>, Option<String>) {
     let name = id.to_string();
     let default = folders.data.join("recordings");
-    let mut dirs = BTreeMap::from([(default.join(&name), false)]);
-    // Without a track row, chunks may still live in the configured folder.
-    dirs.insert(
-        folders.recordings.join(&name),
-        folders.recordings != default && tracks.is_empty(),
-    );
+    let mut dirs = BTreeMap::new();
+    if !removed {
+        dirs.insert(default.join(&name), AudioLocation::default());
+        // Without a track row, chunks may still live in the configured folder.
+        dirs.insert(
+            folders.recordings.join(&name),
+            AudioLocation {
+                required: folders.recordings != default && tracks.is_empty(),
+                imported: None,
+            },
+        );
+    }
     let mut reason = None;
-    for track in tracks {
-        match stored_track_path(track, id) {
-            Some(dir) => {
-                dirs.insert(dir.to_path_buf(), true);
+    for track in tracks.iter().filter(|t| !t.deleted) {
+        if let Some((dir, extra)) = stored_track_path(track, id, imported) {
+            let entry = dirs.entry(dir.to_path_buf()).or_default();
+            entry.required = true;
+            if let Some(extra) = extra {
+                entry.imported = Some(extra.to_owned());
             }
-            _ => {
-                reason = Some(
-                    "A stored audio path is outside the meeting's own recording folder.".into(),
-                )
-            }
+        } else {
+            reason = Some("A stored audio path is outside the meeting's own recording folder or has an unverified name.".into());
         }
     }
     (dirs, reason)
 }
 
-fn stored_track_path(track: &TrackFile, id: MeetingId) -> Option<&Path> {
+fn stored_track_path(
+    track: &TrackFile,
+    id: MeetingId,
+    imported: bool,
+) -> Option<(&Path, Option<&str>)> {
     let path = Path::new(&track.path);
     let directory = path.parent()?;
+    if directory.file_name()?.to_str()? != id.to_string() {
+        return None;
+    }
+    let file = path.file_name()?.to_str()?;
     let name = match track.track {
         minutae_core::Track::Mic => "mic.wav",
         minutae_core::Track::System => "system.wav",
     };
-    (directory.ends_with(id.to_string()) && path.file_name().is_some_and(|n| n == name))
-        .then_some(directory)
+    if file == name {
+        return Some((directory, None));
+    }
+    let extension = file.strip_prefix("mic.")?;
+    (imported
+        && track.track == minutae_core::Track::Mic
+        && !extension.is_empty()
+        && !extension.contains('.')
+        && extension == extension.to_ascii_lowercase())
+    .then_some((directory, Some(file)))
 }
 
 fn disk_part(
@@ -382,18 +358,18 @@ fn db_part(part: MeetingPart, present: bool, bytes: u64) -> MeetingPartInfo {
 
 struct Ledger {
     contents: MeetingContents,
-    audio_dirs: BTreeSet<PathBuf>,
-    markdown: Option<PathBuf>,
+    audio_dirs: BTreeMap<PathBuf, AudioLocation>,
+    markdown: BTreeSet<PathBuf>,
 }
 
-struct ContentFolders {
+pub(crate) struct ContentFolders {
     data: PathBuf,
     recordings: PathBuf,
     summaries: PathBuf,
 }
 
 impl ContentFolders {
-    fn current(settings: &AppSettings) -> Self {
+    pub(crate) fn current(settings: &AppSettings) -> Self {
         Self {
             data: paths::data_dir(),
             recordings: recordings_root(settings),
@@ -412,39 +388,70 @@ fn ledger(
         .meeting_detail(id)
         .map_err(|e| e.to_string())?
         .ok_or("This meeting no longer exists.")?;
-    let (audio_dirs, audio_blocked) = audio_directories(id, &detail.tracks, folders);
+    let (audio_removed, markdown_removed) =
+        store.meeting_storage_state(id).map_err(|e| e.to_string())?;
+    let imported = store.is_imported_meeting(id).map_err(|e| e.to_string())?;
+    let (audio_dirs, audio_blocked) =
+        audio_directories(id, &detail.tracks, folders, imported, audio_removed);
     let mut total = None;
     let mut audio_error = None;
-    let mut existing_audio_dirs = BTreeSet::new();
-    for (dir, required) in audio_dirs {
-        match files.audio_bytes(&dir, id, required) {
+    let mut existing_audio_dirs = BTreeMap::new();
+    for (dir, entry) in audio_dirs {
+        match files.audio_bytes(&dir, id, entry.required, entry.imported.as_deref()) {
             Ok(Some(bytes)) => total = Some(total.unwrap_or(0) + bytes),
             Ok(None) => continue,
             Err(e) => audio_error = Some(e),
         }
-        existing_audio_dirs.insert(dir);
+        existing_audio_dirs.insert(dir, entry);
     }
     let audio = disk_part(
         MeetingPart::Audio,
         audio_error.map_or(Ok(total), Err),
         audio_blocked,
     );
-    let local_files = LocalMeetingFiles(folders.data.clone());
-    let markdown = saved_markdown_path(store, &local_files, &folders.summaries, id)
-        .map_err(|e| e.to_string())?;
-    let md = match &markdown {
-        Some(path) => disk_part(MeetingPart::Markdown, files.markdown_bytes(path, id), None),
-        // Legacy exports have no stored path, so an unavailable configured
-        // folder can't be treated as proof the export is gone.
-        None if folders.summaries != folders.data.join("summaries") => disk_part(
-            MeetingPart::Markdown,
-            local_files
-                .check_summaries_folder(&folders.summaries)
-                .map(|()| None),
-            None,
-        ),
-        None => db_part(MeetingPart::Markdown, false, 0),
-    };
+
+    let roots = known_roots(
+        store,
+        "summaries",
+        &folders.summaries,
+        folders.data.join("summaries"),
+    )
+    .map_err(|e| e.to_string())?;
+    let markdown =
+        known_markdown_paths(store, &LocalMeetingFiles, &roots, id).map_err(|e| e.to_string())?;
+    let mut markdown_path = None;
+    let mut markdown_bytes = None;
+    let mut markdown_error = None;
+    for path in &markdown {
+        match files.markdown_bytes(path, id) {
+            Ok(Some(bytes)) => {
+                markdown_bytes = Some(markdown_bytes.unwrap_or(0) + bytes);
+                markdown_path.get_or_insert(path);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                markdown_error = Some(e);
+            }
+        }
+    }
+    if markdown.is_empty()
+        && !markdown_removed
+        && folders.summaries != folders.data.join("summaries")
+        && let Err(error) = LocalMeetingFiles.find_markdowns(&folders.summaries, id)
+    {
+        markdown_error = Some(error);
+    }
+    let pending = store.pending_summary_scans(id).map_err(|e| e.to_string())?;
+    if let Some(root) = pending.first() {
+        markdown_error = Some(io::Error::other(format!(
+            "The storage folder ‘{root}’ was unavailable when Minutae looked for this meeting’s export."
+        )));
+    }
+    let md = disk_part(
+        MeetingPart::Markdown,
+        markdown_error.map_or(Ok(markdown_bytes), Err),
+        None,
+    );
     let segments = detail
         .transcript
         .as_ref()
@@ -507,7 +514,7 @@ fn ledger(
             track_count: detail
                 .tracks
                 .iter()
-                .filter(|track| files.track_exists(Path::new(&track.path), id))
+                .filter(|track| !track.deleted && files.track_exists(Path::new(&track.path), id))
                 .count(),
             line_count: segments.len(),
             speaker_count: detail.speakers.len(),
@@ -521,10 +528,8 @@ fn ledger(
                 .summary
                 .as_ref()
                 .map(|s| minutae_llm::summary::shorten(&s.overview, 120)),
-            markdown_path: md
-                .present
-                .then(|| markdown.as_ref().map(|p| p.to_string_lossy().into_owned()))
-                .flatten(),
+            markdown_path: markdown_path.map(|p| p.to_string_lossy().into_owned()),
+            markdown_notice: (!md.present).then_some(MARKDOWN_NOT_FOUND),
             parts: vec![audio, transcript, summary, md],
         },
         audio_dirs: existing_audio_dirs,
@@ -558,65 +563,67 @@ fn delete_parts(
     let removing_content = before.contents.parts.iter().any(|entry| {
         parts.contains(&entry.part) && entry.present && entry.blocked_reason.is_none()
     });
-    let empty = before.contents.parts.iter().all(|entry| !entry.present);
-    if (removing_content || empty)
-        && (matches!(
-            meeting.status,
-            MeetingStatus::Processing | MeetingStatus::Failed
-        ) || store
-            .jobs_for_meeting(id)
-            .map_err(|e| e.to_string())?
-            .iter()
-            .any(|j| !j.state.is_terminal()))
-    {
+    if removing_content || before.contents.parts.iter().all(|entry| !entry.present) {
         store
             .settle_meeting_for_deletion(id)
             .map_err(|e| e.to_string())?;
     }
     for info in &before.contents.parts {
         let part = info.part;
-        if !parts.contains(&part) || !info.present {
+        if !parts.contains(&part) {
             continue;
         }
-        if let Some(reason) = &info.blocked_reason {
-            failures.push(MeetingPartFailure {
-                part,
-                reason: reason.clone(),
-            });
-            continue;
-        }
-        let disk_result = match part {
-            Audio => {
-                let mut problems = Vec::new();
-                for dir in &before.audio_dirs {
-                    if let Err(e) = files.delete_audio(dir, id) {
+        let mut problems = Vec::new();
+        match part {
+            Audio if info.blocked_reason.is_none() => {
+                for (dir, entry) in &before.audio_dirs {
+                    if let Err(e) = files.delete_audio(dir, id, entry.imported.as_deref()) {
                         problems.push(e.to_string());
                     }
                 }
-                if problems.is_empty() {
-                    Ok(())
-                } else {
-                    Err(problems.join(". "))
+            }
+            Markdown if !before.markdown.is_empty() => {
+                for path in &before.markdown {
+                    let result = files
+                        .delete_markdown(path, id)
+                        .map_err(|e| e.to_string())
+                        .and_then(|()| {
+                            store
+                                .forget_meeting_export(id, &path.to_string_lossy())
+                                .map_err(|e| e.to_string())
+                        });
+                    if let Err(error) = result {
+                        problems.push(error);
+                    }
+                }
+                if problems.is_empty()
+                    && let Some(root) = store
+                        .pending_summary_scans(id)
+                        .map_err(|e| e.to_string())?
+                        .first()
+                {
+                    problems.push(format!("The storage folder ‘{root}’ is unavailable."));
                 }
             }
-            Markdown => before
-                .markdown
-                .as_deref()
-                .map_or(Ok(()), |path| files.delete_markdown(path, id))
-                .map_err(|e| e.to_string()),
-            _ => Ok(()),
-        };
-        let result = disk_result.and_then(|()| {
-            if part == Markdown {
-                return Ok(());
+            _ => problems.extend(info.blocked_reason.clone()),
+        }
+        if problems.is_empty() && (info.present || matches!(part, Audio | Markdown)) {
+            let result = if part == Markdown {
+                store.mark_exports_removed(id)
+            } else {
+                store.trim_meeting(id, part == Audio, part == Transcript, part == Summary)
+            };
+            if let Err(e) = result {
+                problems.push(e.to_string());
             }
-            store
-                .trim_meeting(id, part == Audio, part == Transcript, part == Summary)
-                .map_err(|e| e.to_string())
-        });
-        match result {
-            Ok(()) => deleted.push(part),
-            Err(reason) => failures.push(MeetingPartFailure { part, reason }),
+        }
+        if !problems.is_empty() {
+            failures.push(MeetingPartFailure {
+                part,
+                reason: problems.join(". "),
+            });
+        } else if info.present {
+            deleted.push(part);
         }
     }
     let after = ledger(store, files, folders, id)?.contents;
@@ -629,22 +636,22 @@ fn delete_parts(
         failures,
         meeting_removed,
         remaining: (!meeting_removed).then_some(after),
+        markdown_notice: parts
+            .contains(&Markdown)
+            .then_some(before.contents.markdown_notice)
+            .flatten(),
     })
 }
 
 #[tauri::command]
 pub async fn meeting_contents(state: State<'_, AppState>, id: String) -> R<MeetingContents> {
     let id = uuid(&id)?;
+    let operation = state.meeting_ops.lock(id).await;
     let folders = ContentFolders::current(&state.settings());
     let store = state.store.clone();
     tokio::task::spawn_blocking(move || {
-        ledger(
-            &store,
-            &LocalMeetingFiles(folders.data.clone()),
-            &folders,
-            id,
-        )
-        .map(|l| l.contents)
+        let _operation = operation;
+        ledger(&store, &LocalMeetingFiles, &folders, id).map(|l| l.contents)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -665,13 +672,7 @@ pub async fn delete_meeting_parts(
         let operation = operations.lock(id).await;
         tokio::task::spawn_blocking(move || {
             let _operation = operation;
-            delete_parts(
-                &store,
-                &LocalMeetingFiles(folders.data.clone()),
-                &folders,
-                id,
-                &parts,
-            )
+            delete_parts(&store, &LocalMeetingFiles, &folders, id, &parts)
         })
         .await
         .map_err(|e| e.to_string())?
@@ -696,10 +697,89 @@ pub async fn delete_entire_meeting(app: AppHandle, id: String) -> R<()> {
     }
 }
 
+/// Save verified paths as well as the folder itself. A folder that is offline
+/// during a settings change is still searched when it becomes available.
+pub(crate) async fn remember_storage(state: &AppState, settings: &AppSettings) -> R<()> {
+    let folders = ContentFolders::current(settings);
+    let scan = state
+        .store
+        .call(move |store| scan_storage(store, &folders))
+        .await
+        .map_err(|e| e.to_string())?;
+    for (id, path) in scan {
+        let operation = state.meeting_ops.lock(id).await;
+        state
+            .store
+            .call(move |store| {
+                let _operation = operation;
+                if LocalMeetingFiles
+                    .markdown_bytes(&path, id)
+                    .is_ok_and(|size| size.is_some())
+                {
+                    store.remember_meeting_export(id, &path.to_string_lossy())?;
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn scan_storage(
+    store: &Store,
+    folders: &ContentFolders,
+) -> minutae_store::Result<Vec<(MeetingId, PathBuf)>> {
+    store.remember_storage_folder("recordings", &folders.recordings.to_string_lossy())?;
+    store.remember_storage_folder("summaries", &folders.summaries.to_string_lossy())?;
+    let ids = store.meeting_ids()?;
+    let default = folders.data.join("summaries");
+    let mut verified = Vec::new();
+    for root in BTreeSet::from([default.clone(), folders.summaries.clone()]) {
+        match LocalMeetingFiles.scan_markdowns(&root, &ids) {
+            Ok(found) => verified.extend(found),
+            Err(_) if root != default => store.defer_summary_scan(&root.to_string_lossy())?,
+            Err(_) => {}
+        }
+    }
+    Ok(verified)
+}
+
+pub(crate) fn prune_audio(store: &Store, folders: &ContentFolders, id: MeetingId) -> R<()> {
+    let tracks = store.list_tracks(id).map_err(|e| e.to_string())?;
+    if tracks.iter().all(|t| t.deleted) {
+        return Ok(());
+    }
+    let imported = store.is_imported_meeting(id).map_err(|e| e.to_string())?;
+    let (dirs, invalid) = audio_directories(id, &tracks, folders, imported, false);
+    if let Some(reason) = invalid {
+        return Err(reason);
+    }
+    for (dir, entry) in dirs {
+        let imported = entry.imported.as_deref();
+        if LocalMeetingFiles
+            .audio_bytes(&dir, id, entry.required, imported)
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            LocalMeetingFiles
+                .delete_audio(&dir, id, imported)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    store
+        .trim_meeting(id, true, false, false)
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minutae_core::{ActionItem as CoreAction, Segment, Track, Transcript};
+    use minutae_core::{ActionItem as CoreAction, Meeting, Segment, Summary, Track, Transcript};
+    use std::fs;
+
+    use super::erase::retry_cleanup;
+    use crate::pipeline::summary_file_name;
 
     fn meeting(store: &Store, status: MeetingStatus) -> Meeting {
         let now = chrono::Utc::now();
@@ -801,15 +881,413 @@ mod tests {
         assert_eq!(store.get_summary(id).unwrap().unwrap().markdown, exported);
     }
 
+    #[test]
+    fn checklist_edit_preserves_handwritten_bytes_and_rerun_keeps_a_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let meeting = meeting(&store, MeetingStatus::Done);
+        let id = meeting.id;
+        publish_summary(
+            &store,
+            &meeting,
+            &summary(&meeting, "Saved"),
+            None,
+            tmp.path(),
+        )
+        .unwrap();
+        let path = markdown_path(&store, tmp.path(), id).unwrap().unwrap();
+        let original = fs::read_to_string(&path).unwrap();
+        let edited = original.replace("- Saved", "- Handwritten point")
+            + "\n## Personal notes\n\nKeep this exactly.  \n";
+        fs::write(&path, &edited).unwrap();
+        let row = store.list_action_items(id).unwrap().pop().unwrap();
+        publish_checklist(Some(&path), id, |publish| {
+            store.change_action(id, ActionChange::SetDone(row.id, true), publish)
+        })
+        .unwrap();
+        let ticked = edited.replace("- [ ] Send notes", "- [x] Send notes");
+        assert_eq!(fs::read_to_string(&path).unwrap(), ticked);
+
+        let ambiguous = ticked.clone() + "\n## Action Items\n- [ ] Duplicate\n";
+        fs::write(&path, &ambiguous).unwrap();
+        assert!(
+            publish_checklist(Some(&path), id, |publish| {
+                store.change_action(id, ActionChange::SetDone(row.id, false), publish)
+            })
+            .is_err()
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), ambiguous);
+        assert!(store.list_action_items(id).unwrap()[0].item.done);
+
+        fs::write(&path, &ticked).unwrap();
+        for text in ["New summary", "Another summary"] {
+            publish_summary(&store, &meeting, &summary(&meeting, text), None, tmp.path()).unwrap();
+            assert!(fs::read_to_string(&path).unwrap().contains(text));
+            assert!(
+                fs::read_dir(tmp.path())
+                    .unwrap()
+                    .flatten()
+                    .any(|entry| entry.path() != path
+                        && fs::read_to_string(entry.path()).ok().as_deref() == Some(&ticked))
+            );
+        }
+    }
+
+    #[test]
+    fn retired_failed_meeting_keeps_its_audio_retention_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folders = test_folders(tmp.path());
+        let files = LocalMeetingFiles;
+        let store = Store::open_in_memory().unwrap();
+        let mut meeting = meeting(&store, MeetingStatus::Failed);
+        meeting.started_at -= chrono::Duration::days(90);
+        store.update_meeting(&meeting).unwrap();
+        let id = meeting.id;
+        let audio = saved_track(&store, id, &folders.recordings);
+        store
+            .replace_transcript(
+                &Transcript {
+                    meeting_id: id,
+                    language: None,
+                    model: "fake".into(),
+                    segments: vec![],
+                },
+                &[],
+            )
+            .unwrap();
+        let result =
+            delete_parts(&store, &files, &folders, id, &[MeetingPart::Transcript]).unwrap();
+        assert_eq!(result.deleted, [MeetingPart::Transcript]);
+        assert!(!crate::retention_eligible(
+            &store.get_meeting(id).unwrap().unwrap(),
+            chrono::Utc::now()
+        ));
+        assert!(audio.exists());
+    }
+
+    #[test]
+    fn markdown_with_open_or_duplicate_frontmatter_is_never_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files = LocalMeetingFiles;
+        let id = uuid::Uuid::new_v4();
+        let path = tmp.path().join("summary.md");
+        for bytes in [
+            format!("---\nid: {id}\n"),
+            format!("---\nid: {id}\nid: {id}\n---\n"),
+            format!("---\nid: {id}\n\"id\": {id}\n---\n"),
+        ] {
+            fs::write(&path, &bytes).unwrap();
+            assert!(files.delete_markdown(&path, id).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn deleted_export_can_be_replaced_in_current_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut folders = test_folders(tmp.path());
+        let files = LocalMeetingFiles;
+        let store = Store::open_in_memory().unwrap();
+        let meeting = meeting(&store, MeetingStatus::Done);
+        let id = meeting.id;
+        publish_summary(
+            &store,
+            &meeting,
+            &summary(&meeting, "Saved"),
+            None,
+            &folders.summaries,
+        )
+        .unwrap();
+        assert_eq!(
+            delete_parts(&store, &files, &folders, id, &[MeetingPart::Markdown])
+                .unwrap()
+                .deleted,
+            [MeetingPart::Markdown]
+        );
+        let previous = folders.summaries;
+        fs::remove_dir(&previous).unwrap();
+        folders.summaries = tmp.path().join("new-summaries");
+        assert_eq!(store.meeting_markdown_file(id).unwrap(), None);
+        publish_summary(
+            &store,
+            &meeting,
+            &summary(&meeting, "New"),
+            None,
+            &folders.summaries,
+        )
+        .unwrap();
+        assert!(!previous.exists());
+        assert!(folders.summaries.join(summary_file_name(&meeting)).exists());
+    }
+
+    #[test]
+    fn legacy_export_discovery_persists_the_verified_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folders = test_folders(tmp.path());
+        let files = LocalMeetingFiles;
+        let store = Store::open_in_memory().unwrap();
+        let meeting = meeting(&store, MeetingStatus::Done);
+        let id = meeting.id;
+        let path = folders.summaries.join(summary_file_name(&meeting));
+        fs::write(&path, summary(&meeting, "Legacy").markdown).unwrap();
+        assert_eq!(
+            saved_markdown_path(&store, &files, &folders.summaries, id).unwrap(),
+            Some(path.clone())
+        );
+        assert_eq!(
+            store.meeting_markdown_file(id).unwrap(),
+            Some(path.to_string_lossy().into_owned())
+        );
+        assert_eq!(
+            saved_markdown_path(&store, &files, &tmp.path().join("new"), id).unwrap(),
+            Some(path)
+        );
+    }
+
+    #[test]
+    fn removed_tracks_do_not_require_their_old_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folders = test_folders(tmp.path());
+        let files = LocalMeetingFiles;
+        let store = Store::open_in_memory().unwrap();
+        let meeting = meeting(&store, MeetingStatus::Done);
+        let id = meeting.id;
+        store.upsert_summary(&summary(&meeting, "Saved")).unwrap();
+        let old = tmp.path().join("old-recordings");
+        saved_track(&store, id, &old);
+        assert_eq!(
+            delete_parts(&store, &files, &folders, id, &[MeetingPart::Audio])
+                .unwrap()
+                .deleted,
+            [MeetingPart::Audio]
+        );
+        fs::remove_dir(&old).unwrap();
+        assert!(
+            delete_parts(&store, &files, &folders, id, &PARTS)
+                .unwrap()
+                .meeting_removed
+        );
+    }
+
+    #[test]
+    fn imported_track_owns_its_exact_extension_in_the_meeting_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folders = test_folders(tmp.path());
+        let files = LocalMeetingFiles;
+        let store = Store::open_in_memory().unwrap();
+        let id = meeting(&store, MeetingStatus::Done).id;
+        let dir = folders.recordings.join(id.to_string());
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("mic.m4a");
+        fs::write(&path, b"imported").unwrap();
+        let other = dir.join("mic.mp3");
+        fs::write(&other, b"personal").unwrap();
+        store
+            .upsert_track(&TrackFile {
+                meeting_id: id,
+                track: Track::Mic,
+                path: path.to_string_lossy().into_owned(),
+                duration_ms: None,
+                bytes: Some(8),
+                deleted: false,
+            })
+            .unwrap();
+        store
+            .write(|c| {
+                c.execute(
+                    "INSERT INTO legacy_imports (source, kind, legacy_id, v4_id, imported_at)
+                 VALUES ('swift', 'meeting', 'old', ?1, 0)",
+                    [id.to_string()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            delete_parts(&store, &files, &folders, id, &PARTS)
+                .unwrap()
+                .meeting_removed
+        );
+        assert!(!path.exists());
+        assert_eq!(fs::read(other).unwrap(), b"personal");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn data_and_default_storage_roots_may_be_symlinked() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let folders = test_folders(tmp.path());
+        let files = LocalMeetingFiles;
+        let store = Store::open_in_memory().unwrap();
+        let meeting = meeting(&store, MeetingStatus::Done);
+        let id = meeting.id;
+        let actual_data = tmp.path().join("actual-data");
+        fs::create_dir(&actual_data).unwrap();
+        symlink(&actual_data, &folders.data).unwrap();
+        symlink(&folders.recordings, actual_data.join("recordings")).unwrap();
+        symlink(&folders.summaries, actual_data.join("summaries")).unwrap();
+        let audio = saved_track(&store, id, &folders.data.join("recordings"));
+        let path = folders
+            .data
+            .join("summaries")
+            .join(summary_file_name(&meeting));
+        fs::write(&path, summary(&meeting, "Saved").markdown).unwrap();
+        assert!(
+            files
+                .audio_bytes(audio.parent().unwrap(), id, true, None)
+                .unwrap()
+                .is_some()
+        );
+        assert!(files.markdown_bytes(&path, id).unwrap().is_some());
+    }
+
+    #[test]
+    fn all_action_mutations_preserve_content_outside_the_checklist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let meeting = meeting(&store, MeetingStatus::Done);
+        let id = meeting.id;
+        publish_summary(
+            &store,
+            &meeting,
+            &summary(&meeting, "Saved"),
+            None,
+            tmp.path(),
+        )
+        .unwrap();
+        let path = markdown_path(&store, tmp.path(), id).unwrap().unwrap();
+        let initial = store.list_action_items(id).unwrap().pop().unwrap();
+        let prefix = format!(
+            "---\r\nid: {id}\r\n---\r\n\r\n## Notes\r\n\r\n{}\r\n## Action Items\r\n",
+            "~~~markdown\r\n## Action Items\r\n- [ ] A literal example\r\n~~~\r\n"
+        );
+        let tail = "\r\n### Personal note\r\nKeep  exact spacing.\r\n";
+        fs::write(&path, format!("{prefix}- [ ] Send notes\r\n{tail}")).unwrap();
+        let mutate = |change| {
+            publish_checklist(Some(&path), id, |publish| {
+                store.change_action(id, change, publish)
+            })
+            .unwrap()
+        };
+        let action = |text: &str| CoreAction {
+            text: text.into(),
+            owner: None,
+            due: None,
+            done: false,
+        };
+        let added = mutate(ActionChange::Add(action("New"), None)).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!("{prefix}- [ ] Send notes\r\n- [ ] New\r\n{tail}")
+        );
+        mutate(ActionChange::Edit(added.id, action("Updated"), None));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!("{prefix}- [ ] Send notes\r\n- [ ] Updated\r\n{tail}")
+        );
+        mutate(ActionChange::Delete(initial.id));
+        mutate(ActionChange::Delete(added.id));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!("{prefix}{tail}")
+        );
+    }
+
+    #[test]
+    fn legacy_exports_from_previous_settings_are_found_or_reported_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut folders = test_folders(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let meeting = meeting(&store, MeetingStatus::Done);
+        let id = meeting.id;
+        store.upsert_summary(&summary(&meeting, "Legacy")).unwrap();
+        // The old folder is recorded during a settings change even if it was
+        // unavailable at the time and its exports could not be backfilled.
+        let old = folders.summaries.clone();
+        fs::remove_dir(&old).unwrap();
+        assert!(scan_storage(&store, &folders).unwrap().is_empty());
+        folders.summaries = tmp.path().join("new-summaries");
+        fs::create_dir(&folders.summaries).unwrap();
+        let offline = delete_parts(&store, &LocalMeetingFiles, &folders, id, &PARTS).unwrap();
+        assert_eq!(offline.deleted, [MeetingPart::Summary]);
+        assert!(!offline.meeting_removed);
+        assert_eq!(offline.failures[0].part, MeetingPart::Markdown);
+        fs::create_dir(&old).unwrap();
+        let export = old.join(summary_file_name(&meeting));
+        fs::write(&export, summary(&meeting, "Legacy").markdown).unwrap();
+        let before = ledger(&store, &LocalMeetingFiles, &folders, id)
+            .unwrap()
+            .contents;
+        assert_eq!(before.markdown_path.as_deref(), export.to_str());
+        assert!(before.markdown_notice.is_none());
+        assert!(store.meeting_markdown_file(id).unwrap().is_some());
+        let removed = delete_parts(&store, &LocalMeetingFiles, &folders, id, &PARTS).unwrap();
+        assert_eq!(removed.deleted, [MeetingPart::Markdown]);
+        assert!(removed.markdown_notice.is_none());
+        assert!(!export.exists());
+
+        let another = self::meeting(&store, MeetingStatus::Done);
+        let removed =
+            delete_parts(&store, &LocalMeetingFiles, &folders, another.id, &PARTS).unwrap();
+        assert!(removed.deleted.is_empty() && removed.meeting_removed);
+        assert_eq!(removed.markdown_notice, Some(MARKDOWN_NOT_FOUND));
+    }
+
+    #[test]
+    fn erase_cleans_historical_exports_and_retries_only_unavailable_storage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folders = test_folders(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let meeting = meeting(&store, MeetingStatus::Done);
+        let id = meeting.id;
+        let previous = tmp.path().join("previous-summaries");
+        fs::create_dir(&previous).unwrap();
+        let verified = previous.join(summary_file_name(&meeting));
+        fs::write(&verified, summary(&meeting, "Old").markdown).unwrap();
+        store
+            .remember_storage_folder("summaries", previous.to_str().unwrap())
+            .unwrap();
+        let unowned = folders.summaries.join("replaced.md");
+        fs::write(&unowned, b"Private notes").unwrap();
+        store
+            .remember_meeting_export(id, unowned.to_str().unwrap())
+            .unwrap();
+        let offline = tmp.path().join("offline-recordings");
+        let path = saved_track(&store, id, &offline);
+        let moved = tmp.path().join("away");
+        fs::rename(&offline, &moved).unwrap();
+
+        let errors = erase_meeting_files(&store, &folders, id).unwrap();
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(store.get_meeting(id).unwrap().is_none());
+        assert!(store.id_in_use(id).unwrap());
+        assert!(!verified.exists());
+        assert_eq!(fs::read(unowned).unwrap(), b"Private notes");
+        let pending = store.pending_file_cleanups().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].kind, "audio");
+        assert!(retry_cleanup(&store, &pending[0]).unwrap().is_some());
+        fs::rename(moved, offline).unwrap();
+        assert_eq!(retry_cleanup(&store, &pending[0]).unwrap(), None);
+        assert!(!path.exists());
+        assert!(store.pending_file_cleanups().unwrap().is_empty());
+    }
+
     struct FailingAudio;
     impl MeetingFiles for FailingAudio {
-        fn audio_bytes(&self, _: &Path, _: MeetingId, _: bool) -> io::Result<Option<u64>> {
+        fn audio_bytes(
+            &self,
+            _: &Path,
+            _: MeetingId,
+            _: bool,
+            _: Option<&str>,
+        ) -> io::Result<Option<u64>> {
             Ok(Some(120))
         }
         fn track_exists(&self, _: &Path, _: MeetingId) -> bool {
             false
         }
-        fn delete_audio(&self, _: &Path, _: MeetingId) -> io::Result<()> {
+        fn delete_audio(&self, _: &Path, _: MeetingId, _: Option<&str>) -> io::Result<()> {
             Err(io::Error::other("audio is busy"))
         }
         fn markdown_bytes(&self, _: &Path, _: MeetingId) -> io::Result<Option<u64>> {
@@ -852,6 +1330,7 @@ mod tests {
                 path: path.to_string_lossy().into_owned(),
                 duration_ms: None,
                 bytes: Some(5),
+                deleted: false,
             })
             .unwrap();
         path
@@ -904,7 +1383,7 @@ mod tests {
         assert!(store.get_summary(id).unwrap().is_some());
         assert_eq!(
             store.get_meeting(id).unwrap().unwrap().status,
-            MeetingStatus::Done
+            MeetingStatus::Failed
         );
     }
 
@@ -915,7 +1394,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let meeting = meeting(&store, MeetingStatus::Done);
         let id = meeting.id;
-        let files = LocalMeetingFiles(folders.data.clone());
+        let files = LocalMeetingFiles;
         publish_summary(
             &store,
             &meeting,
@@ -946,7 +1425,7 @@ mod tests {
     fn deletes_only_owned_audio_in_default_and_configured_folders() {
         let tmp = tempfile::tempdir().unwrap();
         let folders = test_folders(tmp.path());
-        let files = LocalMeetingFiles(folders.data.clone());
+        let files = LocalMeetingFiles;
         let store = Store::open_in_memory().unwrap();
         for root in [folders.data.join("recordings"), folders.recordings.clone()] {
             let id = meeting(&store, MeetingStatus::Done).id;
@@ -956,11 +1435,17 @@ mod tests {
             let foreign = dir.join("chunks/notes.txt");
             fs::write(&owned, b"audio").unwrap();
             fs::write(&foreign, b"keep").unwrap();
+            let oversized = dir.join("chunks/mic-99999999999999999999.wav");
+            let noncanonical = dir.join("chunks/mic-0000000.wav");
+            fs::write(&oversized, b"keep").unwrap();
+            fs::write(&noncanonical, b"keep").unwrap();
             let result = delete_parts(&store, &files, &folders, id, &[MeetingPart::Audio]).unwrap();
             assert_eq!(result.deleted, [MeetingPart::Audio]);
             assert!(result.meeting_removed);
             assert!(!owned.exists());
             assert_eq!(fs::read(foreign).unwrap(), b"keep");
+            assert!(oversized.exists());
+            assert!(noncanonical.exists());
         }
     }
 
@@ -968,7 +1453,7 @@ mod tests {
     fn saved_track_locates_audio_after_the_recordings_folder_changes() {
         let tmp = tempfile::tempdir().unwrap();
         let folders = test_folders(tmp.path());
-        let files = LocalMeetingFiles(folders.data.clone());
+        let files = LocalMeetingFiles;
         let store = Store::open_in_memory().unwrap();
         let id = meeting(&store, MeetingStatus::Done).id;
         let path = saved_track(&store, id, &tmp.path().join("previous-recordings"));
@@ -982,7 +1467,7 @@ mod tests {
     fn unavailable_saved_folders_keep_the_meeting_for_retry() {
         let tmp = tempfile::tempdir().unwrap();
         let folders = test_folders(tmp.path());
-        let files = LocalMeetingFiles(folders.data.clone());
+        let files = LocalMeetingFiles;
         let store = Store::open_in_memory().unwrap();
         let meeting = meeting(&store, MeetingStatus::Done);
         let id = meeting.id;
@@ -1031,7 +1516,7 @@ mod tests {
     fn unavailable_configured_folders_block_cleanup_even_without_saved_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let folders = test_folders(tmp.path());
-        let files = LocalMeetingFiles(folders.data.clone());
+        let files = LocalMeetingFiles;
         let store = Store::open_in_memory().unwrap();
         let id = meeting(&store, MeetingStatus::Done).id;
         fs::remove_dir(&folders.recordings).unwrap();
@@ -1053,7 +1538,7 @@ mod tests {
     fn custom_markdown_with_a_different_meeting_id_is_kept() {
         let tmp = tempfile::tempdir().unwrap();
         let folders = test_folders(tmp.path());
-        let files = LocalMeetingFiles(folders.data.clone());
+        let files = LocalMeetingFiles;
         let store = Store::open_in_memory().unwrap();
         let meeting = meeting(&store, MeetingStatus::Done);
         let id = meeting.id;
@@ -1093,8 +1578,8 @@ mod tests {
         fs::create_dir(&external).unwrap();
         let victim = external.join("mic.wav");
         fs::write(&victim, b"keep").unwrap();
-        let files = LocalMeetingFiles(folders.data.clone());
-        assert!(files.delete_audio(outside.path(), id).is_err());
+        let files = LocalMeetingFiles;
+        assert!(files.delete_audio(outside.path(), id, None).is_err());
 
         // The user chooses this link as their recordings root.
         fs::remove_dir(&folders.recordings).unwrap();
@@ -1103,7 +1588,7 @@ mod tests {
         fs::rename(&path, outside.path().join("other-meeting")).unwrap();
         let victim = outside.path().join("other-meeting/mic.wav");
         symlink(victim.parent().unwrap(), &path).unwrap();
-        assert!(files.delete_audio(&path, id).is_err());
+        assert!(files.delete_audio(&path, id, None).is_err());
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
         symlink(&victim, path.join("mic.wav")).unwrap();
@@ -1116,13 +1601,19 @@ mod tests {
                 path: path.join("mic.wav").to_string_lossy().into_owned(),
                 duration_ms: None,
                 bytes: None,
+                deleted: false,
             })
             .unwrap();
         folders.recordings = tmp.path().join("new-recordings");
         let result = delete_parts(&store, &files, &folders, id, &[MeetingPart::Audio]).unwrap();
         assert_eq!(result.deleted, [MeetingPart::Audio]);
         assert!(result.meeting_removed);
-        assert!(!path.exists());
+        assert!(
+            fs::symlink_metadata(path.join("mic.wav"))
+                .unwrap()
+                .is_symlink()
+        );
+        assert!(!path.join("system.wav.tmp").exists());
         assert_eq!(fs::read(victim).unwrap(), b"keep");
     }
 }

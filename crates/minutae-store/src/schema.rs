@@ -263,6 +263,35 @@ const V5: &str = r#"
 ALTER TABLE action_items ADD COLUMN source_ms INTEGER;
 ALTER TABLE meetings ADD COLUMN markdown_file TEXT;
 ALTER TABLE meetings ADD COLUMN checklist_curated INTEGER NOT NULL DEFAULT 0;
+UPDATE meetings SET checklist_curated=1 WHERE EXISTS (
+  SELECT 1 FROM action_items WHERE meeting_id=meetings.id AND done=1
+);
+ALTER TABLE meetings ADD COLUMN jobs_retired INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE meetings ADD COLUMN audio_removed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE meetings ADD COLUMN markdown_removed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE meeting_exports (
+  meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  PRIMARY KEY (meeting_id, path)
+);
+CREATE TABLE storage_folders (
+  kind TEXT NOT NULL,
+  path TEXT NOT NULL,
+  PRIMARY KEY (kind, path)
+);
+CREATE TABLE pending_summary_scans (
+  meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  folder TEXT NOT NULL,
+  PRIMARY KEY (meeting_id, folder)
+);
+CREATE TABLE pending_file_cleanup (
+  meeting_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  path TEXT NOT NULL,
+  imported_name TEXT,
+  PRIMARY KEY (meeting_id, kind, path)
+);
 CREATE TABLE meeting_waveforms (
   meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
   track TEXT NOT NULL,

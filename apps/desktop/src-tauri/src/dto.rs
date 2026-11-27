@@ -1504,6 +1504,7 @@ pub struct MeetingContents {
     pub mark_count: usize,
     pub summary_excerpt: Option<String>,
     pub markdown_path: Option<String>,
+    pub markdown_notice: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1520,6 +1521,7 @@ pub struct MeetingDeletion {
     pub failures: Vec<MeetingPartFailure>,
     pub meeting_removed: bool,
     pub remaining: Option<MeetingContents>,
+    pub markdown_notice: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]

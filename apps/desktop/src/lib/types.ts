@@ -79,11 +79,12 @@ export interface MeetingContents {
   parts: MeetingPartInfo[];
   durationMs: number | null; trackCount: number; lineCount: number; speakerCount: number;
   transcriptExcerpt: string | null; decisionCount: number; actionCount: number; markCount: number;
-  summaryExcerpt: string | null; markdownPath: string | null;
+  summaryExcerpt: string | null; markdownPath: string | null; markdownNotice: string | null;
 }
 export interface MeetingPartFailure { part: MeetingPart; reason: string }
 export interface MeetingDeletion {
   deleted: MeetingPart[]; failures: MeetingPartFailure[]; meetingRemoved: boolean; remaining: MeetingContents | null;
+  markdownNotice: string | null;
 }
 export interface RecordingDiscardInfo {
   meetingId: Uuid; durationMs: number; audioBytes: number; liveLineCount: number; markCount: number; trackCount: number;
