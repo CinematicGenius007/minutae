@@ -175,16 +175,14 @@ impl AppSettings {
         if let Some(preset) = self.dictation_default_shape {
             return self.dictation_shape(preset);
         }
-        let mut shape = ShapePreset::Tidy.shape();
-        if !self.tidy_dictation {
-            shape.tidy = false;
-            shape.capitals = Capitals::AsSaid;
+        if self.tidy_dictation {
+            return self.dictation_shape(ShapePreset::Tidy);
         }
-        self.dictation_shape_edits
-            .get(&shape.preset)
-            .copied()
-            .unwrap_or_default()
-            .apply(shape)
+        Shape {
+            tidy: false,
+            capitals: Capitals::AsSaid,
+            ..ShapePreset::Tidy.shape()
+        }
     }
 
     pub fn dictation_rules(&self) -> Vec<AppRule> {
@@ -229,6 +227,36 @@ mod tests {
                 }
             );
             assert!(shape.spoken_punctuation);
+        }
+    }
+
+    #[test]
+    fn legacy_cleanup_off_wins_over_saved_tidy_edits() {
+        let mut settings: AppSettings = serde_json::from_value(serde_json::json!({
+            "tidyDictation": false,
+            "dictationShapeEdits": { "tidy": { "capitals": "sentence", "dropFinalPeriod": true } }
+        }))
+        .unwrap();
+        let shape = settings.default_dictation_shape();
+        assert!(!shape.tidy);
+        assert_eq!(shape.capitals, Capitals::AsSaid);
+        assert!(!shape.drop_final_period);
+        assert!(shape.spoken_punctuation);
+        settings.dictation_default_shape = Some(ShapePreset::Tidy);
+        assert!(settings.default_dictation_shape().drop_final_period);
+    }
+
+    #[test]
+    fn identifier_preserving_presets_ignore_saved_capital_and_period_edits() {
+        let settings: AppSettings = serde_json::from_value(serde_json::json!({
+            "dictationShapeEdits": {
+                "verbatim": { "capitals": "sentence", "dropFinalPeriod": true },
+                "codeAndCommit": { "capitals": "sentence", "dropFinalPeriod": true }
+            }
+        }))
+        .unwrap();
+        for preset in [ShapePreset::Verbatim, ShapePreset::CodeAndCommit] {
+            assert_eq!(settings.dictation_shape(preset), preset.shape());
         }
     }
 

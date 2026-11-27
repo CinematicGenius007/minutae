@@ -34,6 +34,8 @@
   background: var(--raised);
   border-color: var(--ink);
   box-shadow: var(--halo);
+  outline: 2px solid transparent;
+  outline-offset: 2px;
 }
 .invalid, .invalid:hover, .invalid:focus-within {
   background: var(--raised);
@@ -56,7 +58,7 @@
   line-height: var(--lh-body);
   caret-color: var(--ink);
 }
-.input:focus-visible { box-shadow: none; }
+.input:focus-visible { box-shadow: none; outline: none; }
 .input::placeholder { color: var(--placeholder); opacity: 1; }
 .input:disabled { cursor: not-allowed; color: var(--faint); }
 .input:disabled::placeholder { color: var(--faint); }
@@ -69,3 +71,15 @@
 .search .input { font-size: var(--fs-body-sm); line-height: var(--lh-body-sm); }
 .search .input::-webkit-search-cancel-button { appearance: none; display: none; }
 .search .input::-webkit-search-decoration { appearance: none; }
+
+@media (prefers-contrast: more) {
+  .box { border-color: var(--line); }
+  .box:focus-within, .box[data-force="focus"] { border-color: var(--ink); }
+  .invalid, .invalid:hover, .invalid:focus-within { border-color: var(--destructive); }
+}
+
+@media (forced-colors: active) {
+  .box { border-color: ButtonText; }
+  .box:focus-within, .box[data-force="focus"] { outline-color: Highlight; border-color: Highlight; }
+  .disabled, .input:disabled { border-color: GrayText; color: GrayText; }
+}

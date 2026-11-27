@@ -780,7 +780,7 @@ pub async fn set_dictation_shape_edits(
 ) -> R<AppSettings> {
     change_settings(&app, |current| {
         let mut next = current.clone();
-        match edits {
+        match edits.filter(|_| !preset.preserves_identifiers()) {
             Some(edits) => {
                 next.dictation_shape_edits.insert(preset, edits);
             }

@@ -141,7 +141,7 @@ fn process_literal(raw: &str, shape: &Shape) -> String {
     finish_shape(text, shape)
 }
 
-fn is_line_ending(c: char) -> bool {
+pub(crate) fn is_line_ending(c: char) -> bool {
     matches!(
         c,
         '\n' | '\r' | '\x0b' | '\x0c' | '\u{85}' | '\u{2028}' | '\u{2029}'

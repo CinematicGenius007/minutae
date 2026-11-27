@@ -85,9 +85,9 @@ export function LiveTranscript({
               <span className={s.lineMeta}>
                 {formatDuration(it.line.atMs)} · <span className={s.speaker}>{it.line.speaker}</span>
               </span>
-              <p className={cx(s.lineText, !recent.has(it.line.id) && s.lineOld)}>
+              <p className={cx(s.lineText, !it.line.final ? s.partial : !recent.has(it.line.id) && s.lineOld)}>
                 {it.line.text}
-                {!it.line.final ? <span className={s.partial}>…</span> : null}
+                {!it.line.final ? <span aria-hidden>…</span> : null}
               </p>
             </div>
           ),

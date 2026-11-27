@@ -16,6 +16,8 @@ export interface HudPillProps {
   message?: string;
   /** Listening only: time since the hold started; shown as a mono timer after the bars. */
   elapsedMs?: number;
+  /** Error only, in a window that can receive clicks without activating the app. */
+  onDismiss?: () => void;
   className?: string;
   style?: CSSProperties;
 }
@@ -45,7 +47,7 @@ function defaultMessage(state: HudState, words?: number): string {
  * (errors assertively). States: listening (red dot, bars, optional timer), processing,
  * inserted (✓ + count), copied, error (glyph + cause; red stays reserved for "live").
  */
-export function HudPill({ state, levels, words, message, elapsedMs, className, style }: HudPillProps) {
+export function HudPill({ state, levels, words, message, elapsedMs, onDismiss, className, style }: HudPillProps) {
   const text = message ?? defaultMessage(state, words);
   const lv = (levels ?? DEFAULT_LEVELS).slice(-BAR_COUNT);
   // "0:07", like the Dictate how-to strip (a hold rarely passes ten minutes).
@@ -54,12 +56,13 @@ export function HudPill({ state, levels, words, message, elapsedMs, className, s
     <div
       className={cx(s.hud, s[state], className)}
       style={style}
-      role={state === "error" ? "alert" : "status"}
-      aria-live={state === "error" ? "assertive" : "polite"}
-      aria-label={text}
+      role={state === "error" ? undefined : "status"}
+      aria-live={state === "error" ? undefined : "polite"}
+      aria-atomic={state === "error" ? undefined : true}
     >
       {state === "listening" ? (
         <>
+          <span className="mn-sr-only">{text}</span>
           <span className={s.dot} aria-hidden />
           <span className={s.bars} aria-hidden>
             {lv.map((l, i) => (
@@ -90,10 +93,13 @@ export function HudPill({ state, levels, words, message, elapsedMs, className, s
         </span>
       ) : null}
       {state === "listening" ? null : (
-        <span className={state === "error" ? s.message : undefined} aria-hidden>
+        <span className={state === "error" ? s.message : undefined} role={state === "error" ? "alert" : undefined}>
           {text}
         </span>
       )}
+      {state === "error" && onDismiss ? (
+        <button type="button" className={cx(s.toastAction, s.hudAction)} onClick={onDismiss}>Dismiss</button>
+      ) : null}
     </div>
   );
 }

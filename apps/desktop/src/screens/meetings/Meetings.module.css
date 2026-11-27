@@ -13,7 +13,7 @@
 .groups { display: flex; flex-direction: column; gap: var(--s-9); }
 .group { display: flex; flex-direction: column; }
 
-.statLoading { color: var(--faint); }
+.statLoading { color: var(--muted); }
 
 /* Status lane */
 .progress { padding-top: var(--s-2); }

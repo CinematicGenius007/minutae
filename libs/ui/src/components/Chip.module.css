@@ -24,7 +24,7 @@
 .chip:disabled { color: var(--faint); background: transparent; cursor: default; }
 .count { font-family: var(--font-mono); font-size: var(--fs-meta-sm); opacity: .7; font-variant-numeric: tabular-nums; }
 
-/* Tag: surface fill with a × */
+/* Tag: surface fill with a × (22 visual, 28x28 hit target) */
 .tag {
   display: inline-flex;
   align-items: center;
@@ -40,6 +40,7 @@
 }
 .tagStatic { padding-inline: var(--s-4); }
 .remove {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -48,6 +49,11 @@
   border-radius: var(--radius-full);
   color: var(--muted);
   transition: background-color var(--t-fast), color var(--t-fast);
+}
+.remove::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
 }
 .remove:hover { background: var(--surface-pressed); color: var(--ink); }
 
@@ -62,4 +68,16 @@
   font-size: var(--fs-caption);
   line-height: var(--lh-caption);
   white-space: nowrap;
+}
+
+@media (forced-colors: active) {
+  .chip { border-color: ButtonText; }
+  .chip[aria-pressed="true"] {
+    forced-color-adjust: none;
+    background: Highlight;
+    border-color: Highlight;
+    color: HighlightText;
+  }
+  .chip:disabled { color: GrayText; border-color: GrayText; }
+  .tag { border: var(--hairline) solid CanvasText; }
 }

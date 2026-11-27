@@ -77,9 +77,9 @@ pub struct InsertionControl {
 }
 
 impl InsertionControl {
-    pub(crate) fn for_target(app: Option<AppIdentity>, process: Option<u32>) -> Self {
+    pub(crate) fn for_target(app: Option<AppIdentity>, target_id: Option<u32>) -> Self {
         Self {
-            target: Some((app, process)),
+            target: Some((app, target_id)),
             ..Self::default()
         }
     }
@@ -289,15 +289,17 @@ impl SystemInserter {
         if let Preflight::CopyOnly(reason) = platform::preflight(session) {
             return copy_only(text, reason, control);
         }
-        let (app_now, process_now) = SystemAppIdentityLookup.foreground_target();
-        let (app, process) = control.target.as_ref().cloned().unwrap_or_default();
-        let app = app.or_else(|| app_now.clone());
-        let process = process.or(process_now);
+        let (app_now, id_now) = SystemAppIdentityLookup.foreground_target();
+        let (app, target_id) = control.target.as_ref().cloned().unwrap_or_default();
         if let Some(reason) =
-            target_copy_reason(text, app.as_ref(), process, app_now.as_ref(), process_now)
+            target_copy_reason(text, app.as_ref(), target_id, app_now.as_ref(), id_now)
         {
             return copy_only(text, reason, control);
         }
+        // If the start observation was incomplete, use what we can observe
+        // before staging the clipboard for the final focus check.
+        let app = app.or(app_now);
+        let target_id = target_id.or(id_now);
 
         let mut clipboard = match arboard::Clipboard::new() {
             Ok(c) => c,
@@ -314,14 +316,13 @@ impl SystemInserter {
                     if let Preflight::CopyOnly(reason) = platform::preflight(session) {
                         return Err(reason);
                     }
-                    let (current_app, current_process) =
-                        SystemAppIdentityLookup.foreground_target();
+                    let (current_app, current_id) = SystemAppIdentityLookup.foreground_target();
                     target_copy_reason(
                         text,
                         app.as_ref(),
-                        process,
+                        target_id,
                         current_app.as_ref(),
-                        current_process,
+                        current_id,
                     )
                     .map_or(Ok(()), Err)
                 })
@@ -437,11 +438,11 @@ fn copy_only(text: &str, reason: CopyReason, control: &InsertionControl) -> Inse
 fn target_copy_reason(
     text: &str,
     original_app: Option<&AppIdentity>,
-    original_process: Option<u32>,
+    original_id: Option<u32>,
     current_app: Option<&AppIdentity>,
-    current_process: Option<u32>,
+    current_id: Option<u32>,
 ) -> Option<CopyReason> {
-    let changed = match (original_process, current_process) {
+    let changed = match (original_id, current_id) {
         (Some(then), Some(now)) => then != now,
         _ => app_changed(original_app, current_app),
     };
@@ -452,7 +453,11 @@ fn target_copy_reason(
         .into_iter()
         .flatten()
         .any(|app| suggested_preset(app) == Some(ShapePreset::Verbatim));
-    (terminal && text.chars().any(char::is_control)).then_some(CopyReason::MultilineTerminal)
+    (terminal
+        && text
+            .chars()
+            .any(|c| c.is_control() || crate::postprocess::is_line_ending(c)))
+    .then_some(CopyReason::MultilineTerminal)
 }
 
 /// ⌘V on macOS, Ctrl+V elsewhere.
@@ -659,6 +664,66 @@ mod tests {
             assert_dispatch(
                 platform::preflight_for(session, || panic!("no focused-field query")),
                 expected,
+            );
+        }
+    }
+
+    #[test]
+    fn x11_same_class_different_window_copies() {
+        use crate::platform::identity::x11_target;
+        let editor = || AppIdentity {
+            x11_window_class: Some("Code".into()),
+            ..Default::default()
+        };
+        let (original, original_id) =
+            x11_target(b"_NET_ACTIVE_WINDOW: window id # 0x12", |_| Some(editor())).unwrap();
+        for (current, current_id, expected) in [
+            (Some(editor()), Some(0x12), InsertOutcome::Inserted),
+            (
+                Some(editor()),
+                Some(0x34),
+                InsertOutcome::Copied(CopyReason::FocusChanged),
+            ),
+            (
+                None,
+                Some(0x34),
+                InsertOutcome::Copied(CopyReason::FocusChanged),
+            ),
+            (None, None, InsertOutcome::Inserted),
+        ] {
+            let active = format!(
+                "_NET_ACTIVE_WINDOW: window id # 0x{:x}",
+                current_id.unwrap_or(0)
+            );
+            let (app, id) = x11_target(active.as_bytes(), |_| current).unwrap_or_default();
+            assert_dispatch(
+                target_copy_reason(
+                    "dictation",
+                    original.as_ref(),
+                    original_id,
+                    app.as_ref(),
+                    id,
+                )
+                .map_or(Preflight::Paste, Preflight::CopyOnly),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_guard_copies_code_shaped_with_unicode_line_separators() {
+        let terminal = AppIdentity {
+            x11_window_class: Some("kitty".into()),
+            ..Default::default()
+        };
+        for raw in ["one\u{2028}two", "one\u{2029}two"] {
+            let shape = ShapePreset::CodeAndCommit.shape();
+            let text = crate::postprocess::process_with_shape(raw, &shape, &[]);
+            assert_eq!(text, raw);
+            assert_dispatch(
+                target_copy_reason(&text, None, None, Some(&terminal), None)
+                    .map_or(Preflight::Paste, Preflight::CopyOnly),
+                InsertOutcome::Copied(CopyReason::MultilineTerminal),
             );
         }
     }

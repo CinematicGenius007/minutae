@@ -2,7 +2,8 @@
 // The listening timer is measured here from the first "listening" event of a hold.
 import { HudPill } from "@minutae/ui";
 import { useEffect, useRef, useState } from "react";
-import { events } from "../../lib/api";
+import { useLoad } from "../../hooks";
+import { api, events } from "../../lib/api";
 import type { HudState } from "../../lib/types";
 import s from "./overlays.module.css";
 import { useTransparentWindow } from "./useTransparentWindow";
@@ -16,6 +17,7 @@ export default function HudWindow() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const startedAt = useRef<number | null>(null);
   const [subscribed, setSubscribed] = useState(false);
+  const [options] = useLoad(api.dictationShapeOptions);
 
   useEffect(() => {
     let off: (() => void) | null = null;
@@ -58,7 +60,7 @@ export default function HudWindow() {
   }, [listening]);
 
   return (
-    <div className={s.hudStage} data-screen="hud" data-ready={String(subscribed)}>
+    <div className={s.hudStage} data-screen="hud" data-ready={String(subscribed && options.status !== "loading")}>
       {hud.state === "idle" ? null : hud.state === "listening" ? (
         <HudPill
           state="listening"
@@ -73,7 +75,13 @@ export default function HudWindow() {
       ) : hud.state === "copied" ? (
         <HudPill state="copied" message={hud.reason || "No text field · copied instead"} />
       ) : (
-        <HudPill state="error" message={hud.message} />
+        <HudPill
+          state="error"
+          message={hud.message}
+          onDismiss={options.data?.capabilities.hudInteractive
+            ? () => { void api.dismissDictationHud().catch(console.error); }
+            : undefined}
+        />
       )}
     </div>
   );

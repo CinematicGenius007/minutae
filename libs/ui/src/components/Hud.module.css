@@ -18,7 +18,8 @@
 }
 .listening { padding-left: var(--s-4); }
 .inserted, .copied, .error { gap: var(--s-3); }
-.error { max-width: 420px; }
+.error { max-width: min(420px, calc(100% - var(--s-4))); }
+.hudAction { flex-shrink: 0; pointer-events: auto; }
 .message { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .alert { display: inline-flex; flex-shrink: 0; color: var(--on-hud); }
 .timer {
@@ -78,7 +79,7 @@
   transition: color var(--t-fast), background-color var(--t-fast);
 }
 .toastAction:hover { color: var(--on-hud); }
-.toastAction:focus-visible { box-shadow: 0 0 0 2px var(--on-hud); }
+.toastAction:focus-visible { outline: 2px solid transparent; outline-offset: 2px; box-shadow: 0 0 0 2px var(--on-hud); }
 
 .viewport {
   position: fixed;
@@ -92,7 +93,6 @@
   padding: 0;
   list-style: none;
   transform: translateX(-50%);
-  outline: none;
 }
 .toastRoot[data-state="open"] { animation: toast-in var(--t-slow); }
 .toastRoot[data-state="closed"] { animation: toast-out var(--t-base) forwards; }
@@ -121,3 +121,9 @@
 }
 .tooltipShortcut { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--on-hud-muted); }
 @keyframes tip-in { from { opacity: 0; } }
+
+@media (forced-colors: active) {
+  .hud, .toast, .tooltip { border: var(--hairline) solid CanvasText; }
+  .dot, .bar { forced-color-adjust: none; background: CanvasText; }
+  .toastAction:focus-visible { outline-color: Highlight; }
+}

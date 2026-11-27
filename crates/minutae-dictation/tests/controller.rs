@@ -75,10 +75,11 @@ impl Rig {
     }
 }
 
-fn listening(hands_free: bool) -> HudState {
+fn listening(hands_free: bool, hotkey_held: bool) -> HudState {
     HudState::Listening {
         level: 0.0,
         hands_free,
+        hotkey_held,
         app: Some("Notes".into()),
         shape: ShapePreset::Tidy,
     }
@@ -106,7 +107,7 @@ async fn hold_records_transcribes_and_inserts() {
     assert_eq!(
         huds,
         vec![
-            listening(false),
+            listening(false, true),
             HudState::Processing,
             HudState::Inserted {
                 words: 7,
@@ -154,7 +155,14 @@ async fn short_tap_is_cancelled() {
         "waits for a possible second tap"
     );
     sleep(ms(400)).await;
-    assert_eq!(r.huds().await, vec![listening(false), HudState::Idle]);
+    assert_eq!(
+        r.huds().await,
+        vec![
+            listening(false, true),
+            listening(false, false),
+            HudState::Idle
+        ]
+    );
     assert_eq!(r.ctl.state(), DictationState::Idle);
     assert_eq!(r.stt.calls(), 0);
     assert!(r.ins.texts().is_empty());
@@ -172,7 +180,15 @@ async fn double_tap_enters_hands_free_until_next_press() {
     r.ctl.key_up();
     sleep(ms(3000)).await;
     assert_eq!(r.ctl.state(), DictationState::Listening);
-    assert_eq!(r.huds().await, vec![listening(false), listening(true)]);
+    assert_eq!(
+        r.huds().await,
+        vec![
+            listening(false, true),
+            listening(false, false),
+            listening(true, true),
+            listening(true, false)
+        ]
+    );
 
     r.ctl.key_down();
     r.ctl.key_up();
@@ -202,7 +218,7 @@ async fn hold_ignores_key_repeat() {
     assert_eq!(
         r.huds().await,
         vec![
-            listening(false),
+            listening(false, true),
             HudState::Processing,
             HudState::Inserted {
                 words: 1,
@@ -230,7 +246,8 @@ async fn toggle_mode_press_starts_and_press_stops() {
     assert_eq!(
         r.huds().await,
         vec![
-            listening(false),
+            listening(false, true),
+            listening(false, false),
             HudState::Processing,
             HudState::Inserted {
                 words: 1,
@@ -251,7 +268,7 @@ async fn toggle_mode_very_short_session_cancels() {
     r.ctl.key_down();
     sleep(ms(100)).await;
     r.ctl.key_down();
-    assert_eq!(r.huds().await, vec![listening(false), HudState::Idle]);
+    assert_eq!(r.huds().await, vec![listening(false, true), HudState::Idle]);
     assert_eq!(r.stt.calls(), 0);
 }
 
@@ -269,7 +286,7 @@ async fn max_length_stops_and_inserts() {
     assert_eq!(
         r.huds().await,
         vec![
-            listening(false),
+            listening(false, true),
             HudState::Processing,
             HudState::Inserted {
                 words: 2,
@@ -300,7 +317,7 @@ async fn presses_while_busy_are_ignored() {
     assert_eq!(
         r.huds().await,
         vec![
-            listening(false),
+            listening(false, true),
             HudState::Processing,
             HudState::Inserted {
                 words: 1,
@@ -335,6 +352,7 @@ async fn transcription_error_then_recovers() {
 
     r.ctl.key_down();
     assert_eq!(r.ctl.state(), DictationState::Listening);
+    assert_eq!(r.huds().await, vec![listening(false, true)]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -437,7 +455,7 @@ async fn cancel_while_listening_and_while_processing() {
     r.ctl.key_down();
     sleep(ms(500)).await;
     r.ctl.cancel();
-    assert_eq!(r.huds().await, vec![listening(false), HudState::Idle]);
+    assert_eq!(r.huds().await, vec![listening(false, true), HudState::Idle]);
 
     r.ctl.key_down();
     sleep(ms(500)).await;
@@ -449,7 +467,7 @@ async fn cancel_while_listening_and_while_processing() {
     assert_eq!(
         events,
         vec![
-            DictationEvent::Hud(listening(false)),
+            DictationEvent::Hud(listening(false, true)),
             DictationEvent::Hud(HudState::Processing),
             DictationEvent::Hud(HudState::Idle)
         ]
@@ -473,7 +491,7 @@ async fn escape_while_inserting_does_not_paste_or_save() {
     assert_eq!(
         r.drain().await,
         vec![
-            DictationEvent::Hud(listening(false)),
+            DictationEvent::Hud(listening(false, true)),
             DictationEvent::Hud(HudState::Processing),
             DictationEvent::Hud(HudState::Idle)
         ]
@@ -494,16 +512,18 @@ async fn forwards_mic_level_while_listening() {
     assert_eq!(
         huds,
         vec![
-            listening(false),
+            listening(false, true),
             HudState::Listening {
                 level: 0.5,
                 hands_free: false,
+                hotkey_held: true,
                 app: Some("Notes".into()),
                 shape: ShapePreset::Tidy,
             },
             HudState::Listening {
                 level: 1.0,
                 hands_free: false,
+                hotkey_held: true,
                 app: Some("Notes".into()),
                 shape: ShapePreset::Tidy,
             }
@@ -572,6 +592,7 @@ fn hud_state_wire_format() {
     let json = serde_json::to_value(HudState::Listening {
         level: 0.5,
         hands_free: true,
+        hotkey_held: false,
         app: None,
         shape: ShapePreset::Email,
     })

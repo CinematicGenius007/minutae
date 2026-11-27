@@ -23,6 +23,8 @@ export interface SelectProps {
   disabled?: boolean;
   /** Accessible name when there is no visible label. */
   "aria-label"?: string;
+  "aria-labelledby"?: string;
+  "aria-describedby"?: string;
   id?: string;
   name?: string;
   /** Stretch the trigger to its container. */
@@ -45,16 +47,24 @@ export function Select({
   disabled,
   id,
   "aria-label": ariaLabel,
+  "aria-labelledby": ariaLabelledBy,
+  "aria-describedby": ariaDescribedBy,
   ...root
 }: SelectProps) {
   return (
     <RS.Root disabled={disabled} {...root}>
-      <RS.Trigger id={id} aria-label={ariaLabel} className={cx(m.trigger, fullWidth && m.full, className)}>
+      <RS.Trigger
+        id={id}
+        aria-label={ariaLabel}
+        aria-labelledby={ariaLabelledBy}
+        aria-describedby={ariaDescribedBy}
+        className={cx(m.trigger, fullWidth && m.full, className)}
+      >
         <span className={m.value}>
           <RS.Value placeholder={placeholder} />
         </span>
         <RS.Icon className={m.chevron}>
-          <ChevronDown size={10} strokeWidth={2.6} />
+          <ChevronDown size={10} strokeWidth={2.6} aria-hidden />
         </RS.Icon>
       </RS.Trigger>
       <RS.Portal>
@@ -66,9 +76,9 @@ export function Select({
                 <RS.Separator key={`sep-${i}`} className={m.separator} />
               ) : (
                 <RS.Item key={o.value} value={o.value} disabled={o.disabled} className={cx(m.item, o.muted && m.muted)}>
-                  <span className={m.check}>
+                  <span className={m.check} aria-hidden>
                     <RS.ItemIndicator>
-                      <Check size={12} strokeWidth={3} />
+                      <Check size={12} strokeWidth={3} aria-hidden />
                     </RS.ItemIndicator>
                   </span>
                   <RS.ItemText>{o.label}</RS.ItemText>

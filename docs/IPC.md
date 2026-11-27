@@ -62,8 +62,8 @@ Mock switches for these screens: `?os=linux&session=wayland` (portal), `&portal=
 
 Settings persist `dictationDefaultShape`, `dictationShapeEdits`, `dictationAppRules`, and
 `dictationStartSound` (off by default). With no explicit default preset, `tidyDictation: true` uses Tidy
-and `false` uses the legacy cleanup-off rules (preserves capitalization and still handles
-spoken punctuation and vocabulary). Updating the toggle alone clears an explicit default.
+and `false` uses the legacy cleanup-off rules, bypassing saved Tidy edits. Cleanup-off preserves
+capitalization and still handles spoken punctuation and vocabulary. Updating the toggle alone clears an explicit default.
 Resolution order is user app rule, automatic Verbatim for recognized terminals, then the
 default. A quick switch applies to the current dictation only. History keeps the start app's
 `appIdentity` and the actual `shape`, including edited rules. Older rows return null for both.
@@ -74,10 +74,10 @@ default. A quick switch applies to the current dictation only. History keeps the
 | `list_dictation_app_rules` | Saved `DictationAppRule[]` with display names. |
 | `save_dictation_app_rule(rule)` / `remove_dictation_app_rule(matcher)` | Upsert or remove by app matcher. Returns `AppSettings` and emits `settings://changed`. |
 | `list_dictation_apps` | `DictationApp[]` with matcher, display name and nullable suggested preset. Combines history with running macOS apps, visible Windows apps or X11 window classes when EWMH and `xprop` are available. Wayland supplies no foreground app metadata. |
-| `set_dictation_shape_edits(preset, edits)` | Save per-preset capitalization and single-line final-period settings. Pass null for Reset shape. Verbatim and Code & commit preserve case and punctuation to protect identifiers. |
+| `set_dictation_shape_edits(preset, edits)` | Save per-preset capitalization and single-line final-period settings. Pass null for Reset shape. Verbatim and Code & commit ignore both edits to protect identifiers, including edits already saved or supplied to Preview. |
 | `preview_dictation_shape(sample, preset, edits)` | Runs the Rust rules and current vocabulary. Omit edits or pass null to use saved edits. Pass an object for a draft (empty object for factory rules). |
-| `get_dictation_hud` / `dictation://hud` | Snapshot and event stream, both `HudState`. Listening has the app label and preset. `shortcutPresets` lists successful temporary bindings and can be empty. Use `quickPresets` for the digit order (Verbatim, Chat message, Email, Notes and lists, Code & commit). |
-| `switch_dictation_shape(preset)` | Switch to a quick preset during listening. Option/Alt+1–5 is registered only during listening on native shortcut backends. |
+| `get_dictation_hud` / `dictation://hud` | Snapshot and event stream, both `HudState`. Listening has the app label and preset. `shortcutPresets` lists successful temporary bindings for the current modifier combination and can be empty. Use `quickPresets` for the digit order (Verbatim, Chat message, Email, Notes and lists, Code & commit). |
+| `switch_dictation_shape(preset)` | Switch to a quick preset during listening. Option/Alt+1–5 is registered only during listening on native shortcut backends. While the dictation hotkey is down, its modifiers are part of the combination. |
 | `set_dictation_hud_interaction(hovered, focused)` | Set pointer-hover and keyboard-focus-within state together. Either pauses the remaining six-second timer for Inserted and Copied. Error has no timer. |
 | `dismiss_dictation_hud` | Hides a result or error. While listening or processing, requests cancellation. |
 | `undo_dictation_insert(resultId)` | Requires a visible Inserted result with `undoAvailable: true`, a matching result ID and the original process instance still frontmost. Native paste does not confirm insertion, so the native HUD currently reports Undo unavailable. |
@@ -87,6 +87,9 @@ The HUD is visible on macOS, Windows, X11 and Wayland. Use `capabilities.hudInte
 gate pointer controls. macOS enables first-mouse clicks on its non-activating NSPanel, and
 Windows handles `WM_MOUSEACTIVATE` on its non-activating HUD. X11 and Wayland use a passive,
 click-through HUD with GTK focus hints. Wayland placement and visibility depend on the compositor.
+Errors stay visible until dismissed or replaced by a new dictation. An interactive error pill
+offers a Dismiss button. A passive HUD exposes Dismiss dictation error in the native tray menu
+only while an error is visible.
 
 An insert stages text on the clipboard and sends Command+V on macOS or Ctrl+V on Windows and
 X11. Minutae checks the foreground app again immediately before sending the keystroke and
@@ -106,9 +109,10 @@ result on the clipboard.
   A password field is also undetected when the focused control or its password metadata
   cannot be read and neither check gives a positive signal.
 - **Linux X11** and **unknown sessions** attempt the keystroke. Linux does not inspect
-  the focused field for passwords. X11 uses optional EWMH/`xprop` window metadata for
-  app switching and terminal detection. Without that metadata those checks cannot identify
-  the target. **Wayland** always copies without inspecting the field or injecting input.
+  the focused field for passwords. X11 uses the EWMH active window ID to detect focus changes,
+  including between windows with the same class. When IDs are unavailable, it compares available
+  app identities. The class also identifies terminals. The app picker excludes windows with
+  Minutae’s process ID when EWMH supplies it. **Wayland** always copies without inspecting the field or injecting input.
 
 Keystroke delivery cannot confirm that the app accepted the paste or that its next Undo
 would undo Minutae's edit. The native HUD reports Undo unavailable on all platforms.

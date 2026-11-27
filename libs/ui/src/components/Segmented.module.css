@@ -10,6 +10,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: var(--s-3);
+  flex-shrink: 0;
   height: 28px;
   padding-inline: var(--s-4);
   border: 0;
@@ -32,6 +34,46 @@
   box-shadow: var(--shadow-1);
 }
 .item:focus-visible { box-shadow: var(--focus-ring); }
-.item:disabled { color: var(--faint); cursor: default; }
+.item:disabled, .item:disabled:hover { color: var(--faint); cursor: default; }
+/* Tagged disabled option (e.g. "Cloud PLANNED"): stays readable in --muted. */
+.itemTagged:disabled, .itemTagged:disabled:hover { color: var(--muted); cursor: default; }
+.tag {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  height: var(--control-sm);
+  padding-inline: 6px;
+  border: var(--hairline) dashed var(--control-edge);
+  border-radius: var(--radius-full);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta-xs);
+  line-height: 1;
+  letter-spacing: var(--tr-caps-sm);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
 .full { display: flex; width: 100%; }
 .full .item { flex: 1; }
+
+@media (prefers-contrast: more) {
+  .track {
+    border: var(--hairline) solid var(--line);
+    padding: 2px;
+  }
+}
+
+@media (forced-colors: active) {
+  .track {
+    border: var(--hairline) solid ButtonText;
+    padding: 2px;
+  }
+  .item[data-state="on"] {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+    border: var(--hairline) solid Highlight;
+  }
+  .item:disabled, .item:disabled:hover, .itemTagged:disabled, .itemTagged:disabled:hover { color: GrayText; }
+  .tag { border-color: GrayText; color: GrayText; }
+}

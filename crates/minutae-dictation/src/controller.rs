@@ -134,6 +134,9 @@ pub enum HudState {
     Listening {
         level: f32,
         hands_free: bool,
+        /// Internal listening posture used to report the currently usable shortcuts.
+        #[serde(skip)]
+        hotkey_held: bool,
         app: Option<String>,
         shape: ShapePreset,
     },
@@ -219,6 +222,7 @@ struct Listening {
     shape: Shape,
     quick_shapes: [Shape; 5],
     hands_free: bool,
+    hotkey_held: bool,
     awaiting_second_tap: bool,
     /// The release that belongs to the press that switched to hands-free.
     swallow_release: bool,
@@ -297,7 +301,7 @@ impl DictationController {
     pub fn retry(&self) {
         let mut inner = self.shared.lock();
         if matches!(inner.phase, Phase::Error) {
-            self.shared.begin(&mut inner, Instant::now());
+            self.shared.begin(&mut inner, Instant::now(), false);
             // Retry is issued by a click, so there will be no matching key release.
             let level = inner.level;
             if let Phase::Listening(listening) = &mut inner.phase {
@@ -311,14 +315,16 @@ impl DictationController {
         let shared = &self.shared;
         let now = Instant::now();
         let mut inner = shared.lock();
+        let hotkey_held = mode.is_none();
         let mode = mode.unwrap_or(inner.config.mode);
         let min_press = inner.config.min_press;
         let level = inner.level;
         match &mut inner.phase {
-            Phase::Idle | Phase::Error => shared.begin(&mut inner, now),
+            Phase::Idle | Phase::Error => shared.begin(&mut inner, now, hotkey_held),
             Phase::Listening(l) if l.awaiting_second_tap => {
                 l.awaiting_second_tap = false;
                 l.hands_free = true;
+                l.hotkey_held = hotkey_held;
                 l.swallow_release = true;
                 shared.emit(l.hud(level));
             }
@@ -374,14 +380,19 @@ impl DictationController {
         let min_press = inner.config.min_press;
         let window = inner.config.double_tap_window;
         let session = inner.session;
+        let level = inner.level;
         let Phase::Listening(l) = &mut inner.phase else {
             return;
         };
-        if l.swallow_release {
+        let was_held = std::mem::take(&mut l.hotkey_held);
+        if l.swallow_release || mode == HotkeyMode::Toggle || l.hands_free {
             l.swallow_release = false;
+            if was_held {
+                shared.emit(l.hud(level));
+            }
             return;
         }
-        if mode == HotkeyMode::Toggle || l.hands_free || l.awaiting_second_tap {
+        if l.awaiting_second_tap {
             return;
         }
         if now.duration_since(l.pressed_at) >= min_press {
@@ -390,6 +401,9 @@ impl DictationController {
         }
         // A tap: wait briefly for a second press before cancelling.
         l.awaiting_second_tap = true;
+        if was_held {
+            shared.emit(l.hud(level));
+        }
         let mut alive = l._alive.subscribe();
         let this = Arc::clone(shared);
         shared.handle.spawn(async move {
@@ -436,6 +450,7 @@ impl Listening {
         HudState::Listening {
             level,
             hands_free: self.hands_free,
+            hotkey_held: self.hotkey_held,
             app: self.app.as_ref().and_then(|a| a.display_name.clone()),
             shape: self.shape.preset,
         }
@@ -463,9 +478,9 @@ impl Shared {
         let _ = self.events.send(DictationEvent::Hud(state));
     }
 
-    fn begin(self: &Arc<Self>, inner: &mut Inner, now: Instant) {
+    fn begin(self: &Arc<Self>, inner: &mut Inner, now: Instant, hotkey_held: bool) {
         inner.undo_target = None;
-        let (app, process) = self.deps.apps.foreground_target();
+        let (app, target_id) = self.deps.apps.foreground_target();
         let shape = resolve_shape(
             app.as_ref(),
             &inner.config.app_rules,
@@ -480,7 +495,10 @@ impl Shared {
             });
             return;
         }
-        *self.active_insert() = Some(Arc::new(InsertionControl::for_target(app.clone(), process)));
+        *self.active_insert() = Some(Arc::new(InsertionControl::for_target(
+            app.clone(),
+            target_id,
+        )));
         inner.session += 1;
         inner.level = 0.0;
         let session = inner.session;
@@ -495,6 +513,7 @@ impl Shared {
             shape,
             quick_shapes: inner.config.quick_shapes,
             hands_free: false,
+            hotkey_held,
             awaiting_second_tap: false,
             swallow_release: false,
             _alive: alive,

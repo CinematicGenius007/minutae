@@ -103,6 +103,7 @@ export interface Shape {
   preset: ShapePreset; capitals: Capitals; dropFinalPeriod: boolean; tidy: boolean;
   spokenPunctuation: boolean; lineBreaks: LineBreaks; rewriteWithLocalModel: boolean;
 }
+/** Applies to prose presets. Verbatim and Code & commit ignore these edits. */
 export interface ShapeEdits { capitals?: Capitals | null; dropFinalPeriod?: boolean | null }
 export interface AppIdentity {
   macosBundleId: string | null; windowsExecutable: string | null; x11WindowClass: string | null; displayName: string | null;
@@ -140,6 +141,7 @@ export type HudFixAction = "microphoneSettings" | "transcriptionSettings" | "ret
 export type CopyReason = "accessibilityNotTrusted" | "noTextField" | "wayland" | "secureInput"
   | "pasteFailed" | "focusChanged" | "multilineTerminal";
 
+/** A listening HUD reports only shortcut presets available with the current modifiers. */
 export type HudState =
   | { state: "idle" }
   | { state: "listening"; level: number; handsFree: boolean; app: string | null; shape: ShapePreset; shortcutPresets: ShapePreset[] }

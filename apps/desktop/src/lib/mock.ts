@@ -14,6 +14,7 @@
 //   ?audio=1           meetings have short silent audio tracks, so the player is enabled
 //   ?captions=off      live captions turned off (also: noModel = no Whisper model; none = on, nothing said yet)
 //   ?import=none       no older Minutae data (also: error, running, failed; see legacyScan below)
+//   ?dictations=loading|error|errorOnce   force Dictate list loading or error state (errorOnce recovers on retry)
 //   ?update=available|checking|error|disabled   start the updater in that phase (default idle)
 //   ?channel=scoop|source   a copy that can't install updates itself and shows its update command
 //
@@ -101,7 +102,12 @@ function sameMatcher(a: AppMatcher, b: AppMatcher) {
   return key(a.value) === key(b.value);
 }
 
+function preservesIdentifiers(preset: ShapePreset) {
+  return preset === "verbatim" || preset === "codeAndCommit";
+}
+
 function editedShape(shape: Shape, edits?: ShapeEdits | null): Shape {
+  if (preservesIdentifiers(shape.preset)) return shape;
   return { ...shape, capitals: edits?.capitals ?? shape.capitals, dropFinalPeriod: edits?.dropFinalPeriod ?? shape.dropFinalPeriod };
 }
 
@@ -265,6 +271,8 @@ function detail(meetingId: string): MeetingDetail {
   return d;
 }
 
+const dictationsMode = params.get("dictations");
+let dictationsFailedOnce = false;
 let dictations: Dictation[] = empty ? [] : [
   ["Thanks for the notes. Let's keep the May date and I'll send the revised plan to the team before Friday's review.", "Mail", 16, 2],
   ["Refactor the recorder so it writes chunks to disk every thirty seconds instead of holding the whole buffer.", "Xcode", 15, 47],
@@ -598,11 +606,11 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
     case "list_input_devices": return r([{ id: "default", name: "MacBook Pro Microphone", isDefault: true }, { id: "airpods", name: "AirPods Pro", isDefault: false }, { id: "mv7", name: "Shure MV7", isDefault: false }]);
     case "dictation_shape_options": {
       const preset = settings.dictationDefaultShape ?? "tidy";
-      const defaultShape = preset === "tidy" && !settings.dictationDefaultShape && !settings.tidyDictation
-        ? { ...tidyShape, tidy: false, capitals: "asSaid" as const } : presets[preset];
+      const defaultShape = settings.dictationDefaultShape === null && !settings.tidyDictation
+        ? { ...tidyShape, tidy: false, capitals: "asSaid" as const }
+        : editedShape(presets[preset], settings.dictationShapeEdits[preset]);
       const options: DictationShapeOptions = {
-        presets: Object.values(presets), quickPresets, capabilities,
-        defaultShape: editedShape(defaultShape, settings.dictationShapeEdits[preset]),
+        presets: Object.values(presets), quickPresets, capabilities, defaultShape,
       };
       return r(options);
     }
@@ -630,7 +638,7 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
       const preset = args.preset as ShapePreset;
       const edits = args.edits as ShapeEdits | null;
       const dictationShapeEdits = { ...settings.dictationShapeEdits };
-      if (edits) dictationShapeEdits[preset] = edits;
+      if (edits && !preservesIdentifiers(preset)) dictationShapeEdits[preset] = edits;
       else delete dictationShapeEdits[preset];
       settings = { ...settings, dictationShapeEdits };
       emit("settings://changed", settings);
@@ -677,7 +685,18 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
       if (mockHud.state !== "error") return fail("There is no dictation error to fix.");
       if (mockHud.fixAction === "retry") setMockHud({ ...listening, handsFree: true });
       return r(undefined);
-    case "list_dictations": return r(dictations.slice(0, (args.limit as number | undefined) ?? 100));
+    case "list_dictations":
+      if (dictationsMode === "loading") return new Promise<T>(() => {});
+      if (dictationsMode === "error") return fail("Couldn't read your dictation history.");
+      if (dictationsMode === "errorOnce" && !dictationsFailedOnce) {
+        return new Promise<T>((_, reject) =>
+          setTimeout(() => {
+            dictationsFailedOnce = true;
+            reject("Couldn't read your dictation history.");
+          }, 120),
+        );
+      }
+      return r(dictations.slice(0, (args.limit as number | undefined) ?? 100));
     case "delete_dictation":
       removeDictations((entry) => entry.id === args.id);
       return r(undefined);

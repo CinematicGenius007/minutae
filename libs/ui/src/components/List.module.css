@@ -80,7 +80,7 @@
 }
 .interactive:hover::before, .lane[data-force="hover"]::before, .selected::before { opacity: 1; }
 .interactive:has(.laneButton:focus-visible)::before { opacity: 1; box-shadow: var(--focus-ring); }
-.laneButton:focus-visible { box-shadow: none; } /* the row draws the ring */
+.laneButton:focus-visible { box-shadow: none; outline: 2px solid transparent; outline-offset: 2px; } /* the row draws the ring; transparent outline survives forced-colors */
 .laneButton {
   display: block;
   width: 100%;
@@ -92,7 +92,6 @@
   font-family: inherit;
   text-align: left;
   cursor: pointer;
-  outline: none;
 }
 
 .laneTime, .laneDuration {
@@ -139,4 +138,10 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
+}
+
+@media (forced-colors: active) {
+  .selected::before { opacity: 1; border: 2px solid Highlight; background: transparent; }
+  .laneButton:focus-visible { outline-color: Highlight; }
+  .settingDisabled .settingTitle { color: GrayText; }
 }

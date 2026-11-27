@@ -141,10 +141,13 @@ function SpeakerLabel({ speaker, name, onRenamed }: { speaker: Speaker | undefin
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(name);
   const cancelled = useRef(false);
+  const restoreFocus = useRef(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
   if (!speaker) return <span className={s.speaker}>{name}</span>;
   if (!editing) {
     return (
       <button
+        ref={btnRef}
         type="button"
         className={s.speaker}
         title="Rename speaker"
@@ -152,6 +155,7 @@ function SpeakerLabel({ speaker, name, onRenamed }: { speaker: Speaker | undefin
         onClick={() => {
           setValue(speaker.displayName ?? (speaker.track === "mic" ? "You" : ""));
           cancelled.current = false;
+          restoreFocus.current = false;
           setEditing(true);
         }}
       >
@@ -161,6 +165,10 @@ function SpeakerLabel({ speaker, name, onRenamed }: { speaker: Speaker | undefin
   }
   const commit = async () => {
     setEditing(false);
+    if (restoreFocus.current) {
+      restoreFocus.current = false;
+      requestAnimationFrame(() => btnRef.current?.focus());
+    }
     const next = value.trim();
     if (cancelled.current || !next || next === name) return;
     try {
@@ -181,9 +189,13 @@ function SpeakerLabel({ speaker, name, onRenamed }: { speaker: Speaker | undefin
       onChange={(e) => setValue(e.currentTarget.value)}
       onBlur={() => void commit()}
       onKeyDown={(e) => {
-        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Enter") {
+          restoreFocus.current = true;
+          e.currentTarget.blur();
+        }
         if (e.key === "Escape") {
           cancelled.current = true;
+          restoreFocus.current = true;
           e.currentTarget.blur();
         }
       }}

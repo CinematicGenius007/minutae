@@ -228,6 +228,9 @@ pub struct ShapeEdits {
 
 impl ShapeEdits {
     pub fn apply(self, mut shape: Shape) -> Shape {
+        if shape.preset.preserves_identifiers() {
+            return shape;
+        }
         if let Some(capitals) = self.capitals {
             shape.capitals = capitals;
         }

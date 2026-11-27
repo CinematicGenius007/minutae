@@ -218,6 +218,7 @@ pub fn init(app: &AppHandle, rt: tokio::runtime::Handle) {
             // Meter updates should never cause another window show/position call.
             if std::mem::discriminant(&hud) != std::mem::discriminant(&next) {
                 clock.set_state(&next);
+                crate::shell::sync_tray_dictation_error(&app, &next);
                 if matches!(next, HudState::Idle) {
                     crate::shell::hide_aux(&app, crate::shell::HUD);
                 } else {
@@ -236,6 +237,7 @@ pub(crate) enum HudCommand {
     Switch(ShapePreset),
     Interaction { hovered: bool, focused: bool },
     Dismiss,
+    DismissError,
     Undo(uuid::Uuid),
     Fix,
 }
@@ -285,6 +287,8 @@ fn handle_hud_request(
                 }
             }
             HudCommand::Dismiss => hide = true,
+            // A tray click queued during an error must never dismiss a newer session.
+            HudCommand::DismissError => hide = matches!(hud, HudState::Error { .. }),
             HudCommand::Undo(result_id) => {
                 let HudState::Inserted {
                     result_id: Some(id),
@@ -520,6 +524,15 @@ const SHAPE_KEYS: [Code; 5] = [
     Code::Digit5,
 ];
 
+fn held_shape_modifiers(st: &AppState) -> Modifiers {
+    let binding = st
+        .shortcuts
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .dictate;
+    Modifiers::ALT | binding.map_or_else(Modifiers::empty, |key| key.mods)
+}
+
 fn sync_shape_shortcuts(app: &AppHandle, listening: bool) {
     let st = app.state::<AppState>();
     let mut registered = st
@@ -529,11 +542,10 @@ fn sync_shape_shortcuts(app: &AppHandle, listening: bool) {
     registered.transition(
         listening && !crate::shell::is_quitting() && !crate::portal::use_portal(),
         |bindings| {
-            let held_modifiers = st.shortcuts.lock().unwrap_or_else(|e| e.into_inner())
-                .dictate
-                .filter(|_| st.settings().dictation_mode == minutae_core::HotkeyMode::Hold)
-                .map(|key| key.mods | Modifiers::ALT)
-                .filter(|&mods| mods != Modifiers::ALT);
+            let held = held_shape_modifiers(&st);
+            let held_modifiers = (held != Modifiers::ALT
+                && st.settings().dictation_mode == minutae_core::HotkeyMode::Hold)
+                .then_some(held);
             let shortcuts = app.global_shortcut();
             for (code, preset) in SHAPE_KEYS.into_iter().zip(QUICK_PRESETS) {
                 for mods in std::iter::once(Modifiers::ALT).chain(held_modifiers) {
@@ -755,28 +767,38 @@ pub fn save_dictation_audio(path: &std::path::Path, samples: &[f32]) -> std::io:
 
 fn hud_dto(app: &AppHandle, hud: &HudState) -> dto::HudState {
     let mut dto = dto::HudState::from(hud);
-    if let dto::HudState::Listening {
-        shortcut_presets, ..
-    } = &mut dto
+    if let (
+        HudState::Listening { hotkey_held, .. },
+        dto::HudState::Listening {
+            shortcut_presets, ..
+        },
+    ) = (hud, &mut dto)
     {
         let st = app.state::<AppState>();
         let registered = st
             .shape_registration
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        *shortcut_presets = SHAPE_KEYS
-            .into_iter()
-            .zip(QUICK_PRESETS)
-            .filter_map(|(code, preset)| {
-                registered
-                    .bindings
-                    .iter()
-                    .any(|key| key.key == code)
-                    .then_some(preset)
-            })
-            .collect();
+        let modifiers = if *hotkey_held {
+            held_shape_modifiers(&st)
+        } else {
+            Modifiers::ALT
+        };
+        *shortcut_presets = registered_shape_presets(&registered.bindings, modifiers);
     }
     dto
+}
+
+fn registered_shape_presets(bindings: &[Shortcut], modifiers: Modifiers) -> Vec<ShapePreset> {
+    SHAPE_KEYS
+        .into_iter()
+        .zip(QUICK_PRESETS)
+        .filter_map(|(code, preset)| {
+            bindings
+                .contains(&Shortcut::new(Some(modifiers), code))
+                .then_some(preset)
+        })
+        .collect()
 }
 
 fn emit_hud(app: &AppHandle, hud: &HudState) {
@@ -805,6 +827,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shape_shortcuts_require_registration_for_the_current_modifiers() {
+        let plain = Modifiers::ALT;
+        let held = Modifiers::ALT | Modifiers::CONTROL;
+        let keys = [
+            Shortcut::new(Some(plain), Code::Digit1),
+            Shortcut::new(Some(held), Code::Digit2),
+        ];
+        assert_eq!(
+            registered_shape_presets(&keys, held),
+            [ShapePreset::ChatMessage]
+        );
+        assert_eq!(
+            registered_shape_presets(&keys, plain),
+            [ShapePreset::Verbatim]
+        );
+    }
+
+    #[test]
     fn hold_becomes_toggle_without_releases() {
         use minutae_core::HotkeyMode;
         let s = AppSettings {
@@ -824,6 +864,7 @@ mod tests {
             let listening = HudState::Listening {
                 level: 0.0,
                 hands_free: false,
+                hotkey_held: true,
                 app: None,
                 shape: ShapePreset::Tidy,
             };

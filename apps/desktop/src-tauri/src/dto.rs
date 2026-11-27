@@ -326,6 +326,7 @@ pub enum HudState {
         hands_free: bool,
         app: Option<String>,
         shape: minutae_core::dictation::ShapePreset,
+        /// Presets with a registered shortcut for the current modifier posture.
         shortcut_presets: Vec<minutae_core::dictation::ShapePreset>,
     },
     Processing,
@@ -355,6 +356,7 @@ impl From<&minutae_dictation::HudState> for HudState {
                 hands_free,
                 app,
                 shape,
+                ..
             } => HudState::Listening {
                 level: *level,
                 hands_free: *hands_free,

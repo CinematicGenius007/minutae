@@ -25,6 +25,7 @@ pub const PROMPT: &str = "prompt";
 /// macOS menu-bar panel (route `#/tray`), anchored under the tray icon.
 pub const TRAY_PANEL: &str = "tray";
 const TRAY_ID: &str = "minutae";
+const DISMISS_DICTATION_ERROR: &str = "dismiss_dictation_error";
 
 const HUD_SIZE: (f64, f64) = (320.0, 64.0);
 const PROMPT_SIZE: (f64, f64) = (380.0, 200.0);
@@ -448,7 +449,24 @@ fn build_menu(
         .collect::<tauri::Result<_>>()?;
     let recent_header =
         MenuItem::with_id(app, "recent_header", "Recent meetings", false, None::<&str>)?;
-    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&record, &hint, &sep1];
+    let dismiss_error = st
+        .tray_dictation_error
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .then(|| {
+            MenuItem::with_id(
+                app,
+                DISMISS_DICTATION_ERROR,
+                "Dismiss dictation error",
+                true,
+                None::<&str>,
+            )
+        })
+        .transpose()?;
+    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&record, &hint];
+    if let Some(dismiss) = &dismiss_error {
+        items.push(dismiss);
+    }
+    items.push(&sep1);
     if !recent_items.is_empty() {
         items.push(&recent_header);
         for i in &recent_items {
@@ -499,6 +517,14 @@ fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         "record" => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move { crate::recording::toggle(&app).await });
+        }
+        DISMISS_DICTATION_ERROR => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ =
+                    crate::dictation::hud_request(&app, crate::dictation::HudCommand::DismissError)
+                        .await;
+            });
         }
         "open" => show_main(app),
         "settings" => navigate(app, "/settings/general"),
@@ -587,7 +613,23 @@ pub fn update_tray_recording(app: &AppHandle, rec: &RecordingState) {
     }
 }
 
-/// Rebuild the tray menu (recent meetings, labels).
+/// Offer a native tray action when the HUD cannot receive clicks.
+pub(crate) fn sync_tray_dictation_error(app: &AppHandle, hud: &minutae_dictation::HudState) {
+    let show = passive_dictation_error(hud_interactive(app), hud);
+    let previous = app
+        .state::<AppState>()
+        .tray_dictation_error
+        .swap(show, std::sync::atomic::Ordering::Relaxed);
+    if previous != show {
+        refresh_tray(app);
+    }
+}
+
+fn passive_dictation_error(interactive: bool, hud: &minutae_dictation::HudState) -> bool {
+    !interactive && matches!(hud, minutae_dictation::HudState::Error { .. })
+}
+
+/// Rebuild the tray menu (recent meetings, labels and dictation error action).
 pub fn refresh_tray(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -700,6 +742,31 @@ pub fn on_shortcut(app: &AppHandle, shortcut: &Shortcut, state: ShortcutState) {
 
 #[cfg(test)]
 mod tray_tests {
+    #[test]
+    fn passive_hud_tray_action_exists_only_while_showing_an_error() {
+        use minutae_dictation::{HudFixAction, HudState};
+
+        let error = HudState::Error {
+            message: "No speech detected".into(),
+            fix_action: HudFixAction::Retry,
+        };
+        assert!(super::passive_dictation_error(false, &error));
+        assert!(!super::passive_dictation_error(true, &error));
+        for state in [
+            HudState::Idle,
+            HudState::Processing,
+            HudState::Listening {
+                level: 0.0,
+                hands_free: false,
+                hotkey_held: true,
+                app: None,
+                shape: Default::default(),
+            },
+        ] {
+            assert!(!super::passive_dictation_error(false, &state));
+        }
+    }
+
     #[test]
     fn tray_panel_sits_centred_under_the_icon_and_on_screen() {
         assert_eq!(

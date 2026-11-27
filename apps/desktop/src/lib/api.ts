@@ -89,6 +89,7 @@ export const api = {
   listDictationAppRules: () => call<DictationAppRule[]>("list_dictation_app_rules"),
   saveDictationAppRule: (rule: DictationAppRule) => call<AppSettings>("save_dictation_app_rule", { rule }),
   removeDictationAppRule: (matcher: AppMatcher) => call<AppSettings>("remove_dictation_app_rule", { matcher }),
+  /** Verbatim and Code & commit ignore capitalization and final-period edits. */
   setDictationShapeEdits: (preset: ShapePreset, edits: ShapeEdits | null) =>
     call<AppSettings>("set_dictation_shape_edits", { preset, edits }),
   listDictationApps: () => call<DictationApp[]>("list_dictation_apps"),
@@ -98,6 +99,7 @@ export const api = {
   switchDictationShape: (preset: ShapePreset) => call<void>("switch_dictation_shape", { preset }),
   setDictationHudInteraction: (hovered: boolean, focused: boolean) =>
     call<void>("set_dictation_hud_interaction", { hovered, focused }),
+  /** Hide a result or error, or cancel an active dictation. */
   dismissDictationHud: () => call<void>("dismiss_dictation_hud"),
   /** Requires a visible Inserted result with undoAvailable and a matching result ID. */
   undoDictationInsert: (resultId: Uuid) => call<void>("undo_dictation_insert", { resultId }),

@@ -33,6 +33,7 @@ export function ApiKeyDialog({ open, onClose, providers, onSaved }: ApiKeyDialog
   const platform = usePlatform();
   const toast = useToast();
   const ref = useRef<HTMLDialogElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
   const [provider, setProvider] = useState<ApiProvider>(providers[0] ?? "gemini");
   const [key, setKey] = useState("");
   const [hint, setHint] = useState<string | null>(null);
@@ -43,10 +44,16 @@ export function ApiKeyDialog({ open, onClose, providers, onSaved }: ApiKeyDialog
     const el = ref.current;
     if (!el) return;
     if (open && !el.open) {
+      opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setProvider(providers[0] ?? "gemini");
       el.showModal();
     }
-    if (!open && el.open) el.close();
+    if (!open && el.open) {
+      el.close();
+      const prev = opener.current;
+      opener.current = null;
+      if (prev?.isConnected) prev.focus();
+    }
   }, [open, providers]);
 
   useEffect(() => {
@@ -96,6 +103,7 @@ export function ApiKeyDialog({ open, onClose, providers, onSaved }: ApiKeyDialog
       ref={ref}
       className={d.dialog}
       aria-labelledby="apikey-title"
+      aria-describedby="apikey-desc"
       onClose={onClose}
       onCancel={(e) => {
         e.preventDefault();
@@ -115,7 +123,7 @@ export function ApiKeyDialog({ open, onClose, providers, onSaved }: ApiKeyDialog
         <h2 id="apikey-title" className={d.title}>
           {providers.length > 1 ? "API keys" : `Add a ${NAMES[provider]} key`}
         </h2>
-        <p className={d.description}>Keys stay in {keychainName(platform)} and are only used when nothing on your list is ready.</p>
+        <p id="apikey-desc" className={d.description}>Keys stay in {keychainName(platform)} and are only used when nothing on your list is ready.</p>
         {providers.length > 1 ? (
           <Segmented<ApiProvider>
             aria-label="Provider"

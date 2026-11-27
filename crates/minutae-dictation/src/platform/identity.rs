@@ -20,6 +20,7 @@ pub(crate) fn app_changed(original: Option<&AppIdentity>, current: Option<&AppId
 
 pub trait AppIdentityLookup: Send + Sync {
     fn frontmost_app(&self) -> Option<AppIdentity>;
+    /// App identity and a native target ID (process ID on macOS/Windows, window ID on X11).
     fn foreground_target(&self) -> (Option<AppIdentity>, Option<u32>) {
         (self.frontmost_app(), None)
     }
@@ -76,6 +77,11 @@ impl AppIdentityLookup for SystemAppIdentityLookup {
     }
 
     #[cfg(target_os = "linux")]
+    fn foreground_target(&self) -> (Option<AppIdentity>, Option<u32>) {
+        x11_active_target().unwrap_or_default()
+    }
+
+    #[cfg(target_os = "linux")]
     fn available_apps(&self) -> Vec<AppIdentity> {
         use std::process::Command;
         if super::session_kind() != super::SessionKind::X11 {
@@ -96,7 +102,10 @@ impl AppIdentityLookup for SystemAppIdentityLookup {
         ids.split(", ")
             .take(100)
             .filter_map(|id| u32::from_str_radix(id.strip_prefix("0x")?, 16).ok())
-            .filter_map(x11_identity)
+            .filter_map(|id| {
+                let properties = x11_window_properties(id, &["WM_CLASS", "_NET_WM_PID"])?;
+                x11_picker_identity(&properties, std::process::id())
+            })
             .collect()
     }
 }
@@ -145,6 +154,11 @@ fn windows_identity(executable: String) -> AppIdentity {
 
 #[cfg(target_os = "linux")]
 pub fn frontmost_app_identity() -> Option<AppIdentity> {
+    x11_active_target()?.0
+}
+
+#[cfg(target_os = "linux")]
+fn x11_active_target() -> Option<(Option<AppIdentity>, Option<u32>)> {
     use std::process::Command;
 
     if super::session_kind() != super::SessionKind::X11 {
@@ -157,17 +171,47 @@ pub fn frontmost_app_identity() -> Option<AppIdentity> {
         .args(["-root", "-notype", "_NET_ACTIVE_WINDOW"])
         .output()
         .ok()?;
-    let id = active_window_id(&active.status.success().then_some(active.stdout)?)?;
-    x11_identity(id)
+    x11_target(&active.status.success().then_some(active.stdout)?, |id| {
+        x11_identity(&x11_window_properties(id, &["WM_CLASS"])?)
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn x11_target(
+    active: &[u8],
+    lookup: impl FnOnce(u32) -> Option<AppIdentity>,
+) -> Option<(Option<AppIdentity>, Option<u32>)> {
+    let id = active_window_id(active)?;
+    Some((lookup(id), Some(id)))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn x11_picker_identity(properties: &str, own_pid: u32) -> Option<AppIdentity> {
+    let pid = properties.lines().find_map(|line| {
+        line.strip_prefix("_NET_WM_PID = ")?
+            .trim()
+            .parse::<u32>()
+            .ok()
+    });
+    if pid == Some(own_pid) {
+        return None;
+    }
+    x11_identity(properties)
 }
 
 #[cfg(target_os = "linux")]
-fn x11_identity(id: u32) -> Option<AppIdentity> {
-    let property = std::process::Command::new("xprop")
-        .args(["-id", &format!("0x{id:x}"), "-notype", "WM_CLASS"])
+fn x11_window_properties(id: u32, properties: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("xprop")
+        .args(["-id", &format!("0x{id:x}"), "-notype"])
+        .args(properties)
         .output()
         .ok()?;
-    let class = window_class(&property.status.success().then_some(property.stdout)?)?;
+    String::from_utf8(output.status.success().then_some(output.stdout)?).ok()
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn x11_identity(properties: &str) -> Option<AppIdentity> {
+    let class = properties.lines().find_map(window_class)?;
     Some(AppIdentity {
         display_name: Some(class.clone()),
         x11_window_class: Some(class),
@@ -191,8 +235,7 @@ fn active_window_id(output: &[u8]) -> Option<u32> {
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn window_class(output: &[u8]) -> Option<String> {
-    let output = std::str::from_utf8(output).ok()?;
+fn window_class(output: &str) -> Option<String> {
     // The class is the last quoted field (the first field is the instance).
     let (_, class) = output
         .trim()
@@ -205,6 +248,19 @@ fn window_class(output: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn x11_picker_excludes_own_pid_but_keeps_unknown_pid() {
+        let properties = |pid: &str| format!("WM_CLASS = \"minutae\", \"Minutae\"\n{pid}");
+        for (pid, visible) in [
+            ("_NET_WM_PID = 17", false),
+            ("_NET_WM_PID = 18", true),
+            ("_NET_WM_PID:  not found.", true),
+        ] {
+            let properties = properties(pid);
+            assert_eq!(x11_picker_identity(&properties, 17).is_some(), visible);
+        }
+    }
 
     #[test]
     fn parses_x11_active_window_and_class() {
@@ -231,11 +287,7 @@ mod tests {
             ("WM_CLASS = \"just-one-field\"\n", None),
             ("WM_CLASS:  not found.\n", None),
         ] {
-            assert_eq!(
-                window_class(input.as_bytes()).as_deref(),
-                expected,
-                "{input}"
-            );
+            assert_eq!(window_class(input).as_deref(), expected, "{input}");
         }
     }
 }
