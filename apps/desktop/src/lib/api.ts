@@ -7,6 +7,8 @@ import type {
   HudState, InputDevice, LevelFrame, MeetingDetail, Moment, ModelInfo, Permissions, PlatformInfo, Progress,
   ProviderStatus, RecordingState, SearchHit, SearchKind, ShortcutStatus, StorageUsage, UsageMonth, Uuid, WhisperModel, Route,
   Meeting, LegacyScan, ImportProgress, ImportFinished, UpdateStatus,
+  ActionItem, ActionItemInput, MeetingContents, MeetingDeletion, MeetingPart, MeetingWaveform,
+  RecordingDiscard, RecordingDiscardInfo, WaveformRange,
 } from "./types";
 import { mockInvoke, mockListen } from "./mock";
 
@@ -43,8 +45,8 @@ export const api = {
   copyText: (text: string) => call<void>("copy_text", { text }),
   /** Path → URL playable by <audio>. */
   audioUrl: async (path: string) => {
-    // The browser mock hands out data: URLs as "paths"; real files only play inside Tauri.
-    if (!inTauri) return path.startsWith("data:") ? path : "";
+    // The browser mock hands out data: or blob: URLs as "paths"; real files only play inside Tauri.
+    if (!inTauri) return /^(data|blob):/.test(path) ? path : "";
     const { convertFileSrc } = await import("@tauri-apps/api/core");
     return convertFileSrc(path);
   },
@@ -70,6 +72,18 @@ export const api = {
   setActionDone: (id: Uuid, done: boolean) => call<void>("set_action_done", { id, done }),
   renameSpeaker: (speakerId: Uuid, name: string) => call<void>("rename_speaker", { speakerId, name }),
   summaryMarkdown: (id: Uuid) => call<string>("summary_markdown", { id }),
+
+  // meeting tape and content management
+  meetingWaveformLevels: (id: Uuid, buckets: number, range?: WaveformRange) =>
+    call<MeetingWaveform>("meeting_waveform_levels", { id, buckets, range: range ?? null }),
+  addActionItem: (id: Uuid, item: ActionItemInput) => call<ActionItem>("add_action_item", { id, item }),
+  editActionItem: (id: Uuid, itemId: Uuid, item: ActionItemInput) => call<ActionItem>("edit_action_item", { id, itemId, item }),
+  deleteActionItem: (id: Uuid, itemId: Uuid) => call<void>("delete_action_item", { id, itemId }),
+  summarizeAgain: (id: Uuid) => call<void>("summarize_again", { id }),
+  meetingContents: (id: Uuid) => call<MeetingContents>("meeting_contents", { id }),
+  deleteMeetingParts: (id: Uuid, parts: MeetingPart[]) => call<MeetingDeletion>("delete_meeting_parts", { id, parts }),
+  recordingDiscardInfo: (id: Uuid) => call<RecordingDiscardInfo>("recording_discard_info", { id }),
+  discardRecording: (id: Uuid) => call<RecordingDiscard>("discard_recording", { id }),
 
   // recording
   recordingState: () => call<RecordingState>("recording_state"),

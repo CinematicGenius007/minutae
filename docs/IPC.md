@@ -57,3 +57,47 @@ Mock switches for these screens: `?os=linux&session=wayland` (portal), `&portal=
 - `MeetingDetail.echoCancel: EchoCancelReport | null`, `null` for meetings transcribed before the step existed:
   `{ ran, skipped, erleDb, delayMs, driftPpm, elapsedMs }`. `ran: true` means the transcript came from `recordings/<id>/mic.clean.wav` (the original `mic.wav` is kept and is what the player plays). `skipped` is one of `"off" | "noSystemTrack" | "systemSilent" | "noEcho" | "ineffective"`; `erleDb` is how much quieter the speaker echo got.
 - Rust: `minutae_core::{EchoCancelMode, EchoCancelReport, EchoSkip}`, `dto::MeetingDetail::echo_cancel`, stored in `meetings.echo_cancel` (schema v4).
+
+## Meeting tape and content management
+
+- `meeting_waveform_levels(id, buckets, range?) → MeetingWaveform` returns `mic` (“You”) and
+  `system` (“Others”) on the same millisecond range. Each ready track has exactly 1–2048
+  requested peak levels from 0–1. A shorter track is zero-padded. Omit `range` for the whole tape
+  or pass a segment’s `{ startMs, endMs }` for the line. `missing` means no track was registered,
+  `deleted` means a registered file is gone, and `unreadable` includes a reason.
+- Playback uses `getMeeting(id).audio`, `audioUrl(path)` and the existing player’s
+  `seek(segment.startMs, true)`. Follow playback with `currentMs` and the segment’s half-open
+  interval. A timestamp can still be displayed when audio is unavailable.
+- `add_action_item(id, item)`, `edit_action_item(id, itemId, item)` and
+  `delete_action_item(id, itemId)` manage the checklist. Add and edit return an `ActionItem`.
+  `ActionItemInput` is a full replacement for text, owner, due and the optional `sourceMs`.
+  Omitted or null optional fields clear their value. Edit preserves completion. Existing
+  `set_action_done` also synchronizes the checklist. The saved summary and its existing Markdown
+  export reflect every change. An edit leaves a deleted export absent.
+- `summarize_again(id)` queues a summary job for a finished meeting with a saved transcript.
+  The meeting stays `done` with progress while the job runs. On failure, `meeting.failure` reports
+  the error and the previous summary and export remain available. A successful rerun writes the
+  new export. Until the first user checklist change, generated items can be replaced. After any
+  add, edit, delete or completion change, the entire checklist is curated. Reruns preserve its
+  rows, IDs, timestamps, completion and deletions.
+- `meeting_contents(id) → MeetingContents` lists `audio`, `transcript`, `summary` and
+  `markdown`. File sizes are measured on disk. SQLite parts show UTF-8 content payload sizes,
+  independent of database pages and indexes. A null size indicates a file could not be measured.
+  `blockedReason` explains why a part cannot be removed.
+- `delete_meeting_parts(id, parts) → MeetingDeletion` accepts any nonempty selection on a saved
+  meeting. Audio, transcript, in-app summary and Markdown are independent. The summary includes
+  decisions, action items and marks. An export kept during summary deletion remains readable.
+  When all content is gone the meeting row is removed. The result gives successful parts,
+  failures and the refreshed ledger. Only meeting-owned files inside the Minutae data directory
+  can be removed. File failures leave the affected part available to retry. Deletion waits for
+  active processing and retires queued work before changing inputs.
+- `recording_discard_info(id) → RecordingDiscardInfo` reads active duration, WAV bytes on disk,
+  track count, visible caption line count and marks. It can be refreshed while the prompt is
+  open. `discard_recording(id) → RecordingDiscard` confirms for that ID, stops capture without
+  stitching or queuing processing, and removes the meeting. If filesystem cleanup fails after
+  confirmation, `cleanupError` explains why and Minutae retries cleanup on startup. A recording
+  stored outside the Minutae data directory cannot be discarded in the app.
+
+Browser mock switches include `?tape=ready|missing|deleted|unreadable`,
+`?meetingDelete=blocked|partial`, `?resummarize=failed|running` and
+`?state=recording&discard=blocked|cleanupError`.

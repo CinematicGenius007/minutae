@@ -726,6 +726,11 @@ fn v2_migration_backfills_title_key() {
         c.execute_batch(
             "ALTER TABLE meetings DROP COLUMN title_lc;
              ALTER TABLE meetings DROP COLUMN echo_cancel;
+             ALTER TABLE meetings DROP COLUMN markdown_file;
+             ALTER TABLE meetings DROP COLUMN checklist_curated;
+             ALTER TABLE action_items DROP COLUMN source_ms;
+             DROP TABLE meeting_waveforms;
+             DROP TABLE discarded_recordings;
              DROP TABLE legacy_imports;
              PRAGMA user_version = 1;",
         )?;

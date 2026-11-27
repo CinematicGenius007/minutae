@@ -26,7 +26,7 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-fn uuid(s: &str) -> R<Uuid> {
+pub(crate) fn uuid(s: &str) -> R<Uuid> {
     Uuid::parse_str(s).map_err(|_| format!("Not a valid id: {s}"))
 }
 
@@ -428,12 +428,22 @@ pub async fn get_meeting(state: State<'_, AppState>, id: String) -> R<dto::Meeti
         .map_err(err)?
         .ok_or("This meeting no longer exists.")?;
     let summaries_dir = summaries_root(&state.settings());
-    let markdown_path = find_summary_file(&summaries_dir, id);
+    let markdown_path = state
+        .store
+        .call(move |s| crate::meeting_content::markdown_path(s, &summaries_dir, id))
+        .await
+        .map_err(err)?
+        .filter(|p| crate::meeting_content::summary_belongs_to(p, id).unwrap_or(false));
     let duration_ms = d
-        .meeting
-        .ended_at
-        .map(|e| (e - d.meeting.started_at).num_milliseconds().max(0) as u64)
-        .or_else(|| d.tracks.iter().filter_map(|t| t.duration_ms).max());
+        .tracks
+        .iter()
+        .filter_map(|t| t.duration_ms)
+        .max()
+        .or_else(|| {
+            d.meeting
+                .ended_at
+                .map(|e| (e - d.meeting.started_at).num_milliseconds().max(0) as u64)
+        });
     let existing = |t: minutae_core::Track| {
         d.tracks
             .iter()
@@ -477,6 +487,7 @@ pub async fn rename_meeting(app: AppHandle, id: String, title: String) -> R<()> 
         return Err("The title can't be empty.".into());
     }
     let st = app.state::<AppState>();
+    let _operation = st.meeting_ops.lock(id).await;
     let t = title.clone();
     st.store
         .call(move |s| s.rename_meeting(id, &t))
@@ -493,69 +504,23 @@ pub async fn rename_meeting(app: AppHandle, id: String, title: String) -> R<()> 
 
 #[tauri::command]
 pub async fn delete_meeting(app: AppHandle, id: String) -> R<()> {
-    let id = uuid(&id)?;
-    let st = app.state::<AppState>();
-    let recording_this = st
-        .recording
-        .lock()
-        .await
-        .as_ref()
-        .is_some_and(|r| r.meeting.id == id);
-    if recording_this {
-        // Waits for a stop already in progress, so the stitch can't recreate files
-        // after they are deleted below.
-        let _ = recording::stop(&app).await;
-    }
-    let store = st.store.clone();
-    if let Ok(runner) = st.runner() {
-        let jobs = store
-            .call(move |s| s.jobs_for_meeting(id))
-            .await
-            .map_err(err)?;
-        for j in jobs.iter().filter(|j| !j.state.is_terminal()) {
-            let _ = runner.cancel(j.id).await;
-        }
-    }
-    let tracks = store.call(move |s| s.list_tracks(id)).await.map_err(err)?;
-    let settings = st.settings();
-    let summaries = summaries_root(&settings);
-    tokio::task::spawn_blocking(move || {
-        let mut dirs: Vec<PathBuf> = vec![];
-        for t in &tracks {
-            let p = PathBuf::from(&t.path);
-            let _ = std::fs::remove_file(&p);
-            if t.track == minutae_core::Track::Mic {
-                let _ = std::fs::remove_file(p.with_file_name(minutae_aec::CLEAN_MIC_FILE));
-            }
-            if let Some(parent) = p.parent() {
-                dirs.push(parent.to_path_buf());
-            }
-        }
-        dirs.push(recordings_root(&settings).join(id.to_string()));
-        for d in dirs {
-            // Only the meeting's own folder, and only when it is named after the meeting.
-            if d.file_name().and_then(|n| n.to_str()) == Some(&id.to_string()) {
-                let _ = std::fs::remove_dir_all(d);
-            }
-        }
-        if let Some(md) = find_summary_file(&summaries, id) {
-            let _ = std::fs::remove_file(md);
-        }
-    })
-    .await
-    .map_err(err)?;
-    store
-        .call(move |s| s.delete_meeting(id))
-        .await
-        .map_err(err)?;
-    emit_meetings_changed(&app, Some(id));
-    Ok(())
+    crate::meeting_content::delete_entire_meeting(app, id).await
 }
 
 #[tauri::command]
 pub async fn retry_meeting(app: AppHandle, id: String) -> R<()> {
     let id = uuid(&id)?;
     let st = app.state::<AppState>();
+    let _operation = st.meeting_ops.lock(id).await;
+    if !st
+        .store
+        .call(move |s| s.get_meeting(id))
+        .await
+        .map_err(err)?
+        .is_some_and(|m| m.status == minutae_core::MeetingStatus::Failed)
+    {
+        return Err("Only failed meetings can be retried.".into());
+    }
     crate::pipeline::retry_meeting(st.runner()?, id).await?;
     emit_meetings_changed(&app, Some(id));
     Ok(())
@@ -563,16 +528,7 @@ pub async fn retry_meeting(app: AppHandle, id: String) -> R<()> {
 
 #[tauri::command]
 pub async fn set_action_done(app: AppHandle, id: String, done: bool) -> R<()> {
-    let row: i64 = id
-        .parse()
-        .map_err(|_| format!("Not a valid action item id: {id}"))?;
-    let st = app.state::<AppState>();
-    st.store
-        .call(move |s| s.set_action_item_done(row, done))
-        .await
-        .map_err(err)?;
-    emit_meetings_changed(&app, None);
-    Ok(())
+    crate::meeting_content::set_action_done(&app, &id, done).await
 }
 
 #[tauri::command]
@@ -592,17 +548,20 @@ pub async fn rename_speaker(app: AppHandle, speaker_id: String, name: String) ->
 #[tauri::command]
 pub async fn summary_markdown(state: State<'_, AppState>, id: String) -> R<String> {
     let id = uuid(&id)?;
-    if let Some(p) = find_summary_file(&summaries_root(&state.settings()), id)
-        && let Ok(s) = std::fs::read_to_string(p)
-    {
-        return Ok(s);
-    }
-    let s = state
+    let dir = summaries_root(&state.settings());
+    state
         .store
-        .call(move |s| s.get_summary(id))
+        .call(move |s| {
+            if let Some(path) = crate::meeting_content::markdown_path(s, &dir, id)?
+                && crate::meeting_content::summary_belongs_to(&path, id).unwrap_or(false)
+                && let Ok(markdown) = std::fs::read_to_string(path)
+            {
+                return Ok(markdown);
+            }
+            Ok(s.get_summary(id)?.map(|s| s.markdown).unwrap_or_default())
+        })
         .await
-        .map_err(err)?;
-    Ok(s.map(|s| s.markdown).unwrap_or_default())
+        .map_err(err)
 }
 
 // ---------------------------------------------------------------- recording

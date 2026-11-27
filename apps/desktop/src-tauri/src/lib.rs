@@ -2,9 +2,10 @@
 //! events, windows, tray and global shortcuts. Contract: docs/IPC.md.
 
 pub mod calls;
-pub mod commands;
+mod commands;
 pub mod dictation;
 pub mod dto;
+pub mod meeting_content;
 pub mod models;
 pub mod pipeline;
 pub mod platform;
@@ -14,6 +15,7 @@ pub mod shell;
 pub mod state;
 pub mod updater;
 pub mod util;
+mod waveform;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -349,6 +351,15 @@ pub fn run() {
             commands::get_meeting,
             commands::rename_meeting,
             commands::delete_meeting,
+            meeting_content::meeting_contents,
+            meeting_content::delete_meeting_parts,
+            meeting_content::add_action_item,
+            meeting_content::edit_action_item,
+            meeting_content::delete_action_item,
+            meeting_content::summarize_again,
+            waveform::meeting_waveform_levels,
+            recording::recording_discard_info,
+            recording::discard_recording,
             commands::retry_meeting,
             commands::set_action_done,
             commands::rename_speaker,

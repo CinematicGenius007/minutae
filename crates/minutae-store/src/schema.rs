@@ -259,6 +259,24 @@ const V4: &str = r#"
 ALTER TABLE meetings ADD COLUMN echo_cancel TEXT;
 "#;
 
+const V5: &str = r#"
+ALTER TABLE action_items ADD COLUMN source_ms INTEGER;
+ALTER TABLE meetings ADD COLUMN markdown_file TEXT;
+ALTER TABLE meetings ADD COLUMN checklist_curated INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE meeting_waveforms (
+  meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  track TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  request TEXT NOT NULL,
+  levels TEXT NOT NULL,
+  PRIMARY KEY (meeting_id, track, request)
+);
+CREATE TABLE discarded_recordings (
+  meeting_id TEXT PRIMARY KEY NOT NULL,
+  directory TEXT NOT NULL
+);
+"#;
+
 /// One schema step: SQL, then an optional Rust data step in the same transaction.
 struct Migration {
     sql: &'static str,
@@ -280,6 +298,10 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         sql: V4,
+        data: None,
+    },
+    Migration {
+        sql: V5,
         data: None,
     },
 ];

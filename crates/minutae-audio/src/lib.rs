@@ -864,6 +864,25 @@ impl RecordingHandle {
     /// returned (the failure was already sent as [`CaptureEvent::WriteFailed`]); it is an
     /// error only when no microphone audio exists at all.
     pub fn stop(&self) -> Result<RecordedTracks> {
+        let (mic_res, sys_res) = self.stop_capture()?;
+        if let Some(Err(e)) = &sys_res {
+            tracing::warn!(error = %e, "system track writer failed");
+        }
+        let mic_stitched = wav::stitch(&self.out_dir, Track::Mic);
+        let sys_stitched = match sys_res {
+            Some(_) => wav::stitch(&self.out_dir, Track::System),
+            None => Ok(None),
+        };
+        finish_tracks(mic_res.map(|_| ()), mic_stitched, sys_stitched)
+    }
+
+    /// Stop device and writer threads without stitching the captured chunks.
+    pub fn discard(&self) -> Result<()> {
+        // Only cleanup matters: the caller removes the chunks even if a writer failed.
+        self.stop_capture().map(|_| ())
+    }
+
+    fn stop_capture(&self) -> Result<(Result<u64>, Option<Result<u64>>)> {
         let running = self
             .inner
             .lock()
@@ -881,15 +900,7 @@ impl RecordingHandle {
         };
         let mic_res = join(running.mic_writer);
         let sys_res = running.sys_writer.map(join);
-        if let Some(Err(e)) = &sys_res {
-            tracing::warn!(error = %e, "system track writer failed");
-        }
-        let mic_stitched = wav::stitch(&self.out_dir, Track::Mic);
-        let sys_stitched = match sys_res {
-            Some(_) => wav::stitch(&self.out_dir, Track::System),
-            None => Ok(None),
-        };
-        finish_tracks(mic_res.map(|_| ()), mic_stitched, sys_stitched)
+        Ok((mic_res, sys_res))
     }
 }
 
