@@ -26,7 +26,7 @@ pub mod source;
 
 pub use controller::{
     DictationConfig, DictationController, DictationDeps, DictationEvent, DictationState,
-    FinishedDictation, HudState,
+    FinishedDictation, HudFixAction, HudState, QUICK_PRESETS,
 };
 pub use insert::{CopyReason, InsertOutcome, Inserter, InsertionControl, SystemInserter};
 pub use platform::{

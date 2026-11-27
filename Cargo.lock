@@ -3280,6 +3280,8 @@ dependencies = [
  "cap-fs-ext",
  "cap-std",
  "chrono",
+ "cpal",
+ "gtk",
  "hound",
  "minutae-aec",
  "minutae-asr",

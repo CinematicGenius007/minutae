@@ -63,33 +63,6 @@ pub fn frontmost_app_name() -> Option<String> {
     app.localizedName().map(|name| name.to_string())
 }
 
-/// Roles that clearly cannot take typed text. Anything else, including
-/// web areas, groups and unknown roles (Electron, browsers), is attempted.
-const NON_TEXT_ROLES: &[&str] = &[
-    "AXButton",
-    "AXCheckBox",
-    "AXRadioButton",
-    "AXMenuItem",
-    "AXMenuBarItem",
-    "AXMenuButton",
-    "AXPopUpButton",
-    "AXImage",
-    "AXWindow",
-    "AXApplication",
-    "AXList",
-    "AXTable",
-    "AXOutline",
-    "AXRow",
-    "AXCell",
-    "AXSlider",
-    "AXLink",
-    "AXTabGroup",
-    "AXToolbar",
-    "AXDisclosureTriangle",
-    "AXStaticText",
-    "AXDockItem",
-];
-
 struct Focused {
     role: Option<String>,
     subrole: Option<String>,
@@ -149,19 +122,11 @@ pub(crate) fn preflight() -> Preflight {
     if unsafe { IsSecureEventInputEnabled() } != 0 {
         return Preflight::CopyOnly(CopyReason::SecureInput);
     }
-    if let Some(focused) = focused_element() {
-        if focused.subrole.as_deref() == Some("AXSecureTextField") {
-            return Preflight::Refuse("Won't type into a password field".into());
-        }
-        if focused
-            .role
-            .as_deref()
-            .is_some_and(|role| NON_TEXT_ROLES.contains(&role))
-        {
-            return Preflight::CopyOnly(CopyReason::NoTextField);
-        }
-    }
-    Preflight::Paste
+    focused_element()
+        .and_then(|field| {
+            super::macos_field_copy_reason(field.role.as_deref(), field.subrole.as_deref())
+        })
+        .map_or(Preflight::Paste, Preflight::CopyOnly)
 }
 
 // ---------------------------------------------------------------------------

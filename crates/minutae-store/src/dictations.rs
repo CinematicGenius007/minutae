@@ -15,7 +15,7 @@ pub struct DictationStats {
     pub duration_ms: u64,
 }
 
-const COLS: &str = "id, created_at, text, raw_text, target_app, word_count, duration_ms, inserted";
+const COLS: &str = "id, created_at, text, raw_text, target_app, word_count, duration_ms, inserted, app_identity, shape";
 
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dictation> {
     Ok(Dictation {
@@ -27,12 +27,33 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dictation> {
         word_count: r.get(5)?,
         duration_ms: r.get(6)?,
         inserted: r.get(7)?,
+        app_identity: json_column(r, 8)?,
+        shape: json_column(r, 9)?,
     })
+}
+
+fn json_column<T: serde::de::DeserializeOwned>(
+    r: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<Option<T>> {
+    r.get::<_, Option<String>>(index)?
+        .map(|value| {
+            serde_json::from_str(&value).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    index,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })
+        })
+        .transpose()
 }
 
 pub(crate) fn write_dictation(c: &rusqlite::Connection, d: &Dictation) -> Result<()> {
     c.execute(
-        &format!("INSERT INTO dictations ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"),
+        &format!(
+            "INSERT INTO dictations ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
+        ),
         params![
             d.id.to_string(),
             ms(d.created_at),
@@ -41,7 +62,12 @@ pub(crate) fn write_dictation(c: &rusqlite::Connection, d: &Dictation) -> Result
             d.target_app,
             d.word_count,
             d.duration_ms,
-            d.inserted
+            d.inserted,
+            d.app_identity
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?,
+            d.shape.as_ref().map(serde_json::to_string).transpose()?,
         ],
     )?;
     Ok(())
@@ -71,6 +97,24 @@ impl Store {
             ))?;
             let rows = stmt.query_map(params![limit, offset], row)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// App metadata only, without loading transcripts. Old rows carry display names only.
+    pub fn dictation_apps(&self) -> Result<Vec<minutae_core::dictation::AppIdentity>> {
+        self.read(|c| {
+            let mut stmt = c.prepare_cached(
+                "SELECT app_identity, CASE WHEN app_identity IS NULL THEN target_app END AS legacy_name
+                 FROM dictations WHERE app_identity IS NOT NULL OR target_app IS NOT NULL
+                 GROUP BY app_identity, legacy_name ORDER BY MAX(created_at) DESC"
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(json_column(r, 0)?.unwrap_or(minutae_core::dictation::AppIdentity {
+                    display_name: r.get(1)?,
+                    ..Default::default()
+                }))
+            })?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
         })
     }
 

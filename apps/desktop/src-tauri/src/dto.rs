@@ -284,6 +284,8 @@ pub struct Dictation {
     pub text: String,
     pub raw_text: String,
     pub target_app: Option<String>,
+    pub app_identity: Option<minutae_core::dictation::AppIdentity>,
+    pub shape: Option<minutae_core::dictation::Shape>,
     pub word_count: u32,
     pub duration_ms: u64,
     pub inserted: bool,
@@ -297,6 +299,8 @@ impl From<&minutae_core::Dictation> for Dictation {
             text: d.text.clone(),
             raw_text: d.raw_text.clone(),
             target_app: d.target_app.clone(),
+            app_identity: d.app_identity.clone(),
+            shape: d.shape,
             word_count: d.word_count,
             duration_ms: d.duration_ms,
             inserted: d.inserted,
@@ -321,11 +325,29 @@ pub struct DictationStats {
 )]
 pub enum HudState {
     Idle,
-    Listening { level: f32, hands_free: bool },
+    Listening {
+        level: f32,
+        hands_free: bool,
+        app: Option<String>,
+        shape: minutae_core::dictation::ShapePreset,
+        /// Presets with a registered shortcut for the current modifier posture.
+        shortcut_presets: Vec<minutae_core::dictation::ShapePreset>,
+    },
     Processing,
-    Inserted { words: u32 },
-    Copied { words: u32, reason: String },
-    Error { message: String },
+    Inserted {
+        words: u32,
+        undo_available: bool,
+        result_id: Option<uuid::Uuid>,
+    },
+    Copied {
+        words: u32,
+        reason: String,
+        reason_code: minutae_dictation::CopyReason,
+    },
+    Error {
+        message: String,
+        fix_action: minutae_dictation::HudFixAction,
+    },
 }
 
 impl From<&minutae_dictation::HudState> for HudState {
@@ -333,21 +355,75 @@ impl From<&minutae_dictation::HudState> for HudState {
         use minutae_dictation::HudState as H;
         match h {
             H::Idle => HudState::Idle,
-            H::Listening { level, hands_free } => HudState::Listening {
+            H::Listening {
+                level,
+                hands_free,
+                app,
+                shape,
+                ..
+            } => HudState::Listening {
                 level: *level,
                 hands_free: *hands_free,
+                app: app.clone(),
+                shape: *shape,
+                shortcut_presets: vec![],
             },
             H::Processing => HudState::Processing,
-            H::Inserted { words } => HudState::Inserted { words: *words },
+            H::Inserted {
+                words,
+                undo_available,
+                result_id,
+            } => HudState::Inserted {
+                words: *words,
+                undo_available: *undo_available,
+                result_id: *result_id,
+            },
             H::Copied { words, reason } => HudState::Copied {
                 words: *words,
                 reason: copy_reason_text(*reason).into(),
+                reason_code: *reason,
             },
-            H::Error { message } => HudState::Error {
+            H::Error {
+                message,
+                fix_action,
+            } => HudState::Error {
                 message: message.clone(),
+                fix_action: *fix_action,
             },
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictationApp {
+    pub app: minutae_core::dictation::AppMatcher,
+    pub display_name: String,
+    pub suggested_preset: Option<minutae_core::dictation::ShapePreset>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictationCapabilities {
+    pub hud_visible: bool,
+    pub hud_interactive: bool,
+    pub local_rewrite_available: bool,
+    pub cloud_rewrite: DictationCloudRewrite,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DictationCloudRewrite {
+    Planned,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictationShapeOptions {
+    pub presets: [minutae_core::dictation::Shape; 6],
+    pub quick_presets: [minutae_core::dictation::ShapePreset; 5],
+    pub default_shape: minutae_core::dictation::Shape,
+    pub capabilities: DictationCapabilities,
 }
 
 pub fn copy_reason_text(r: minutae_dictation::CopyReason) -> &'static str {
@@ -357,6 +433,7 @@ pub fn copy_reason_text(r: minutae_dictation::CopyReason) -> &'static str {
         C::NoTextField => "No text field",
         C::Wayland => "Wayland doesn't allow typing into other apps",
         C::SecureInput => "Secure input is on",
+        C::MultilineTerminal => "Terminal text contains a line break or control character",
         C::PasteFailed => "Paste didn't work",
         C::FocusChanged => "You switched apps",
     }
@@ -1027,6 +1104,8 @@ mod tests {
             text: "t".into(),
             raw_text: "t".into(),
             target_app: None,
+            app_identity: None,
+            shape: None,
             word_count: 1,
             duration_ms: 1,
             inserted: true,
@@ -1039,6 +1118,8 @@ mod tests {
                 "text",
                 "rawText",
                 "targetApp",
+                "appIdentity",
+                "shape",
                 "wordCount",
                 "durationMs",
                 "inserted",
@@ -1055,29 +1136,45 @@ mod tests {
                 HudState::Listening {
                     level: 0.1,
                     hands_free: true,
+                    app: Some("Slack".into()),
+                    shape: minutae_core::dictation::ShapePreset::ChatMessage,
+                    shortcut_presets: vec![],
                 },
-                vec!["state", "level", "handsFree"],
+                vec![
+                    "state",
+                    "level",
+                    "handsFree",
+                    "app",
+                    "shape",
+                    "shortcutPresets",
+                ],
                 "listening",
             ),
             (HudState::Processing, vec!["state"], "processing"),
             (
-                HudState::Inserted { words: 3 },
-                vec!["state", "words"],
+                HudState::Inserted {
+                    words: 3,
+                    undo_available: true,
+                    result_id: None,
+                },
+                vec!["state", "words", "undoAvailable", "resultId"],
                 "inserted",
             ),
             (
                 HudState::Copied {
                     words: 3,
                     reason: "r".into(),
+                    reason_code: minutae_dictation::CopyReason::FocusChanged,
                 },
-                vec!["state", "words", "reason"],
+                vec!["state", "words", "reason", "reasonCode"],
                 "copied",
             ),
             (
                 HudState::Error {
                     message: "m".into(),
+                    fix_action: minutae_dictation::HudFixAction::Retry,
                 },
-                vec!["state", "message"],
+                vec!["state", "message", "fixAction"],
                 "error",
             ),
         ];
@@ -1158,6 +1255,10 @@ mod tests {
                 "dictationHotkey",
                 "dictationMode",
                 "tidyDictation",
+                "dictationDefaultShape",
+                "dictationShapeEdits",
+                "dictationAppRules",
+                "dictationStartSound",
                 "keepDictationAudio",
                 "dictationRetentionDays",
                 "vocabulary",

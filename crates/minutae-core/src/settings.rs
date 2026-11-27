@@ -1,6 +1,10 @@
 //! Typed app settings. Mirrors the Settings screens (Paper 06a–06f).
 //! Secrets (API keys) are never stored here; they live in the OS keychain.
 
+use std::collections::BTreeMap;
+
+use crate::dictation::{AppRule, Capitals, DictationAppRule, Shape, ShapeEdits, ShapePreset};
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -100,6 +104,11 @@ pub struct AppSettings {
     pub dictation_hotkey: String,
     pub dictation_mode: HotkeyMode,
     pub tidy_dictation: bool,
+    /// None keeps the historical tidy toggle as the default.
+    pub dictation_default_shape: Option<ShapePreset>,
+    pub dictation_shape_edits: BTreeMap<ShapePreset, ShapeEdits>,
+    pub dictation_app_rules: Vec<DictationAppRule>,
+    pub dictation_start_sound: bool,
     pub keep_dictation_audio: bool,
     /// None = keep dictations and their audio forever.
     pub dictation_retention_days: Option<u32>,
@@ -140,12 +149,50 @@ impl Default for AppSettings {
             },
             dictation_mode: HotkeyMode::Hold,
             tidy_dictation: true,
+            dictation_default_shape: None,
+            dictation_shape_edits: BTreeMap::new(),
+            dictation_app_rules: vec![],
+            dictation_start_sound: false,
             keep_dictation_audio: false,
             dictation_retention_days: None,
             vocabulary: vec![],
             delete_audio_after_days: Some(30),
             recordings_path: None,
         }
+    }
+}
+
+impl AppSettings {
+    pub fn dictation_shape(&self, preset: ShapePreset) -> Shape {
+        self.dictation_shape_edits
+            .get(&preset)
+            .copied()
+            .unwrap_or_default()
+            .apply(preset.shape())
+    }
+
+    pub fn default_dictation_shape(&self) -> Shape {
+        if let Some(preset) = self.dictation_default_shape {
+            return self.dictation_shape(preset);
+        }
+        if self.tidy_dictation {
+            return self.dictation_shape(ShapePreset::Tidy);
+        }
+        Shape {
+            tidy: false,
+            capitals: Capitals::AsSaid,
+            ..ShapePreset::Tidy.shape()
+        }
+    }
+
+    pub fn dictation_rules(&self) -> Vec<AppRule> {
+        self.dictation_app_rules
+            .iter()
+            .map(|rule| AppRule {
+                app: rule.app.clone(),
+                shape: self.dictation_shape(rule.preset),
+            })
+            .collect()
     }
 }
 
@@ -160,6 +207,78 @@ mod tests {
         assert_eq!(s.dictation_retention_days, None);
         assert_eq!(s.prompt_delay_seconds, 5);
         assert_eq!(s.echo_cancellation, EchoCancelMode::Auto);
+    }
+
+    #[test]
+    fn legacy_tidy_toggle_has_a_backward_compatible_default() {
+        for tidy in [true, false] {
+            let s: AppSettings =
+                serde_json::from_value(serde_json::json!({"tidyDictation": tidy})).unwrap();
+            let shape = s.default_dictation_shape();
+            assert_eq!(s.dictation_default_shape, None);
+            assert_eq!(shape.preset, ShapePreset::Tidy);
+            assert_eq!(shape.tidy, tidy);
+            assert_eq!(
+                shape.capitals,
+                if tidy {
+                    Capitals::Sentence
+                } else {
+                    Capitals::AsSaid
+                }
+            );
+            assert!(shape.spoken_punctuation);
+        }
+    }
+
+    #[test]
+    fn legacy_cleanup_off_wins_over_saved_tidy_edits() {
+        let mut settings: AppSettings = serde_json::from_value(serde_json::json!({
+            "tidyDictation": false,
+            "dictationShapeEdits": { "tidy": { "capitals": "sentence", "dropFinalPeriod": true } }
+        }))
+        .unwrap();
+        let shape = settings.default_dictation_shape();
+        assert!(!shape.tidy);
+        assert_eq!(shape.capitals, Capitals::AsSaid);
+        assert!(!shape.drop_final_period);
+        assert!(shape.spoken_punctuation);
+        settings.dictation_default_shape = Some(ShapePreset::Tidy);
+        assert!(settings.default_dictation_shape().drop_final_period);
+    }
+
+    #[test]
+    fn identifier_preserving_presets_ignore_saved_capital_and_period_edits() {
+        let settings: AppSettings = serde_json::from_value(serde_json::json!({
+            "dictationShapeEdits": {
+                "verbatim": { "capitals": "sentence", "dropFinalPeriod": true },
+                "codeAndCommit": { "capitals": "sentence", "dropFinalPeriod": true }
+            }
+        }))
+        .unwrap();
+        for preset in [ShapePreset::Verbatim, ShapePreset::CodeAndCommit] {
+            assert_eq!(settings.dictation_shape(preset), preset.shape());
+        }
+    }
+
+    #[test]
+    fn persisted_shape_edits_apply_to_default_and_app_rules() {
+        let s: AppSettings = serde_json::from_value(serde_json::json!({
+            "tidyDictation": false,
+            "dictationDefaultShape": "chatMessage",
+            "dictationShapeEdits": { "chatMessage": { "capitals": "sentence", "dropFinalPeriod": false } },
+            "dictationAppRules": [{
+                "app": { "kind": "macosBundleId", "value": "com.tinyspeck.slackmacgap" },
+                "displayName": "Slack", "preset": "chatMessage"
+            }]
+        })).unwrap();
+        let shape = s.default_dictation_shape();
+        assert_eq!(shape.capitals, Capitals::Sentence);
+        assert!(!shape.drop_final_period);
+        assert_eq!(s.dictation_rules()[0].shape, shape);
+        assert_eq!(
+            serde_json::from_value::<AppSettings>(serde_json::to_value(&s).unwrap()).unwrap(),
+            s
+        );
     }
 
     #[test]

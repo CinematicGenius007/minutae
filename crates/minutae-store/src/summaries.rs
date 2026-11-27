@@ -77,7 +77,7 @@ pub(crate) fn write_summary(tx: &rusqlite::Connection, s: &Summary) -> Result<()
     Ok(())
 }
 
-/// A checklist with a completed item is the user's, as in the V5 migration, so a
+/// A checklist with a completed item is the user's, as in the V6 migration, so a
 /// later summary doesn't replace it.
 pub(crate) fn curate_completed(tx: &rusqlite::Connection, id: MeetingId) -> Result<()> {
     tx.execute(

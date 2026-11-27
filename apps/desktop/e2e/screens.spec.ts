@@ -2,6 +2,7 @@
 // Baselines live in e2e/__screenshots__/<browser>/. Regenerate with `bun run test:e2e:update`.
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import type { HudState } from "../src/lib/types";
 
 const MEETING = "00000000-0000-4000-8000-000000000001";
 const NOW = new Date("2026-11-20T16:30:00Z");
@@ -181,13 +182,13 @@ const SHOTS: Shot[] = [
   { name: "gallery", route: "/gallery" },
 ];
 
-const HUD_STATES: { name: string; payload: unknown }[] = [
-  { name: "listening", payload: { state: "listening", level: 0.7, handsFree: false } },
-  { name: "listening-handsfree", payload: { state: "listening", level: 0.4, handsFree: true } },
+const HUD_STATES: { name: string; payload: HudState }[] = [
+  { name: "listening", payload: { state: "listening", level: 0.7, handsFree: false, app: "Slack", shape: "chatMessage", shortcutPresets: ["chatMessage"] } },
+  { name: "listening-handsfree", payload: { state: "listening", level: 0.4, handsFree: true, app: null, shape: "tidy", shortcutPresets: [] } },
   { name: "processing", payload: { state: "processing" } },
-  { name: "inserted", payload: { state: "inserted", words: 23 } },
-  { name: "copied", payload: { state: "copied", words: 12, reason: "No text field · copied instead" } },
-  { name: "error", payload: { state: "error", message: "Microphone is off. Allow it in Settings." } },
+  { name: "inserted", payload: { state: "inserted", words: 23, undoAvailable: false, resultId: null } },
+  { name: "copied", payload: { state: "copied", words: 12, reason: "No text field · copied instead", reasonCode: "noTextField" } },
+  { name: "error", payload: { state: "error", message: "Microphone is off. Allow it in Settings.", fixAction: "microphoneSettings" } },
 ];
 
 function url(route: string, query?: string) {
@@ -234,7 +235,7 @@ for (const theme of THEMES) {
     for (const h of HUD_STATES) {
       test(`hud ${h.name}`, async ({ page }) => {
         await page.setViewportSize({ width: 480, height: 120 });
-        await open(page, theme, "/hud");
+        await open(page, theme, "/hud", h.name === "error" ? "os=macos" : undefined);
         await page.waitForFunction(() => "__minutaeMockEmit" in window);
         await settle(page); // lazy route + hud subscription
         await page.evaluate((p) => {
@@ -246,9 +247,19 @@ for (const theme of THEMES) {
           emit("dictation://hud", p);
         }, h.payload);
         await expect(page.getByRole(h.name === "error" ? "alert" : "status")).toBeVisible();
+        if (h.name === "error") await expect(page.getByRole("button", { name: "Dismiss" })).toBeVisible();
         await expect(page).toHaveScreenshot(`hud-${h.name}-${theme}.png`);
       });
     }
+
+    test("hud error on Wayland", async ({ page }) => {
+      await page.setViewportSize({ width: 480, height: 120 });
+      await open(page, theme, "/hud", "os=linux&session=wayland&hud=error");
+      await settle(page);
+      await expect(page.getByRole("alert")).toHaveText("Microphone is off");
+      await expect(page.getByRole("button", { name: "Dismiss" })).toHaveCount(0);
+      await expect(page).toHaveScreenshot(`hud-error-wayland-${theme}.png`);
+    });
 
     for (const [name, route, ready] of [
       ["meetings", "/", "Q2 Design Sync"],
@@ -1170,4 +1181,97 @@ test("dictate a11y: forced-colors: active focus outlines and boundaries", async 
   expect(await hasOutline(), "Copy button focus outline in forced-colors").toBe(true);
   await page.getByRole("button", { name: /^More actions for “/ }).first().focus();
   expect(await hasOutline(), "More actions focus outline in forced-colors").toBe(true);
+});
+
+test("interactive HUD dismisses a persistent error through the backend", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 64 });
+  await page.clock.install();
+  await open(page, "light", "/hud", "os=macos&hud=error");
+  await settle(page);
+  await page.clock.fastForward(7000);
+  await expect(page.getByRole("alert")).toHaveText("Microphone is off");
+  const dismiss = page.getByRole("button", { name: "Dismiss", exact: true });
+  await dismiss.focus();
+  await expect(dismiss).toBeFocused();
+  await dismiss.click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  const state = await page.evaluate(async () => {
+    const path = "/src/lib/api.ts";
+    const { api } = await import(path);
+    return (await api.getDictationHud()).state;
+  });
+  expect(state).toBe("idle");
+});
+
+for (const query of ["os=windows", "os=linux&session=x11", "os=linux&session=wayland"]) {
+  test(`passive HUD has no controls (${query})`, async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 64 });
+    await open(page, "light", "/hud", `${query}&hud=error`);
+    await settle(page);
+    await expect(page.getByRole("alert")).toHaveText("Microphone is off");
+    await expect(page.getByRole("button")).toHaveCount(0);
+  });
+}
+
+test("HUD Dismiss racing a new dictation leaves it running", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 64 });
+  await open(page, "light", "/hud", "os=macos&hud=error");
+  await settle(page);
+  await expect(page.getByRole("button", { name: "Dismiss", exact: true })).toBeVisible();
+  const state = await page.evaluate(async () => {
+    const path = "/src/lib/api.ts";
+    const { api } = await import(path);
+    const button = document.querySelector("button");
+    // Same task: the backend has moved on, but the error button is still on screen.
+    (window as unknown as { __minutaeMockEmit: (e: string, p: unknown) => void }).__minutaeMockEmit("dictation://hud", {
+      state: "listening", level: 0.5, handsFree: false, app: "Slack", shape: "tidy", shortcutPresets: [],
+    });
+    button?.click();
+    await new Promise((done) => setTimeout(done, 400));
+    return (await api.getDictationHud()).state;
+  });
+  expect(state).toBe("listening");
+});
+
+test("HUD interaction does not hold a later result open", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 64 });
+  await page.clock.install();
+  await open(page, "light", "/hud", "os=macos&hud=inserted");
+  await settle(page);
+  await page.evaluate(async () => {
+    const path = "/src/lib/api.ts";
+    const { api } = await import(path);
+    const emit = (window as unknown as { __minutaeMockEmit: (e: string, p: unknown) => void }).__minutaeMockEmit;
+    const hovered = api.setDictationHudInteraction(true, false);
+    await Promise.resolve();
+    emit("dictation://hud", { state: "processing" });
+    void hovered;
+  });
+  await page.clock.fastForward(1000);
+  await page.evaluate(() => {
+    (window as unknown as { __minutaeMockEmit: (e: string, p: unknown) => void }).__minutaeMockEmit("dictation://hud", {
+      state: "inserted", words: 2, undoAvailable: false, resultId: null,
+    });
+  });
+  await expect(page.getByRole("status")).toContainText("Inserted");
+  await page.clock.fastForward(7000);
+  await expect(page.getByRole("status")).toHaveCount(0);
+});
+
+test("settings patches drop edits for identifier-preserving shapes", async ({ page }) => {
+  await open(page, "light", "/dictate");
+  const keys = await page.evaluate(async () => {
+    const path = "/src/lib/api.ts";
+    const { api } = await import(path);
+    const edits = { capitals: "sentence", dropFinalPeriod: true };
+    await api.updateSettings({ dictationShapeEdits: { verbatim: edits, codeAndCommit: edits, email: edits } });
+    return Object.keys((await api.getSettings()).dictationShapeEdits);
+  });
+  expect(keys).toEqual(["email"]);
+});
+
+test("Dictate describes cursor insertion on X11", async ({ page }) => {
+  await open(page, "light", "/dictate", "os=linux&session=x11");
+  await settle(page);
+  await expect(page.getByText("Speak anywhere · Types where your cursor is")).toBeVisible();
 });

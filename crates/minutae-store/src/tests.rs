@@ -241,8 +241,16 @@ fn summary_upsert_keeps_done_and_toggle() {
 fn dictations_and_stats() {
     let s = Store::open_in_memory().unwrap();
     let now = Utc::now();
+    let mail = minutae_core::dictation::AppIdentity {
+        display_name: Some("Mail".into()),
+        macos_bundle_id: Some("com.apple.mail".into()),
+        ..Default::default()
+    };
+    let email = minutae_core::dictation::ShapePreset::Email.shape();
     for (i, words) in [5u32, 7, 11].iter().enumerate() {
         s.insert_dictation(&Dictation {
+            app_identity: (i == 0).then_some(mail.clone()),
+            shape: (i == 0).then_some(email),
             id: Uuid::new_v4(),
             created_at: now - Duration::days(i as i64 * 5),
             text: format!("please email the quarterly report number {i}"),
@@ -256,6 +264,19 @@ fn dictations_and_stats() {
     }
     let list = s.list_dictations(10, 0).unwrap();
     assert_eq!(list.len(), 3);
+    assert_eq!(list[0].app_identity, Some(mail.clone()));
+    assert_eq!(list[0].shape, Some(email));
+    assert_eq!(list[1].shape, None);
+    assert_eq!(
+        s.dictation_apps().unwrap(),
+        vec![
+            mail,
+            minutae_core::dictation::AppIdentity {
+                display_name: Some("Mail".into()),
+                ..Default::default()
+            }
+        ]
+    );
     let st = s.dictation_stats(now - Duration::days(7)).unwrap();
     assert_eq!((st.count, st.words), (2, 12));
     let hits = s
@@ -745,6 +766,8 @@ fn v2_migration_backfills_title_key() {
              DROP TABLE meeting_waveforms;
              DROP TABLE discarded_recordings;
              DROP TABLE legacy_imports;
+             ALTER TABLE dictations DROP COLUMN app_identity;
+             ALTER TABLE dictations DROP COLUMN shape;
              PRAGMA user_version = 1;",
         )?;
         Ok(())
@@ -788,45 +811,98 @@ fn echo_cancel_report_round_trips_and_shows_in_detail() {
     assert_eq!(s.echo_cancel(Uuid::new_v4()).unwrap(), None);
 }
 
-#[test]
-fn v5_migration_curates_completed_checklists() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("v4.db");
-    let s = Store::open(&path).unwrap();
-    let m = meeting("Call", Utc::now());
-    s.create_meeting(&m).unwrap();
-    s.write(|c| {
+/// A database as an earlier build left it: one meeting with a summary, a
+/// completed and an open action item, a second meeting with nothing ticked, a
+/// track and a dictation.
+fn populated_database(path: &std::path::Path, version: u32) -> (Uuid, Uuid) {
+    let mut c = rusqlite::Connection::open(path).unwrap();
+    schema::migrate_to(&mut c, version).unwrap();
+    let (ticked, open) = (Uuid::new_v4(), Uuid::new_v4());
+    for (meeting, done) in [(ticked, 1), (open, 0)] {
+        let id = meeting.to_string();
+        c.execute(
+            "INSERT INTO meetings (id, title, title_lc, started_at, status, created_at, updated_at)
+             VALUES (?1, 'Planning', 'planning', 0, 'done', 0, 0)",
+            [&id],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO summaries (meeting_id, takeaway, overview, decisions, decisions_json,
+               markdown, provider, model, created_at, updated_at)
+             VALUES (?1, 'Ship in May', 'Overview', '', '[]', '## Summary', 'Test', 'fake', 0, 0)",
+            [&id],
+        )
+        .unwrap();
         c.execute(
             "INSERT INTO action_items (meeting_id, position, text, done, created_at)
-             VALUES (?1, 0, 'Send notes', 1, 0)",
-            [m.id.to_string()],
-        )?;
-        c.execute_batch(
-            "ALTER TABLE meetings DROP COLUMN markdown_file;
-             ALTER TABLE meetings DROP COLUMN checklist_curated;
-             ALTER TABLE meetings DROP COLUMN jobs_retired;
-             ALTER TABLE meetings DROP COLUMN audio_removed;
-             ALTER TABLE meetings DROP COLUMN markdown_removed;
-             ALTER TABLE tracks DROP COLUMN deleted;
-             DROP TABLE meeting_exports;
-             DROP TABLE storage_folders;
-             DROP TABLE pending_file_cleanup;
-             DROP TABLE pending_summary_scans;
-             ALTER TABLE action_items DROP COLUMN source_ms;
-             DROP TABLE meeting_waveforms;
-             DROP TABLE discarded_recordings;
-             PRAGMA user_version = 4;",
-        )?;
-        Ok(())
-    })
-    .unwrap();
-    drop(s);
-    let s = Store::open(&path).unwrap();
-    let old = s.list_action_items(m.id).unwrap();
-    assert!(old[0].item.done);
-    s.upsert_summary(&summary(m.id, &[("Regenerated task", false)]))
+             VALUES (?1, 0, 'Send notes', ?2, 0), (?1, 1, 'Book room', 0, 0)",
+            rusqlite::params![id, done],
+        )
         .unwrap();
-    assert_eq!(s.list_action_items(m.id).unwrap(), old);
+        c.execute(
+            "INSERT INTO tracks (meeting_id, track, path) VALUES (?1, 'mic', 'mic.wav')",
+            [&id],
+        )
+        .unwrap();
+    }
+    c.execute(
+        "INSERT INTO dictations (id, created_at, text, raw_text, target_app, word_count,
+           duration_ms, inserted)
+         VALUES (?1, 0, 'Sounds good', 'sounds good', 'Mail', 2, 900, 1)",
+        [Uuid::new_v4().to_string()],
+    )
+    .unwrap();
+    if version >= 5 {
+        c.execute(
+            "UPDATE dictations SET app_identity = ?1",
+            [r#"{"displayName":"Mail","macosBundleId":"com.apple.mail","x11WindowClass":null,"windowsExecutable":null}"#],
+        )
+        .unwrap();
+    }
+    (ticked, open)
+}
+
+#[test]
+fn populated_v4_and_v5_databases_upgrade_and_reopen() {
+    for version in [4, 5] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        let (ticked, open) = populated_database(&path, version);
+
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 6);
+        let curated = s.list_action_items(ticked).unwrap();
+        assert!(curated[0].item.done && curated[0].source_ms.is_none());
+        // A ticked checklist is the user's; an untouched one can be regenerated.
+        s.upsert_summary(&summary(ticked, &[("Regenerated", false)]))
+            .unwrap();
+        assert_eq!(s.list_action_items(ticked).unwrap(), curated);
+        s.upsert_summary(&summary(open, &[("Regenerated", false)]))
+            .unwrap();
+        assert_eq!(
+            s.list_action_items(open).unwrap()[0].item.text,
+            "Regenerated"
+        );
+        assert!(!s.list_tracks(ticked).unwrap()[0].deleted);
+        assert_eq!(s.meeting_markdown_file(ticked).unwrap(), None);
+
+        let dictations = s.list_dictations(10, 0).unwrap();
+        assert_eq!(dictations[0].text, "Sounds good");
+        assert_eq!(
+            dictations[0]
+                .app_identity
+                .as_ref()
+                .and_then(|a| a.macos_bundle_id.as_deref()),
+            (version == 5).then_some("com.apple.mail"),
+        );
+        assert!(dictations[0].shape.is_none());
+        drop(s);
+
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 6);
+        assert_eq!(s.list_action_items(ticked).unwrap(), curated);
+        assert_eq!(s.list_dictations(10, 0).unwrap(), dictations);
+    }
 }
 
 #[test]

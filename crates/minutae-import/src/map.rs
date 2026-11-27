@@ -419,6 +419,8 @@ pub(crate) fn import_dictation(
     };
     let id = choose_id(store, &d.id);
     let dictation = Dictation {
+        app_identity: None,
+        shape: None,
         id,
         created_at: created,
         word_count: text.split_whitespace().count() as u32,

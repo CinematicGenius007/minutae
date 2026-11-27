@@ -259,7 +259,15 @@ const V4: &str = r#"
 ALTER TABLE meetings ADD COLUMN echo_cancel TEXT;
 "#;
 
+/// v5: the app a dictation was started in and the shape applied to it.
 const V5: &str = r#"
+ALTER TABLE dictations ADD COLUMN app_identity TEXT;
+ALTER TABLE dictations ADD COLUMN shape TEXT;
+"#;
+
+/// v6: meeting content management: saved export and storage locations, pending file
+/// cleanup, waveform cache and curated checklists.
+const V6: &str = r#"
 ALTER TABLE action_items ADD COLUMN source_ms INTEGER;
 ALTER TABLE meetings ADD COLUMN markdown_file TEXT;
 ALTER TABLE meetings ADD COLUMN checklist_curated INTEGER NOT NULL DEFAULT 0;
@@ -333,6 +341,10 @@ const MIGRATIONS: &[Migration] = &[
         sql: V5,
         data: None,
     },
+    Migration {
+        sql: V6,
+        data: None,
+    },
 ];
 
 /// Lowercased form stored in `meetings.title_lc`; must match how search tokens are lowercased.
@@ -357,13 +369,20 @@ fn backfill_title_lc(tx: &rusqlite::Transaction<'_>) -> Result<()> {
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 
 pub(crate) fn migrate(conn: &mut Connection) -> Result<u32> {
+    migrate_to(conn, SCHEMA_VERSION)
+}
+
+/// Apply the migrations up to `target`. Tests use older targets to build the
+/// databases earlier releases left behind.
+pub(crate) fn migrate_to(conn: &mut Connection, target: u32) -> Result<u32> {
     let current: u32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if current > SCHEMA_VERSION {
         return Err(crate::StoreError::Invalid(format!(
             "database schema v{current} is newer than this app (v{SCHEMA_VERSION})"
         )));
     }
-    for (i, m) in MIGRATIONS.iter().enumerate().skip(current as usize) {
+    let pending = MIGRATIONS.iter().enumerate().take(target as usize);
+    for (i, m) in pending.skip(current as usize) {
         let version = i as u32 + 1;
         let tx = conn.transaction()?;
         tx.execute_batch(m.sql)?;
@@ -374,5 +393,5 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<u32> {
         tx.commit()?;
         tracing::info!(version, "applied migration");
     }
-    Ok(SCHEMA_VERSION)
+    Ok(target)
 }
