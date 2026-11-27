@@ -15,7 +15,7 @@ use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 
 use crate::dto::{self, ev};
-use crate::pipeline::find_summary_file;
+use crate::meeting_content::{self, LocalMeetingFiles, MeetingFiles};
 use crate::state::{AppState, emit_meetings_changed, recordings_root, summaries_root};
 use crate::updater::Updates;
 use crate::{calls, models, platform, recording, shell, util};
@@ -26,7 +26,7 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-fn uuid(s: &str) -> R<Uuid> {
+pub(crate) fn uuid(s: &str) -> R<Uuid> {
     Uuid::parse_str(s).map_err(|_| format!("Not a valid id: {s}"))
 }
 
@@ -145,9 +145,8 @@ async fn change_settings(
     change: impl FnOnce(&AppSettings) -> R<AppSettings>,
 ) -> R<AppSettings> {
     // Serialise read-merge-write so two quick toggles can't overwrite each other.
-    static UPDATING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    let _guard = UPDATING.lock().await;
     let st = app.state::<AppState>();
+    let _guard = st.storage_ops.lock().await;
     let old = st.settings();
     let new = change(&old)?;
     if old.dictation_retention_days != new.dictation_retention_days
@@ -167,6 +166,13 @@ async fn change_settings(
             new.summaries_path.as_deref(),
             &picked,
         )?;
+    }
+    if old.summaries_path != new.summaries_path || old.recordings_path != new.recordings_path {
+        let folders = meeting_content::ContentFolders::current(&old);
+        st.store
+            .call(move |store| meeting_content::remember_storage(store, &folders))
+            .await
+            .map_err(err)?;
     }
     let shortcuts_changed =
         old.record_shortcut != new.record_shortcut || old.dictation_hotkey != new.dictation_hotkey;
@@ -193,6 +199,9 @@ async fn change_settings(
     *st.settings.write().unwrap_or_else(|e| e.into_inner()) = new.clone();
     crate::apply_settings(app, &old, &new);
     let _ = app.emit(ev::SETTINGS_CHANGED, &new);
+    if old.summaries_path != new.summaries_path || old.recordings_path != new.recordings_path {
+        crate::spawn_export_backfill(app);
+    }
     if old.dictation_retention_days != new.dictation_retention_days {
         crate::dictation::prune(app).await;
     }
@@ -443,18 +452,37 @@ pub async fn get_meeting(state: State<'_, AppState>, id: String) -> R<dto::Meeti
         .map_err(err)?
         .ok_or("This meeting no longer exists.")?;
     let summaries_dir = summaries_root(&state.settings());
-    let markdown_path = find_summary_file(&summaries_dir, id);
+    let operation = state.meeting_ops.try_lock(id);
+    let markdown_path = state
+        .store
+        .call(move |store| {
+            // Progress refreshes must remain responsive while a processing job
+            // holds this lock. Discovery can wait until the next idle refresh.
+            let path = if let Some(_operation) = operation {
+                meeting_content::markdown_path(store, &summaries_dir, id)?
+            } else {
+                store.meeting_markdown_file(id)?.map(PathBuf::from)
+            };
+            Ok(path.filter(|p| meeting_content::summary_belongs_to(p, id).unwrap_or(false)))
+        })
+        .await
+        .map_err(err)?;
     let duration_ms = d
-        .meeting
-        .ended_at
-        .map(|e| (e - d.meeting.started_at).num_milliseconds().max(0) as u64)
-        .or_else(|| d.tracks.iter().filter_map(|t| t.duration_ms).max());
+        .tracks
+        .iter()
+        .filter_map(|t| t.duration_ms)
+        .max()
+        .or_else(|| {
+            d.meeting
+                .ended_at
+                .map(|e| (e - d.meeting.started_at).num_milliseconds().max(0) as u64)
+        });
     let existing = |t: minutae_core::Track| {
         d.tracks
             .iter()
-            .find(|x| x.track == t)
+            .find(|x| x.track == t && !x.deleted)
+            .filter(|x| LocalMeetingFiles.track_exists(Path::new(&x.path), id))
             .map(|x| x.path.clone())
-            .filter(|p| Path::new(p).exists())
     };
     let audio = (!d.tracks.is_empty()).then(|| dto::AudioPaths {
         mic: existing(minutae_core::Track::Mic),
@@ -492,6 +520,7 @@ pub async fn rename_meeting(app: AppHandle, id: String, title: String) -> R<()> 
         return Err("The title can't be empty.".into());
     }
     let st = app.state::<AppState>();
+    let _operation = st.meeting_ops.lock(id).await;
     let t = title.clone();
     st.store
         .call(move |s| s.rename_meeting(id, &t))
@@ -508,86 +537,31 @@ pub async fn rename_meeting(app: AppHandle, id: String, title: String) -> R<()> 
 
 #[tauri::command]
 pub async fn delete_meeting(app: AppHandle, id: String) -> R<()> {
-    let id = uuid(&id)?;
-    let st = app.state::<AppState>();
-    let recording_this = st
-        .recording
-        .lock()
-        .await
-        .as_ref()
-        .is_some_and(|r| r.meeting.id == id);
-    if recording_this {
-        // Waits for a stop already in progress, so the stitch can't recreate files
-        // after they are deleted below.
-        let _ = recording::stop(&app).await;
-    }
-    let store = st.store.clone();
-    if let Ok(runner) = st.runner() {
-        let jobs = store
-            .call(move |s| s.jobs_for_meeting(id))
-            .await
-            .map_err(err)?;
-        for j in jobs.iter().filter(|j| !j.state.is_terminal()) {
-            let _ = runner.cancel(j.id).await;
-        }
-    }
-    let tracks = store.call(move |s| s.list_tracks(id)).await.map_err(err)?;
-    let settings = st.settings();
-    let summaries = summaries_root(&settings);
-    tokio::task::spawn_blocking(move || {
-        let mut dirs: Vec<PathBuf> = vec![];
-        for t in &tracks {
-            let p = PathBuf::from(&t.path);
-            let _ = std::fs::remove_file(&p);
-            if t.track == minutae_core::Track::Mic {
-                let _ = std::fs::remove_file(p.with_file_name(minutae_aec::CLEAN_MIC_FILE));
-            }
-            if let Some(parent) = p.parent() {
-                dirs.push(parent.to_path_buf());
-            }
-        }
-        dirs.push(recordings_root(&settings).join(id.to_string()));
-        for d in dirs {
-            // Only the meeting's own folder, and only when it is named after the meeting.
-            if d.file_name().and_then(|n| n.to_str()) == Some(&id.to_string()) {
-                let _ = std::fs::remove_dir_all(d);
-            }
-        }
-        if let Some(md) = find_summary_file(&summaries, id) {
-            let _ = std::fs::remove_file(md);
-        }
-    })
-    .await
-    .map_err(err)?;
-    store
-        .call(move |s| s.delete_meeting(id))
-        .await
-        .map_err(err)?;
-    emit_meetings_changed(&app, Some(id));
-    Ok(())
+    crate::meeting_content::delete_entire_meeting(app, id).await
 }
 
 #[tauri::command]
 pub async fn retry_meeting(app: AppHandle, id: String) -> R<()> {
     let id = uuid(&id)?;
     let st = app.state::<AppState>();
+    let _operation = st.meeting_ops.lock(id).await;
+    if !st
+        .store
+        .call(move |s| s.get_meeting(id))
+        .await
+        .map_err(err)?
+        .is_some_and(|m| m.status == minutae_core::MeetingStatus::Failed)
+    {
+        return Err("Only failed meetings can be retried.".into());
+    }
     crate::pipeline::retry_meeting(st.runner()?, id).await?;
     emit_meetings_changed(&app, Some(id));
     Ok(())
 }
 
 #[tauri::command]
-pub async fn set_action_done(app: AppHandle, id: String, done: bool) -> R<()> {
-    let row: i64 = id
-        .parse()
-        .map_err(|_| format!("Not a valid action item id: {id}"))?;
-    let st = app.state::<AppState>();
-    st.store
-        .call(move |s| s.set_action_item_done(row, done))
-        .await
-        .map_err(err)?;
-    emit_meetings_changed(&app, None);
-    Ok(())
+pub async fn set_action_done(app: AppHandle, id: String, done: bool) -> R<dto::ActionChangeResult> {
+    crate::meeting_content::set_action_done(&app, &id, done).await
 }
 
 #[tauri::command]
@@ -607,17 +581,22 @@ pub async fn rename_speaker(app: AppHandle, speaker_id: String, name: String) ->
 #[tauri::command]
 pub async fn summary_markdown(state: State<'_, AppState>, id: String) -> R<String> {
     let id = uuid(&id)?;
-    if let Some(p) = find_summary_file(&summaries_root(&state.settings()), id)
-        && let Ok(s) = std::fs::read_to_string(p)
-    {
-        return Ok(s);
-    }
-    let s = state
+    let operation = state.meeting_ops.lock(id).await;
+    let dir = summaries_root(&state.settings());
+    state
         .store
-        .call(move |s| s.get_summary(id))
+        .call(move |s| {
+            let _operation = operation;
+            if let Some(path) = crate::meeting_content::markdown_path(s, &dir, id)?
+                && let Ok(Some(bytes)) = meeting_content::read_export(&path, id)
+                && let Ok(markdown) = String::from_utf8(bytes)
+            {
+                return Ok(markdown);
+            }
+            Ok(s.get_summary(id)?.map(|s| s.markdown).unwrap_or_default())
+        })
         .await
-        .map_err(err)?;
-    Ok(s.map(|s| s.markdown).unwrap_or_default())
+        .map_err(err)
 }
 
 // ---------------------------------------------------------------- recording
@@ -1442,6 +1421,7 @@ pub async fn export_all(app: AppHandle) -> R<Option<String>> {
 #[tauri::command]
 pub async fn erase_all(app: AppHandle) -> R<()> {
     let st = app.state::<AppState>();
+    let _storage = st.storage_ops.lock().await;
     if st.importing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err("An import is running. Wait for it to finish, then erase.".into());
     }
@@ -1499,59 +1479,28 @@ pub async fn erase_all(app: AppHandle) -> R<()> {
         tracing::warn!(error = %e, "removing an API key failed");
     }
     let settings = st.settings();
-    let meeting_ids: Vec<Uuid> = st
+    let mut cleanup_errors = meeting_content::erase_meetings(&st, &settings).await?;
+    let _dictations = st.dictation_storage.lock().await;
+    let mut other_errors = st
         .store
-        .call(|s| s.list_meetings(1_000_000, 0))
-        .await
-        .map_err(err)?
-        .into_iter()
-        .map(|m| m.meeting.id)
-        .collect();
-    st.store
         .call(|s| {
+            let mut errors = erase_local_files(&paths::data_dir(), &s.dictation_ids_before(None)?);
+            if let Err(error) = paths::ensure_all() {
+                errors.push(error.to_string());
+            }
             s.write(|c| {
                 Ok(c.execute_batch(
-                    "DELETE FROM jobs; DELETE FROM meetings; DELETE FROM dictations; DELETE FROM api_usage;
-                     DELETE FROM speaker_profiles; DELETE FROM settings; DELETE FROM imports;
-                     DELETE FROM legacy_imports;",
+                    "DELETE FROM jobs; DELETE FROM dictations; DELETE FROM api_usage;
+                 DELETE FROM speaker_profiles; DELETE FROM settings; DELETE FROM imports;
+                 DELETE FROM legacy_imports;",
                 )?)
             })?;
-            s.write(|c| Ok(c.execute_batch("VACUUM;")?))
+            s.write(|c| Ok(c.execute_batch("VACUUM;")?))?;
+            Ok(errors)
         })
         .await
         .map_err(err)?;
-    let (rec_root, sum_root) = (recordings_root(&settings), summaries_root(&settings));
-    tokio::task::spawn_blocking(move || {
-        // Folders only v4 writes go entirely (models too: "erase all" means all).
-        for d in [paths::models_dir(), paths::data_dir().join("dictations")] {
-            let _ = std::fs::remove_dir_all(&d);
-        }
-        // Recordings and summaries folders are shared: the older Swift app keeps its own
-        // recordings in ~/Library/Minutae/recordings, and custom folders may hold anything.
-        // Remove only what v4 wrote (one folder / one .md per meeting), in every root.
-        let mut rec_roots = vec![paths::recordings_dir()];
-        let mut sum_roots = vec![paths::summaries_dir()];
-        if rec_root != rec_roots[0] {
-            rec_roots.push(rec_root);
-        }
-        if sum_root != sum_roots[0] {
-            sum_roots.push(sum_root);
-        }
-        for id in &meeting_ids {
-            for r in &rec_roots {
-                let _ = std::fs::remove_dir_all(r.join(id.to_string()));
-            }
-            for r in &sum_roots {
-                if let Some(md) = find_summary_file(r, *id) {
-                    let _ = std::fs::remove_file(md);
-                }
-            }
-        }
-        let _ = std::fs::remove_file(crate::state::Flags::path());
-        let _ = paths::ensure_all();
-    })
-    .await
-    .map_err(err)?;
+    cleanup_errors.append(&mut other_errors);
     *st.flags() = Default::default();
     let defaults = AppSettings::default();
     *st.settings.write().unwrap_or_else(|e| e.into_inner()) = defaults.clone();
@@ -1563,12 +1512,130 @@ pub async fn erase_all(app: AppHandle) -> R<()> {
     emit_meetings_changed(&app, None);
     shell::navigate(&app, "/onboarding");
     if !key_errors.is_empty() {
-        return Err(
-            "Everything else was erased, but some API keys couldn't be removed from the keychain."
-                .into(),
-        );
+        cleanup_errors.push("Some API keys couldn't be removed from the keychain.".into());
     }
-    Ok(())
+    if cleanup_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(cleanup_errors.join("\n"))
+    }
+}
+
+fn erase_local_files(data: &Path, dictations: &[Uuid]) -> Vec<String> {
+    use cap_fs_ext::DirExt;
+    use cap_std::fs::Dir;
+    use std::io::ErrorKind::NotFound;
+
+    let mut errors = Vec::new();
+    let root = match Dir::open_ambient_dir(data, cap_std::ambient_authority()) {
+        Ok(root) => root,
+        Err(error) => return vec![format!("{}: {error}", data.display())],
+    };
+    let mut remove = |dir: &Dir, folder: &str, names: Vec<String>| {
+        for name in names {
+            let result = dir.symlink_metadata(&name).and_then(|meta| {
+                if meta.is_file() {
+                    dir.remove_file(&name)
+                } else {
+                    Err(std::io::Error::other(
+                        "The path is not a regular Minutae file.",
+                    ))
+                }
+            });
+            if let Err(error) = result
+                && error.kind() != NotFound
+            {
+                errors.push(format!("{folder}/{name}: {error}"));
+            }
+        }
+    };
+    remove(&root, "", vec!["app-state.json".into()]);
+    let whisper = [
+        WhisperModel::Tiny,
+        WhisperModel::Base,
+        WhisperModel::Small,
+        WhisperModel::Medium,
+    ]
+    .into_iter()
+    .flat_map(|model| {
+        let name = minutae_asr::model_info(model).file_name;
+        [format!("{name}.part"), format!("{name}.part.etag"), name]
+    })
+    .collect();
+    // Only standard download and dictation filenames are eligible. Do not
+    // traverse links below the data root or recursively remove user files.
+    let mut rejected = Vec::new();
+    for (folder, names) in [
+        (
+            "dictations",
+            dictations.iter().map(|id| format!("{id}.wav")).collect(),
+        ),
+        ("models", whisper),
+    ] {
+        match root.open_dir_nofollow(folder) {
+            Ok(dir) => {
+                remove(&dir, folder, names);
+                if folder == "models" {
+                    match dir.open_dir_nofollow("diarize") {
+                        Ok(diarize) => remove(
+                            &diarize,
+                            "models/diarize",
+                            minutae_diarize::download_files(),
+                        ),
+                        Err(error) if error.kind() == NotFound => {}
+                        Err(error) => rejected.push(format!("models/diarize: {error}")),
+                    }
+                }
+            }
+            Err(error) if error.kind() == NotFound => {}
+            Err(error) => rejected.push(format!("{folder}: {error}")),
+        }
+    }
+    errors.extend(rejected);
+    errors
+}
+
+#[cfg(test)]
+#[test]
+fn erase_keeps_user_notes_in_meeting_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let recordings = temp.path().join("recordings");
+    let settings = AppSettings {
+        recordings_path: Some(recordings.to_string_lossy().into_owned()),
+        summaries_path: Some(temp.path().to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let store = minutae_store::Store::open_in_memory().unwrap();
+    let id = Uuid::new_v4();
+    let now = Utc::now();
+    store
+        .create_meeting(&minutae_core::Meeting {
+            id,
+            title: "Test".into(),
+            started_at: now,
+            ended_at: Some(now),
+            status: MeetingStatus::Done,
+            source_app: None,
+            failure: None,
+        })
+        .unwrap();
+    let directory = recordings.join(id.to_string());
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("mic.wav"), b"recording").unwrap();
+    std::fs::write(directory.join("notes.txt"), b"personal notes").unwrap();
+    let errors = meeting_content::erase_meeting_files(
+        &store,
+        &meeting_content::ContentFolders::current(&settings),
+        id,
+    )
+    .unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(store.get_meeting(id).unwrap().is_none());
+    assert!(!directory.join("mic.wav").exists());
+    assert_eq!(
+        std::fs::read(directory.join("notes.txt")).unwrap(),
+        b"personal notes"
+    );
 }
 
 // ---------------------------------------------------------------- import (MIG-10)
@@ -1597,6 +1664,10 @@ pub async fn import_legacy_scan(state: State<'_, AppState>) -> R<dto::LegacyScan
 pub fn import_legacy_run(app: AppHandle) -> R<()> {
     use std::sync::atomic::Ordering;
     let st = app.state::<AppState>();
+    let _storage = st
+        .storage_ops
+        .try_lock()
+        .map_err(|_| "Storage settings are being updated. Try again in a moment.")?;
     if st.importing.swap(true, Ordering::SeqCst) {
         return Err("An import is already running.".into());
     }

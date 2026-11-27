@@ -660,6 +660,50 @@ test("search params live in the hash and don't come back from the sidebar", asyn
   await expect(page.getByRole("searchbox", { name: "Search or ask" })).toHaveValue("");
 });
 
+test("checklist changes save and say when the Markdown file was left unchanged", async ({ page }) => {
+  await page.goto('/?checklist=unchanged#/meetings/' + MEETING);
+  const result = await page.evaluate(async (id) => {
+    const entrypoint = "/src/lib/api.ts";
+    const { api } = await import(entrypoint) as typeof import("../src/lib/api");
+    const before = await api.summaryMarkdown(id);
+    const added = await api.addActionItem(id, { text: "Send the handoff" });
+    const edited = await api.editActionItem(id, added.item.id, { text: "Send the notes" });
+    const ticked = await api.setActionDone(added.item.id, true);
+    const saved = (await api.getMeeting(id)).actionItems.find((a) => a.id === added.item.id);
+    const deleted = await api.deleteActionItem(id, added.item.id);
+    const after = await api.summaryMarkdown(id);
+    await api.deleteMeetingParts(id, ["markdown"]);
+    const withoutExport = await api.addActionItem(id, { text: "No file to update" });
+    return { before, after, saved, withoutExport, notices: [added, edited, ticked, deleted].map((r) => r.markdownNotice) };
+  }, MEETING);
+
+  expect(result.saved).toMatchObject({ text: "Send the notes", done: true });
+  for (const notice of result.notices) expect(notice).toContain("left unchanged");
+  expect(result.after).toBe(result.before);
+  expect(result.withoutExport.markdownNotice).toBeNull();
+});
+
+test("meeting cleanup reports an absent Markdown export separately from deletions", async ({ page }) => {
+  await page.goto('/#/meetings/' + MEETING);
+  const result = await page.evaluate(async (id) => {
+    const entrypoint = "/src/lib/api.ts";
+    const { api } = await import(entrypoint) as typeof import("../src/lib/api");
+    const first = await api.deleteMeetingParts(id, ["markdown"]);
+    const contents = await api.meetingContents(id);
+    const second = await api.deleteMeetingParts(id, ["markdown"]);
+    return { first, contents, second };
+  }, MEETING);
+
+  expect(result.first.deleted).toEqual(["markdown"]);
+  expect(result.first.markdownNotice).toBeNull();
+  expect(result.contents.markdownPath).toBeNull();
+  expect(result.contents.markdownNotice).toContain("No Markdown export was found");
+  expect(result.second.deleted).toEqual([]);
+  expect(result.second.failures).toEqual([]);
+  expect(result.second.markdownNotice).toBe(result.contents.markdownNotice);
+});
+
+
 // ── Accessibility pass: cloud planned + forced-colors focus visibility ──────
 
 test("Settings → Transcription: Cloud is visibly disabled, planned, unreachable, and exposes its reason", async ({ page }) => {

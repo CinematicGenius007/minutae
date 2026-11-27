@@ -500,6 +500,7 @@ fn legacy_meeting_import_is_atomic_and_idempotent() {
             path: "/r/mic.wav".into(),
             duration_ms: Some(1000),
             bytes: Some(44),
+            deleted: false,
         }],
         transcript: Some(Transcript {
             meeting_id: m.id,
@@ -534,6 +535,10 @@ fn legacy_meeting_import_is_atomic_and_idempotent() {
     );
     assert!(s.id_in_use(m.id).unwrap());
     assert_eq!(s.list_action_items(m.id).unwrap().len(), 1);
+    let imported_actions = s.list_action_items(m.id).unwrap();
+    s.upsert_summary(&summary(m.id, &[("A regenerated task", false)]))
+        .unwrap();
+    assert_eq!(s.list_action_items(m.id).unwrap(), imported_actions);
     // Imported text is searchable.
     let hits = s.search("budget", &SearchFilters::default()).unwrap();
     assert!(hits.iter().any(|h| h.meeting_id == Some(m.id)));
@@ -747,6 +752,20 @@ fn v2_migration_backfills_title_key() {
         c.execute_batch(
             "ALTER TABLE meetings DROP COLUMN title_lc;
              ALTER TABLE meetings DROP COLUMN echo_cancel;
+             ALTER TABLE meetings DROP COLUMN exported_checklist;
+             ALTER TABLE meetings DROP COLUMN markdown_file;
+             ALTER TABLE meetings DROP COLUMN checklist_curated;
+             ALTER TABLE meetings DROP COLUMN jobs_retired;
+             ALTER TABLE meetings DROP COLUMN audio_removed;
+             ALTER TABLE meetings DROP COLUMN markdown_removed;
+             ALTER TABLE tracks DROP COLUMN deleted;
+             DROP TABLE meeting_exports;
+             DROP TABLE storage_folders;
+             DROP TABLE pending_file_cleanup;
+             DROP TABLE pending_summary_scans;
+             ALTER TABLE action_items DROP COLUMN source_ms;
+             DROP TABLE meeting_waveforms;
+             DROP TABLE discarded_recordings;
              DROP TABLE legacy_imports;
              ALTER TABLE dictations DROP COLUMN app_identity;
              ALTER TABLE dictations DROP COLUMN shape;
@@ -791,4 +810,121 @@ fn echo_cancel_report_round_trips_and_shows_in_detail() {
         Some(off)
     );
     assert_eq!(s.echo_cancel(Uuid::new_v4()).unwrap(), None);
+}
+
+/// A database as an earlier build left it: one meeting with a summary, a
+/// completed and an open action item, a second meeting with nothing ticked, a
+/// track and a dictation.
+fn populated_database(path: &std::path::Path, version: u32) -> (Uuid, Uuid) {
+    let mut c = rusqlite::Connection::open(path).unwrap();
+    schema::migrate_to(&mut c, version).unwrap();
+    let (ticked, open) = (Uuid::new_v4(), Uuid::new_v4());
+    for (meeting, done) in [(ticked, 1), (open, 0)] {
+        let id = meeting.to_string();
+        c.execute(
+            "INSERT INTO meetings (id, title, title_lc, started_at, status, created_at, updated_at)
+             VALUES (?1, 'Planning', 'planning', 0, 'done', 0, 0)",
+            [&id],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO summaries (meeting_id, takeaway, overview, decisions, decisions_json,
+               markdown, provider, model, created_at, updated_at)
+             VALUES (?1, 'Ship in May', 'Overview', '', '[]', '## Summary', 'Test', 'fake', 0, 0)",
+            [&id],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO action_items (meeting_id, position, text, done, created_at)
+             VALUES (?1, 0, 'Send notes', ?2, 0), (?1, 1, 'Book room', 0, 0)",
+            rusqlite::params![id, done],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO tracks (meeting_id, track, path) VALUES (?1, 'mic', 'mic.wav')",
+            [&id],
+        )
+        .unwrap();
+    }
+    c.execute(
+        "INSERT INTO dictations (id, created_at, text, raw_text, target_app, word_count,
+           duration_ms, inserted)
+         VALUES (?1, 0, 'Sounds good', 'sounds good', 'Mail', 2, 900, 1)",
+        [Uuid::new_v4().to_string()],
+    )
+    .unwrap();
+    if version >= 5 {
+        c.execute(
+            "UPDATE dictations SET app_identity = ?1",
+            [r#"{"displayName":"Mail","macosBundleId":"com.apple.mail","x11WindowClass":null,"windowsExecutable":null}"#],
+        )
+        .unwrap();
+    }
+    (ticked, open)
+}
+
+#[test]
+fn populated_v4_and_v5_databases_upgrade_and_reopen() {
+    for version in [4, 5] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        let (ticked, open) = populated_database(&path, version);
+
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), schema::SCHEMA_VERSION);
+        let curated = s.list_action_items(ticked).unwrap();
+        assert!(curated[0].item.done && curated[0].source_ms.is_none());
+        // A ticked checklist is the user's; an untouched one can be regenerated.
+        s.upsert_summary(&summary(ticked, &[("Regenerated", false)]))
+            .unwrap();
+        assert_eq!(s.list_action_items(ticked).unwrap(), curated);
+        s.upsert_summary(&summary(open, &[("Regenerated", false)]))
+            .unwrap();
+        assert_eq!(
+            s.list_action_items(open).unwrap()[0].item.text,
+            "Regenerated"
+        );
+        assert!(!s.list_tracks(ticked).unwrap()[0].deleted);
+        assert_eq!(s.meeting_markdown_file(ticked).unwrap(), None);
+
+        let dictations = s.list_dictations(10, 0).unwrap();
+        assert_eq!(dictations[0].text, "Sounds good");
+        assert_eq!(
+            dictations[0]
+                .app_identity
+                .as_ref()
+                .and_then(|a| a.macos_bundle_id.as_deref()),
+            (version == 5).then_some("com.apple.mail"),
+        );
+        assert!(dictations[0].shape.is_none());
+        drop(s);
+
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), schema::SCHEMA_VERSION);
+        assert_eq!(s.list_action_items(ticked).unwrap(), curated);
+        assert_eq!(s.list_dictations(10, 0).unwrap(), dictations);
+    }
+}
+
+#[test]
+fn stale_waveform_cannot_repopulate_cache_after_audio_deletion() {
+    let s = Store::open_in_memory().unwrap();
+    let m = meeting("Tape", Utc::now());
+    s.create_meeting(&m).unwrap();
+    s.upsert_track(&TrackFile {
+        meeting_id: m.id,
+        track: minutae_core::Track::Mic,
+        path: "mic.wav".into(),
+        duration_ms: None,
+        bytes: None,
+        deleted: false,
+    })
+    .unwrap();
+    s.cache_waveform(m.id, "mic", "current", "10", &[0.2])
+        .unwrap();
+    assert!(s.waveform(m.id, "mic", "current", "10").unwrap().is_some());
+    s.trim_meeting(m.id, true, false, false).unwrap();
+    s.cache_waveform(m.id, "mic", "current", "10", &[0.2])
+        .unwrap();
+    assert!(s.waveform(m.id, "mic", "current", "10").unwrap().is_none());
 }

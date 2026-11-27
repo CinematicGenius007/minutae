@@ -12,6 +12,11 @@
 //   ?portal=press      with session=wayland: the portal sends no key releases, so hold works as toggle
 //   ?perms=none        every permission is notRequired (Windows / Linux): onboarding has nothing to ask
 //   ?audio=1           meetings have short silent audio tracks, so the player is enabled
+//   ?tape=ready|missing|deleted|unreadable   waveform fixtures (missing/unreadable affect system only)
+//   ?meetingDelete=blocked|partial   an external Markdown path or a late audio deletion error
+//   ?resummarize=failed|running   exercise rerun errors or keep the rerun in progress
+//   ?checklist=unchanged   checklist changes save but leave the Markdown file alone, with a notice
+//   ?discard=blocked|cleanupError  refuse the discard or simulate deferred cleanup
 //   ?captions=off      live captions turned off (also: noModel = no Whisper model; none = on, nothing said yet)
 //   ?import=none       no older Minutae data (also: error, running, failed; see legacyScan below)
 //   ?dictations=loading|error|errorOnce   force Dictate list loading or error state (errorOnce recovers on retry)
@@ -27,7 +32,8 @@
 import type {
   Answer, AppMatcher, AppSettings, DictationApp, DictationAppRule, DictationCapabilities, DictationShapeOptions, HudState, Shape, ShapeEdits, ShapePreset, CaptionLine, CaptionStatus, DayGroup, Dictation, ImportResult, LegacyScan, LegacySource, MeetingDetail,
   ModelInfo, Permissions, ProviderStatus, RecordingState, SearchHit, ShortcutStatus, Track,
-  UpdateStatus, UsageMonth,
+  UpdateStatus, UsageMonth, ActionItem, ActionItemInput, MeetingContents, MeetingDeletion,
+  MeetingPart, MeetingPartFailure, TrackWaveform, WaveformRange, ActionChangeResult,
 } from "./types";
 
 type Listener = (payload: unknown) => void;
@@ -217,9 +223,9 @@ const baseDetail = (meetingId: string): MeetingDetail => ({
     provider: "Codex", model: "gpt-6.2-astra",
   },
   actionItems: [
-    { id: id(201), text: "Share updated mockups", owner: "Alice", due: "Fri 21 Nov", done: false },
-    { id: id(202), text: "Review dashboard performance budget", owner: "Bob", due: null, done: false },
-    { id: id(203), text: "Move launch on the roadmap", owner: "Carol", due: null, done: true },
+    { id: id(201), text: "Share updated mockups", owner: "Alice", due: "Fri 21 Nov", done: false, sourceMs: 724000 },
+    { id: id(202), text: "Review dashboard performance budget", owner: "Bob", due: null, done: false, sourceMs: 690000 },
+    { id: id(203), text: "Move launch on the roadmap", owner: "Carol", due: null, done: true, sourceMs: null },
   ],
   moments: [
     { meetingId, atMs: 718000, label: "Decision: May" },
@@ -248,7 +254,7 @@ function silentWav(): string {
   return wav;
 }
 
-function detail(meetingId: string): MeetingDetail {
+function initialDetail(meetingId: string): MeetingDetail {
   const d = baseDetail(meetingId);
   if (state === "processing") {
     return {
@@ -269,6 +275,189 @@ function detail(meetingId: string): MeetingDetail {
     };
   }
   return d;
+}
+
+const tapeMode = params.get("tape");
+const meetingDeleteMode = params.get("meetingDelete");
+const resummarizeMode = params.get("resummarize");
+const discardMode = params.get("discard");
+const checklistMode = params.get("checklist");
+const meetingParts: MeetingPart[] = ["audio", "transcript", "summary", "markdown"];
+const meetingDetails = new Map<string, MeetingDetail>();
+const exportsByMeeting = new Map<string, { path: string; text: string }>();
+const transcriptsDeleted = new Set<string>();
+const removedMeetings = new Set<string>();
+const audioDeleted = new Set<string>();
+const curation = new Set<string>();
+let actionSequence = 0;
+let longWav: string | null = null;
+
+function tapeAudio(): string {
+  if (longWav) return longWav;
+  const bytes = 1934 * 8000;
+  const header = Uint8Array.from(atob(silentWav().split(",")[1]!).slice(0, 44), (c) => c.charCodeAt(0));
+  const view = new DataView(header.buffer);
+  view.setUint32(4, 36 + bytes, true);
+  view.setUint32(40, bytes, true);
+  const samples = new Uint8Array(bytes).fill(128);
+  longWav = URL.createObjectURL(new Blob([header, samples], { type: "audio/wav" }));
+  return longWav;
+}
+
+function detail(meetingId: string): MeetingDetail {
+  if (removedMeetings.has(meetingId)) throw new Error("This meeting no longer exists.");
+  const existing = meetingDetails.get(meetingId);
+  if (existing) return existing;
+  const d = initialDetail(meetingId);
+  if (tapeMode) {
+    d.audio = {
+      mic: tapeMode === "deleted" ? null : tapeAudio(),
+      system: tapeMode === "ready" ? tapeAudio() : null,
+    };
+  }
+  if (d.summary?.markdownPath) exportsByMeeting.set(meetingId, { path: d.summary.markdownPath, text: d.summary.markdown });
+  meetingDetails.set(meetingId, d);
+  return d;
+}
+
+function meetingChanged(meetingId: string) {
+  emit("meetings://changed", { meetingId });
+}
+
+function mockTrack(d: MeetingDetail, track: Track, buckets: number, range: WaveformRange): TrackWaveform {
+  if (audioDeleted.has(d.meeting.id) || tapeMode === "deleted") return { state: "deleted" };
+  if (track === "system" && tapeMode === "unreadable") return { state: "unreadable", reason: "This audio track could not be read." };
+  if (!d.audio?.[track]) return { state: "missing" };
+  return { state: "ready", levels: Array.from({ length: buckets }, (_, i) => {
+    const at = range.startMs + (range.endMs - range.startMs) * i / buckets;
+    if (at >= (d.durationMs ?? 0)) return 0;
+    return 0.04 + Math.abs(Math.sin(at * 0.0029 + (track === "mic" ? 1 : 4)) * Math.sin(at * 0.00021)) * 0.86;
+  }) };
+}
+
+const markdownNotFound = "No Markdown export was found in Minutae’s known folders.";
+const byteLength = (s: string) => new TextEncoder().encode(s).length;
+function contents(d: MeetingDetail): MeetingContents {
+  const id = d.meeting.id;
+  const exported = exportsByMeeting.get(id);
+  const badTrack = tapeMode === "unreadable" && !audioDeleted.has(id);
+  const trackCount = Number(!!d.audio?.mic) + Number(!!d.audio?.system) + Number(badTrack);
+  const audioBytes = tapeMode && trackCount ? trackCount * (1934 * 8000 + 44) : trackCount * (16000 + 44);
+  const summary = d.summary;
+  return {
+    parts: [
+      { part: "audio", present: trackCount > 0, bytes: audioBytes, blockedReason: null },
+      { part: "transcript", present: !transcriptsDeleted.has(id) && d.segments.length > 0,
+        bytes: d.segments.reduce((sum, segment) => sum + byteLength(segment.text), 0), blockedReason: null },
+      { part: "summary", present: !!summary || !!d.actionItems.length || !!d.moments.length,
+        bytes: byteLength((summary?.markdown ?? "") + d.actionItems.map((a) => a.text).join("") + d.moments.map((m) => m.label).join("")), blockedReason: null },
+      { part: "markdown", present: !!exported, bytes: byteLength(exported?.text ?? ""),
+        blockedReason: exported && meetingDeleteMode === "blocked" ? "The Markdown file is outside Minutae’s data directory." : null },
+    ],
+    durationMs: d.durationMs, trackCount, lineCount: d.segments.length, speakerCount: d.speakers.length,
+    transcriptExcerpt: d.segments[0]?.text ?? null, decisionCount: summary?.decisions.length ?? 0,
+    actionCount: d.actionItems.length, markCount: d.moments.length, summaryExcerpt: summary?.overview ?? null,
+    markdownPath: exported?.path ?? null, markdownNotice: exported ? null : markdownNotFound,
+  };
+}
+
+function removeParts(d: MeetingDetail, parts: MeetingPart[]): MeetingDeletion {
+  const id = d.meeting.id;
+  if (d.meeting.status === "recording") throw new Error("Use Discard to delete a live recording.");
+  if (!parts.length) throw new Error("Select at least one part to delete.");
+  const deleted: MeetingPart[] = [];
+  const failures: MeetingPartFailure[] = [];
+  const before = contents(d);
+  if (before.parts.every((p) => !p.present) || before.parts.some((p) => p.present && parts.includes(p.part))) {
+    d.progress = null;
+    if (d.meeting.status === "processing") d.meeting = { ...d.meeting, status: "failed",
+      failure: { kind: "cancelled", message: "Processing stopped when meeting content was removed.", fix: null } };
+  }
+  for (const info of before.parts) {
+    if (!parts.includes(info.part) || !info.present) continue;
+    const reason = info.blockedReason ?? (info.part === "audio" && meetingDeleteMode === "partial" ? "An audio file could not be removed." : null);
+    if (reason) { failures.push({ part: info.part, reason }); continue; }
+    switch (info.part) {
+      case "audio": d.audio = null; d.echoCancel = null; audioDeleted.add(id); break;
+      case "transcript": d.segments = []; d.speakers = []; transcriptsDeleted.add(id); break;
+      case "summary": d.summary = null; d.actionItems = []; d.moments = []; curation.delete(id); break;
+      case "markdown":
+        exportsByMeeting.delete(id);
+        if (d.summary) d.summary = { ...d.summary, markdownPath: null };
+        break;
+    }
+    deleted.push(info.part);
+  }
+  const remaining = contents(d);
+  const meetingRemoved = !failures.length && remaining.parts.every((p) => !p.present);
+  if (meetingRemoved) { removedMeetings.add(id); meetingDetails.delete(id); }
+  meetingChanged(id);
+  return { deleted, failures, meetingRemoved, remaining: meetingRemoved ? null : remaining,
+    markdownNotice: parts.includes("markdown") ? before.markdownNotice : null };
+}
+
+function syncActionMarkdown(d: MeetingDetail) {
+  if (!d.summary) return;
+  const content = d.summary.markdown.split("\n## Action Items\n")[0]!.trimEnd();
+  const lines = d.actionItems.map((a) => {
+    const source = a.sourceMs == null ? "" : ` · ${Math.floor(a.sourceMs / 60000)}:${String(Math.floor(a.sourceMs / 1000) % 60).padStart(2, "0")}`;
+    return `- [${a.done ? "x" : " "}] ${a.owner ? a.owner + ": " : ""}${a.text}${a.due ? " (due " + a.due + ")" : ""}${source}`;
+  });
+  const markdown = content + (lines.length ? "\n\n## Action Items\n" + lines.join("\n") : "") + "\n";
+  d.summary = { ...d.summary, markdown };
+  const exported = exportsByMeeting.get(d.meeting.id);
+  if (exported && checklistMode !== "unchanged") exported.text = markdown;
+}
+
+function updateAction(input: ActionItemInput, existing?: ActionItem): ActionItem {
+  const line = (v: string | null | undefined) => v?.trim().replace(/\s+/g, " ") || null;
+  const text = line(input.text);
+  if (!text) throw new Error("Enter action item text.");
+  if (input.sourceMs != null && (!Number.isSafeInteger(input.sourceMs) || input.sourceMs < 0)) {
+    throw new Error("The action item timestamp is invalid.");
+  }
+  return { id: existing?.id ?? `mock-action-${++actionSequence}`, done: existing?.done ?? false, text,
+    owner: line(input.owner), due: line(input.due), sourceMs: input.sourceMs ?? null };
+}
+
+function actionsChanged(d: MeetingDetail): ActionChangeResult {
+  curation.add(d.meeting.id);
+  const exported = exportsByMeeting.get(d.meeting.id);
+  // An export that outlived its summary, or can't be updated safely, stays as it is.
+  const markdownNotice = !exported ? null
+    : !d.summary ? "Saved in Minutae. The Markdown file was left unchanged because the summary it came from was removed from Minutae."
+    : checklistMode === "unchanged" ? "Saved in Minutae. The Markdown file was left unchanged because its Action Items checklist couldn’t be identified safely."
+    : null;
+  syncActionMarkdown(d);
+  meetingChanged(d.meeting.id);
+  return { markdownNotice };
+}
+
+function resummarize(d: MeetingDetail) {
+  const id = d.meeting.id;
+  if (d.meeting.status !== "done") throw new Error("Only finished meetings can be summarized again.");
+  if (!d.segments.length) throw new Error("A saved transcript is required to summarize again.");
+  if (d.progress) return;
+  const progress = { meetingId: id, stage: "summarizing", fraction: 0.35, etaSeconds: null } as const;
+  d.progress = progress;
+  d.meeting = { ...d.meeting, failure: null };
+  emit("job://progress", progress);
+  meetingChanged(id);
+  if (resummarizeMode === "running") return;
+  setTimeout(() => {
+    if (!d.progress || removedMeetings.has(id)) return;
+    d.progress = null;
+    if (resummarizeMode === "failed") {
+      d.meeting = { ...d.meeting, failure: { kind: "io", message: "The summary couldn’t be saved. The previous summary is still available.", fix: "Summarize again" } };
+    } else {
+      const next = baseDetail(id).summary!;
+      if (!curation.has(id)) d.actionItems = baseDetail(id).actionItems;
+      d.summary = { ...next, overview: "The team moved the launch to May and assigned the remaining rollout work." };
+      exportsByMeeting.set(id, { path: next.markdownPath!, text: next.markdown });
+      syncActionMarkdown(d);
+    }
+    meetingChanged(id);
+  }, 700);
 }
 
 const dictationsMode = params.get("dictations");
@@ -302,6 +491,7 @@ let captionStatus: CaptionStatus = captionParam === "off" ? "off" : captionParam
 if (captionStatus === "off") settings = { ...settings, liveCaptions: false };
 const captionBacklog: CaptionLine[] = [];
 let captionId = 100;
+let liveMarks = state === "recording" ? 1 : 0;
 function caption(line: Omit<CaptionLine, "id" | "meetingId" | "speaker"> & { id?: number }) {
   const c: CaptionLine = {
     id: line.id ?? captionId++, meetingId: recording.meetingId ?? id(9),
@@ -325,7 +515,12 @@ function startCaptionScript() {
     const at = recording.elapsedMs;
     const lineId = captionId++;
     caption({ id: lineId, track, atMs: at, endMs: at + 2000, text: partial, final: false });
-    setTimeout(() => caption({ id: lineId, track, atMs: at, endMs: at + 4000, text: full, final: true }), 1800);
+    const meetingId = recording.meetingId;
+    setTimeout(() => {
+      if (recording.meetingId === meetingId && recording.phase !== "stopping") {
+        caption({ id: lineId, track, atMs: at, endMs: at + 4000, text: full, final: true });
+      }
+    }, 1800);
   }, 6000);
 }
 
@@ -582,14 +777,90 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
     }
     case "onboarding_done": return r(onboarded);
     case "finish_onboarding": onboarded = true; return r(undefined);
-    case "list_meetings": return r(empty ? [] : groups);
+    case "list_meetings": return r(empty ? [] : groups.map((group) => ({
+      ...group, items: group.items.filter((item) => !removedMeetings.has(item.id)).map((item) => {
+        const d = meetingDetails.get(item.id);
+        return d ? { ...item, status: d.meeting.status, failure: d.meeting.failure, progress: d.progress,
+          takeaway: d.summary?.takeaway ?? null, openActions: d.actionItems.filter((a) => !a.done).length,
+          totalActions: d.actionItems.length } : item;
+      }),
+    })).filter((group) => group.items.length));
     case "week_stats": return r(empty ? { recordedMs: 0, openActions: 0 } : { recordedMs: 22320000, openActions: 9 });
     case "get_meeting": return r(detail(args.id as string));
-    case "summary_markdown": return r(detail(args.id as string).summary?.markdown ?? "");
+    case "summary_markdown": {
+      const d = detail(args.id as string);
+      return r(exportsByMeeting.get(d.meeting.id)?.text ?? d.summary?.markdown ?? "");
+    }
+    case "meeting_waveform_levels": {
+      const d = detail(args.id as string);
+      const buckets = args.buckets as number;
+      const range = (args.range as WaveformRange | null) ?? { startMs: 0, endMs: d.durationMs ?? 0 };
+      if (!Number.isSafeInteger(buckets) || buckets < 1 || buckets > 2048) return fail("Request between 1 and 2048 waveform buckets.");
+      if (args.range != null && (!Number.isSafeInteger(range.startMs) || !Number.isSafeInteger(range.endMs) || range.startMs < 0 || range.endMs <= range.startMs)) return fail("The waveform time range is invalid.");
+      return r({ range, mic: mockTrack(d, "mic", buckets, range), system: mockTrack(d, "system", buckets, range) });
+    }
+    case "meeting_contents": return r(contents(detail(args.id as string)));
+    case "delete_meeting_parts": return r(removeParts(detail(args.id as string), args.parts as MeetingPart[]));
+    case "delete_meeting": {
+      const result = removeParts(detail(args.id as string), meetingParts);
+      return result.meetingRemoved ? r(undefined) : fail(result.failures.map((f) => f.reason).join(". "));
+    }
+    case "add_action_item":
+    case "edit_action_item":
+    case "delete_action_item": {
+      const d = detail(args.id as string);
+      const existing = d.actionItems.find((a) => a.id === args.itemId);
+      if (cmd !== "add_action_item" && !existing) return fail("This action item no longer exists.");
+      if (cmd === "delete_action_item") {
+        d.actionItems = d.actionItems.filter((a) => a !== existing);
+        return r(actionsChanged(d));
+      }
+      const action = updateAction(args.item as ActionItemInput, existing);
+      d.actionItems = existing ? d.actionItems.map((a) => a === existing ? action : a) : [...d.actionItems, action];
+      return r({ item: action, ...actionsChanged(d) });
+    }
+    case "set_action_done": {
+      const d = [...meetingDetails.values()].find((m) => m.actionItems.some((a) => a.id === args.id));
+      if (!d) return fail("This action item no longer exists.");
+      d.actionItems = d.actionItems.map((a) => a.id === args.id ? { ...a, done: args.done as boolean } : a);
+      return r(actionsChanged(d));
+    }
+    case "rename_speaker":
+      for (const d of meetingDetails.values()) {
+        d.speakers = d.speakers.map((s) => s.id === args.speakerId ? { ...s, displayName: (args.name as string).trim() || null } : s);
+      }
+      emit("meetings://changed", { meetingId: null });
+      return r(undefined);
+    case "summarize_again": resummarize(detail(args.id as string)); return r(undefined);
+    case "recording_discard_info": {
+      if (recording.meetingId !== args.id || recording.phase === "stopping") return fail("This meeting is no longer recording.");
+      const lines = new Map(captionBacklog.filter((line) => line.meetingId === args.id).map((line) => [line.id, line]));
+      const trackCount = recording.systemAudio === "on" ? 2 : 1;
+      return r({ meetingId: recording.meetingId, durationMs: recording.elapsedMs,
+        audioBytes: Math.floor(recording.elapsedMs * 32 * trackCount),
+        liveLineCount: [...lines.values()].filter((line) => !!line.text).length, markCount: liveMarks, trackCount });
+    }
+    case "discard_recording": {
+      const meetingId = recording.meetingId;
+      if (!meetingId || meetingId !== args.id || recording.phase === "stopping") return fail("This meeting is no longer recording.");
+      if (discardMode === "blocked") return fail("Only meeting files inside Minutae’s data directory can be deleted.");
+      recording = { ...recording, phase: "stopping" };
+      emit("recording://state", recording);
+      await delay(undefined, 200);
+      captionBacklog.length = 0;
+      liveMarks = 0;
+      removedMeetings.add(meetingId);
+      recording = { ...recording, phase: "idle", meetingId: null, title: null, sourceApp: null, elapsedMs: 0 };
+      emit("recording://state", recording);
+      meetingChanged(meetingId);
+      return r({ meetingId, cleanupError: discardMode === "cleanupError" ? "An audio file could not be removed. Cleanup will retry on launch." : null });
+    }
     case "recording_state": return r(recording);
     case "start_recording":
     case "accept_call_prompt":
       captionBacklog.length = 0;
+      liveMarks = 0;
+      removedMeetings.delete(id(9));
       recording = { phase: "recording", meetingId: id(9), title: (args.title as string) ?? "Untitled meeting", sourceApp: (args.sourceApp as string) ?? null, elapsedMs: 0, systemAudio: "on", systemAudioError: null, captions: captionStatus, systemAudioScope: "all" };
       startTicker(); emit("recording://state", recording);
       return r({ id: id(9), title: recording.title, startedAt: new Date().toISOString(), endedAt: null, status: "recording", sourceApp: recording.sourceApp, failure: null });
@@ -604,7 +875,7 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown> =
     }
     case "pause_recording": recording = { ...recording, phase: "paused" }; emit("recording://state", recording); return r(undefined);
     case "resume_recording": recording = { ...recording, phase: "recording" }; emit("recording://state", recording); return r(undefined);
-    case "mark_moment": return r({ meetingId: recording.meetingId, atMs: recording.elapsedMs, label: (args.label as string) ?? "Moment" });
+    case "mark_moment": liveMarks++; return r({ meetingId: recording.meetingId, atMs: recording.elapsedMs, label: (args.label as string) ?? "Moment" });
     case "list_input_devices": return r([{ id: "default", name: "MacBook Pro Microphone", isDefault: true }, { id: "airpods", name: "AirPods Pro", isDefault: false }, { id: "mv7", name: "Shure MV7", isDefault: false }]);
     case "dictation_shape_options": {
       const preset = settings.dictationDefaultShape ?? "tidy";

@@ -8,6 +8,8 @@ import type {
   ProviderStatus, RecordingState, SearchHit, SearchKind, ShortcutStatus, StorageUsage, UsageMonth, Uuid, WhisperModel, Route,
   AppMatcher, DictationApp, DictationAppRule, DictationShapeOptions, ShapeEdits, ShapePreset,
   Meeting, LegacyScan, ImportProgress, ImportFinished, UpdateStatus,
+  ActionChangeResult, SavedActionItem, ActionItemInput, MeetingContents, MeetingDeletion, MeetingPart, MeetingWaveform,
+  RecordingDiscard, RecordingDiscardInfo, WaveformRange,
 } from "./types";
 import { mockInvoke, mockListen } from "./mock";
 
@@ -44,8 +46,8 @@ export const api = {
   copyText: (text: string) => call<void>("copy_text", { text }),
   /** Path → URL playable by <audio>. */
   audioUrl: async (path: string) => {
-    // The browser mock hands out data: URLs as "paths"; real files only play inside Tauri.
-    if (!inTauri) return path.startsWith("data:") ? path : "";
+    // The browser mock hands out data: or blob: URLs as "paths"; real files only play inside Tauri.
+    if (!inTauri) return /^(data|blob):/.test(path) ? path : "";
     const { convertFileSrc } = await import("@tauri-apps/api/core");
     return convertFileSrc(path);
   },
@@ -68,9 +70,24 @@ export const api = {
   renameMeeting: (id: Uuid, title: string) => call<void>("rename_meeting", { id, title }),
   deleteMeeting: (id: Uuid) => call<void>("delete_meeting", { id }),
   retryMeeting: (id: Uuid) => call<void>("retry_meeting", { id }),
-  setActionDone: (id: Uuid, done: boolean) => call<void>("set_action_done", { id, done }),
+  setActionDone: (id: Uuid, done: boolean) => call<ActionChangeResult>("set_action_done", { id, done }),
   renameSpeaker: (speakerId: Uuid, name: string) => call<void>("rename_speaker", { speakerId, name }),
   summaryMarkdown: (id: Uuid) => call<string>("summary_markdown", { id }),
+
+  // meeting tape and content management
+  meetingWaveformLevels: (id: Uuid, buckets: number, range?: WaveformRange) =>
+    call<MeetingWaveform>("meeting_waveform_levels", { id, buckets, range: range ?? null }),
+  /** Checklist changes (and `setActionDone`) report when the Markdown file was left unchanged. */
+  addActionItem: (id: Uuid, item: ActionItemInput) => call<SavedActionItem>("add_action_item", { id, item }),
+  editActionItem: (id: Uuid, itemId: Uuid, item: ActionItemInput) => call<SavedActionItem>("edit_action_item", { id, itemId, item }),
+  deleteActionItem: (id: Uuid, itemId: Uuid) => call<ActionChangeResult>("delete_action_item", { id, itemId }),
+  summarizeAgain: (id: Uuid) => call<void>("summarize_again", { id }),
+  /** Includes a notice when no Markdown export was found in known folders. */
+  meetingContents: (id: Uuid) => call<MeetingContents>("meeting_contents", { id }),
+  /** markdownNotice describes an absent export when Markdown was selected for deletion. */
+  deleteMeetingParts: (id: Uuid, parts: MeetingPart[]) => call<MeetingDeletion>("delete_meeting_parts", { id, parts }),
+  recordingDiscardInfo: (id: Uuid) => call<RecordingDiscardInfo>("recording_discard_info", { id }),
+  discardRecording: (id: Uuid) => call<RecordingDiscard>("discard_recording", { id }),
 
   // recording
   recordingState: () => call<RecordingState>("recording_state"),
@@ -134,6 +151,7 @@ export const api = {
   storageUsage: () => call<StorageUsage>("storage_usage"),
   pickFolder: () => call<string | null>("pick_folder"),
   exportAll: () => call<string | null>("export_all"),
+  /** A cleanup error can be reported after the library and settings have been erased. */
   eraseAll: () => call<void>("erase_all"),
 
   // import from older Minutae apps (MIG-10)

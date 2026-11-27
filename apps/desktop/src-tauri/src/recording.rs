@@ -21,8 +21,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 use crate::dto::{self, CaptionStatus, RecordingPhase, RecordingState, SystemAudio, ev};
+use crate::meeting_content::{LocalMeetingFiles, MeetingFiles};
 use crate::pipeline::DEFAULT_TITLE;
-use crate::state::{AppState, emit_meetings_changed, recordings_root};
+use crate::state::{AppState, MeetingOperations, emit_meetings_changed, recordings_root};
 use crate::util;
 
 pub struct ActiveRecording {
@@ -41,6 +42,7 @@ pub struct ActiveRecording {
     /// Live captions (present whenever a Whisper model is, even if turned off, so the
     /// setting can be flipped mid-recording).
     captions: Option<CaptionEngine>,
+    live_lines: Arc<std::sync::Mutex<std::collections::HashSet<u64>>>,
     pub caption_status: CaptionStatus,
 }
 
@@ -137,6 +139,7 @@ pub async fn start(
     from_call: bool,
 ) -> Result<dto::Meeting, String> {
     let st = app.state::<AppState>();
+    let _storage = st.storage_ops.lock().await;
     let mut guard = st.recording.lock().await;
     if let Some(r) = guard.as_ref() {
         if r.phase == RecordingPhase::Stopping {
@@ -170,7 +173,8 @@ pub async fn start(
         out_dir: dir.clone(),
         chunk_secs: 10,
     };
-    let (captions, taps, caption_status) = start_captions(app, &settings, id);
+    let live_lines = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    let (captions, taps, caption_status) = start_captions(app, &settings, id, live_lines.clone());
     let handle = tokio::task::spawn_blocking(move || Recorder::new().start_with_taps(cfg, taps))
         .await
         .map_err(|e| e.to_string())?
@@ -207,6 +211,7 @@ pub async fn start(
         stopped: StopSignal::default(),
         ticker,
         captions,
+        live_lines,
         caption_status,
     });
     tauri::async_runtime::spawn(watch_capture(app.clone(), id, capture_events));
@@ -281,6 +286,7 @@ pub async fn stop(app: &AppHandle) -> Result<MeetingId, String> {
         }
     }
     let id = meeting.id;
+    let _operation = st.meeting_ops.lock(id).await;
     let result = tokio::task::spawn_blocking(move || handle.stop()).await;
     let outcome = match result {
         Ok(Ok(tracks)) => {
@@ -333,6 +339,160 @@ pub async fn stop(app: &AppHandle) -> Result<MeetingId, String> {
     outcome
 }
 
+#[tauri::command]
+pub async fn recording_discard_info(
+    app: AppHandle,
+    id: String,
+) -> Result<dto::RecordingDiscardInfo, String> {
+    let id = crate::commands::uuid(&id)?;
+    let st = app.state::<AppState>();
+    let guard = st.recording.lock().await;
+    let r = guard
+        .as_ref()
+        .filter(|r| r.meeting.id == id && r.phase != RecordingPhase::Stopping)
+        .ok_or("This meeting is no longer recording.")?;
+    let dir = r.dir.clone();
+    let duration_ms = r.state().elapsed_ms;
+    let live_line_count = r.live_lines.lock().unwrap_or_else(|e| e.into_inner()).len();
+    drop(guard);
+    let (audio_bytes, track_count) = tokio::task::spawn_blocking(move || {
+        LocalMeetingFiles
+            .recording_sizes(&dir, id)
+            .unwrap_or_else(|error| {
+                tracing::warn!(%id, %error, "could not measure audio before discard");
+                (0, 0)
+            })
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let mark_count = st
+        .store
+        .call(move |s| Ok(s.list_moments(id)?.len()))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(dto::RecordingDiscardInfo {
+        meeting_id: id,
+        duration_ms,
+        audio_bytes,
+        live_line_count,
+        mark_count,
+        track_count,
+    })
+}
+
+#[tauri::command]
+pub async fn discard_recording(
+    app: AppHandle,
+    id: String,
+) -> Result<dto::RecordingDiscard, String> {
+    let id = crate::commands::uuid(&id)?;
+    // Once confirmed, capture shutdown and cleanup must finish independently of
+    // whether the initiating window is still listening for the response.
+    tauri::async_runtime::spawn(async move { discard_active(&app, id).await })
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+async fn discard_active(app: &AppHandle, id: MeetingId) -> Result<dto::RecordingDiscard, String> {
+    let st = app.state::<AppState>();
+    let _operation = st.meeting_ops.lock(id).await;
+    let (handle, captions, signal, dir) = {
+        let mut guard = st.recording.lock().await;
+        let r = guard
+            .as_mut()
+            .filter(|r| r.meeting.id == id && r.phase != RecordingPhase::Stopping)
+            .ok_or("This meeting is no longer recording.")?;
+        let directory = r.dir.clone();
+        st.store
+            .call(move |s| s.begin_recording_discard(id, &directory.to_string_lossy()))
+            .await
+            .map_err(|e| e.to_string())?;
+        r.phase = RecordingPhase::Stopping;
+        r.ticker.abort();
+        (
+            r.handle.clone(),
+            r.captions.take(),
+            r.stopped.clone(),
+            r.dir.clone(),
+        )
+    };
+    emit_state(app).await;
+    let store = st.store.clone();
+    let cleanup_error = tokio::task::spawn_blocking(move || {
+        let result = finish_discard(&store, Some(&*handle), &LocalMeetingFiles, id, &dir);
+        if let Some(engine) = captions {
+            engine.stop();
+        }
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|r| r)
+    .err();
+    *st.recording.lock().await = None;
+    signal.finish(Err("The recording was discarded.".into()));
+    emit_state(app).await;
+    emit_meetings_changed(app, Some(id));
+    Ok(dto::RecordingDiscard {
+        meeting_id: id,
+        cleanup_error,
+    })
+}
+
+trait DiscardCapture {
+    fn discard_capture(&self) -> Result<(), String>;
+}
+
+impl DiscardCapture for RecordingHandle {
+    fn discard_capture(&self) -> Result<(), String> {
+        self.discard().map_err(|e| e.to_string())
+    }
+}
+
+fn finish_discard(
+    store: &Store,
+    capture: Option<&dyn DiscardCapture>,
+    files: &dyn MeetingFiles,
+    id: MeetingId,
+    dir: &Path,
+) -> Result<(), String> {
+    if let Some(capture) = capture {
+        capture.discard_capture()?;
+    }
+    files
+        .delete_audio(dir, id, None)
+        .map_err(|e| e.to_string())?;
+    store
+        .finish_recording_discard(id)
+        .map_err(|e| e.to_string())
+}
+
+async fn recover_discards(store: &Store, operations: &MeetingOperations) {
+    let discards = match store.call(Store::pending_recording_discards).await {
+        Ok(discards) => discards,
+        Err(error) => {
+            tracing::warn!(%error, "loading pending recording discards failed");
+            return;
+        }
+    };
+    for (id, dir) in discards {
+        // A live discard may have written its pending row during startup.
+        let operation = operations.lock(id).await;
+        let store = store.clone();
+        let files = LocalMeetingFiles;
+        let result = tokio::task::spawn_blocking(move || {
+            let _operation = operation;
+            finish_discard(&store, None, &files, id, Path::new(&dir))
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r);
+        if let Err(error) = result {
+            tracing::warn!(%id, %error, "discarded audio cleanup failed");
+        }
+    }
+}
+
 /// Stop any recording and wait until the recorder is idle (used by quit, delete, erase).
 pub async fn stop_and_wait(app: &AppHandle) {
     if app.state::<AppState>().recording.lock().await.is_some() {
@@ -356,6 +516,7 @@ pub async fn finish_recorded(
             path: tracks.mic.to_string_lossy().into(),
             duration_ms: Some(tracks.duration_ms),
             bytes: size(&tracks.mic),
+            deleted: false,
         });
     }
     if let Some(sys) = &tracks.system {
@@ -365,6 +526,7 @@ pub async fn finish_recorded(
             path: sys.to_string_lossy().into(),
             duration_ms: Some(tracks.duration_ms),
             bytes: size(sys),
+            deleted: false,
         });
     }
     store
@@ -493,6 +655,7 @@ fn start_captions(
     app: &AppHandle,
     settings: &AppSettings,
     meeting_id: MeetingId,
+    live_lines: Arc<std::sync::Mutex<std::collections::HashSet<u64>>>,
 ) -> (Option<CaptionEngine>, Taps, CaptionStatus) {
     let st = app.state::<AppState>();
     let models: &ModelManager = &st.models;
@@ -517,6 +680,13 @@ fn start_captions(
     let emitter = app.clone();
     let id = meeting_id.to_string();
     let sink: CaptionSink = Arc::new(move |c: Caption| {
+        let mut lines = live_lines.lock().unwrap_or_else(|e| e.into_inner());
+        if c.text.is_empty() {
+            lines.remove(&c.id);
+        } else {
+            lines.insert(c.id);
+        }
+        drop(lines);
         let _ = emitter.emit(ev::CAPTION, caption_line(&id, c));
     });
     match CaptionEngine::start(transcriber, opts, CaptionConfig::default(), sink) {
@@ -617,6 +787,7 @@ pub async fn recover(app: &AppHandle) {
     let st = app.state::<AppState>();
     let store = st.store.clone();
     let settings = st.settings();
+    recover_discards(&store, &st.meeting_ops).await;
     let Ok(meetings) = store.call(|s| s.list_meetings(10_000, 0)).await else {
         return;
     };
@@ -632,7 +803,11 @@ pub async fn recover(app: &AppHandle) {
         allow_asset_dir(app, root);
     }
     for item in meetings {
-        let m = item.meeting;
+        let id = item.meeting.id;
+        let _operation = st.meeting_ops.lock(id).await;
+        let Ok(Some(m)) = store.call(move |s| s.get_meeting(id)).await else {
+            continue;
+        };
         // A recording started right after launch is live, not interrupted.
         if st
             .recording
@@ -694,10 +869,12 @@ pub async fn recover(app: &AppHandle) {
             }
             MeetingStatus::Processing if item.progress.is_none() => {
                 let id = m.id;
-                let jobs = store
-                    .call(move |s| s.jobs_for_meeting(id))
+                let Ok((false, jobs)) = store
+                    .call(move |s| Ok((s.jobs_retired(id)?, s.jobs_for_meeting(id)?)))
                     .await
-                    .unwrap_or_default();
+                else {
+                    continue;
+                };
                 let active = jobs.iter().any(|j| {
                     matches!(
                         j.state,
@@ -796,6 +973,87 @@ async fn watch_capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FakeDiscardCapture(std::cell::Cell<bool>);
+    impl DiscardCapture for FakeDiscardCapture {
+        fn discard_capture(&self) -> Result<(), String> {
+            self.0.set(true);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn discard_stops_capture_and_cleans_custom_recordings_without_a_job() {
+        let tmp = tempfile::tempdir().unwrap();
+        let id = Uuid::new_v4();
+        let dir = tmp.path().join("custom-recordings").join(id.to_string());
+        std::fs::create_dir_all(dir.join("chunks")).unwrap();
+        std::fs::write(dir.join("chunks/mic-000000.wav"), b"audio").unwrap();
+        let store = Store::open_in_memory().unwrap();
+        queue_test_discard(&store, id, &dir);
+        let files = LocalMeetingFiles;
+        let fake = FakeDiscardCapture(std::cell::Cell::new(false));
+        finish_discard(&store, Some(&fake), &files, id, &dir).unwrap();
+        assert!(fake.0.get());
+        assert!(!dir.exists());
+        assert!(store.get_meeting(id).unwrap().is_none());
+        assert!(store.jobs_for_meeting(id).unwrap().is_empty());
+        assert!(store.pending_recording_discards().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unavailable_discard_folder_does_not_prevent_stop_and_retries_at_startup() {
+        use std::fs;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("custom-recordings");
+        let unplugged = tmp.path().join("unplugged-recordings");
+        let id = Uuid::new_v4();
+        let dir = root.join(id.to_string());
+        fs::create_dir_all(dir.join("chunks")).unwrap();
+        fs::write(dir.join("chunks/mic-000000.wav"), b"audio").unwrap();
+        let db = tmp.path().join("db");
+        {
+            let store = Store::open(&db).unwrap();
+            fs::rename(&root, &unplugged).unwrap();
+            queue_test_discard(&store, id, &dir);
+            let fake = FakeDiscardCapture(std::cell::Cell::new(false));
+            let error =
+                finish_discard(&store, Some(&fake), &LocalMeetingFiles, id, &dir).unwrap_err();
+            assert!(fake.0.get());
+            assert!(error.contains("storage folder"));
+            assert!(error.contains("unavailable"));
+        }
+        let store = Store::open(db).unwrap();
+        let operations = MeetingOperations::default();
+        recover_discards(&store, &operations).await;
+        assert_eq!(
+            store.pending_recording_discards().unwrap(),
+            [(id, dir.to_string_lossy().into_owned())]
+        );
+        fs::rename(unplugged, root).unwrap();
+        recover_discards(&store, &operations).await;
+        assert!(!dir.exists());
+        assert!(store.pending_recording_discards().unwrap().is_empty());
+        assert!(store.get_meeting(id).unwrap().is_none());
+        assert!(store.jobs_for_meeting(id).unwrap().is_empty());
+    }
+
+    fn queue_test_discard(store: &Store, id: MeetingId, directory: &Path) {
+        store
+            .create_meeting(&Meeting {
+                id,
+                title: "Discard me".into(),
+                started_at: Utc::now(),
+                ended_at: None,
+                status: MeetingStatus::Recording,
+                source_app: None,
+                failure: None,
+            })
+            .unwrap();
+        store
+            .begin_recording_discard(id, &directory.to_string_lossy())
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn later_stop_callers_wait_for_the_first() {

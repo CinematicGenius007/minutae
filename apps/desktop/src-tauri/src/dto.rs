@@ -3,7 +3,9 @@
 //! Shared enums (`MeetingStatus`, `Track`, `Stage`, `FailureKind`, `AppSettings`…) come
 //! from `minutae-core`, which already uses the same wire names.
 
-use minutae_core::{EchoCancelReport, Failure, MeetingStatus, Progress, Track, WhisperModel};
+use minutae_core::{
+    EchoCancelReport, Failure, MeetingId, MeetingStatus, Progress, Track, WhisperModel,
+};
 use serde::{Deserialize, Serialize};
 
 pub use minutae_core::{AppSettings, Moment};
@@ -98,6 +100,7 @@ pub struct ActionItem {
     pub owner: Option<String>,
     pub due: Option<String>,
     pub done: bool,
+    pub source_ms: Option<u64>,
 }
 
 impl From<&minutae_store::ActionItemRow> for ActionItem {
@@ -108,6 +111,7 @@ impl From<&minutae_store::ActionItemRow> for ActionItem {
             owner: r.item.owner.clone(),
             due: r.item.due.clone(),
             done: r.item.done,
+            source_ms: r.source_ms,
         }
     }
 }
@@ -965,8 +969,9 @@ mod tests {
             owner: None,
             due: None,
             done: false,
+            source_ms: None,
         };
-        assert_keys(&action, &["id", "text", "owner", "due", "done"]);
+        assert_keys(&action, &["id", "text", "owner", "due", "done", "sourceMs"]);
         let moment = MomentDto {
             meeting_id: "m".into(),
             at_ms: 1,
@@ -1531,4 +1536,125 @@ mod tests {
             &["result", "error"],
         );
     }
+}
+
+// Meeting tape and content management.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveformRange {
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum TrackWaveform {
+    Ready { levels: Vec<f32> },
+    Missing,
+    Deleted,
+    Unreadable { reason: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingWaveform {
+    pub range: WaveformRange,
+    pub mic: TrackWaveform,
+    pub system: TrackWaveform,
+}
+
+/// A saved checklist change.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionChangeResult {
+    /// Why an existing Markdown file was left unchanged.
+    pub markdown_notice: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedActionItem {
+    pub item: ActionItem,
+    pub markdown_notice: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionItemInput {
+    pub text: String,
+    pub owner: Option<String>,
+    pub due: Option<String>,
+    pub source_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MeetingPart {
+    Audio,
+    Transcript,
+    Summary,
+    Markdown,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingPartInfo {
+    pub part: MeetingPart,
+    pub present: bool,
+    /// Null if the files could not be measured.
+    pub bytes: Option<u64>,
+    pub blocked_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingContents {
+    pub parts: Vec<MeetingPartInfo>,
+    pub duration_ms: Option<u64>,
+    pub track_count: usize,
+    pub line_count: usize,
+    pub speaker_count: usize,
+    pub transcript_excerpt: Option<String>,
+    pub decision_count: usize,
+    pub action_count: usize,
+    pub mark_count: usize,
+    pub summary_excerpt: Option<String>,
+    pub markdown_path: Option<String>,
+    pub markdown_notice: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingPartFailure {
+    pub part: MeetingPart,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingDeletion {
+    pub deleted: Vec<MeetingPart>,
+    pub failures: Vec<MeetingPartFailure>,
+    pub meeting_removed: bool,
+    pub remaining: Option<MeetingContents>,
+    pub markdown_notice: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingDiscardInfo {
+    pub meeting_id: MeetingId,
+    pub duration_ms: u64,
+    pub audio_bytes: u64,
+    pub live_line_count: usize,
+    pub mark_count: usize,
+    pub track_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingDiscard {
+    pub meeting_id: MeetingId,
+    /// A failed cleanup is recorded for retry on startup.
+    pub cleanup_error: Option<String>,
 }

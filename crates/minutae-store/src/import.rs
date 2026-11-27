@@ -109,7 +109,9 @@ impl Store {
             Ok(c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM meetings WHERE id = ?1)
                      OR EXISTS(SELECT 1 FROM dictations WHERE id = ?1)
-                     OR EXISTS(SELECT 1 FROM legacy_imports WHERE v4_id = ?1)",
+                     OR EXISTS(SELECT 1 FROM legacy_imports WHERE v4_id = ?1)
+                     OR EXISTS(SELECT 1 FROM pending_file_cleanup WHERE meeting_id = ?1)
+                     OR EXISTS(SELECT 1 FROM discarded_recordings WHERE meeting_id = ?1)",
                 [&id],
                 |r| r.get(0),
             )?)
@@ -147,6 +149,7 @@ impl Store {
             }
             if let Some(s) = &m.summary {
                 crate::summaries::write_summary(tx, s)?;
+                crate::summaries::curate_completed(tx, id)?;
             }
             map(
                 tx,

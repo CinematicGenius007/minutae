@@ -58,6 +58,112 @@ Mock switches for these screens: `?os=linux&session=wayland` (portal), `&portal=
   `{ ran, skipped, erleDb, delayMs, driftPpm, elapsedMs }`. `ran: true` means the transcript came from `recordings/<id>/mic.clean.wav` (the original `mic.wav` is kept and is what the player plays). `skipped` is one of `"off" | "noSystemTrack" | "systemSilent" | "noEcho" | "ineffective"`; `erleDb` is how much quieter the speaker echo got.
 - Rust: `minutae_core::{EchoCancelMode, EchoCancelReport, EchoSkip}`, `dto::MeetingDetail::echo_cancel`, stored in `meetings.echo_cancel` (schema v4).
 
+## Meeting tape and content management
+
+- `meeting_waveform_levels(id, buckets, range?) → MeetingWaveform` returns `mic` (“You”) and
+  `system` (“Others”) on the same millisecond range. Each ready track has exactly 1–2048
+  requested peak levels from 0–1. A shorter track is zero-padded. Omit `range` for the whole tape
+  or pass a segment’s `{ startMs, endMs }` for the line. `missing` means no track was registered,
+  `deleted` means a registered file is gone or its deletion was recorded, and `unreadable` includes
+  a reason. A recorded deletion skips disk access and clears the cached levels.
+- Playback uses `getMeeting(id).audio`, `audioUrl(path)` and the existing player’s
+  `seek(segment.startMs, true)`. Follow playback with `currentMs` and the segment’s half-open
+  interval. A timestamp can still be displayed when audio is unavailable.
+- `add_action_item(id, item)`, `edit_action_item(id, itemId, item)` and
+  `delete_action_item(id, itemId)` manage the checklist. Add and edit return a
+  `SavedActionItem { item, markdownNotice }`; delete and the existing `set_action_done` return
+  `ActionChangeResult { markdownNotice }`. `ActionItemInput` is a full replacement for text,
+  owner, due and the optional `sourceMs`. Omitted or null optional fields clear their value.
+  Edit preserves completion. Every change is saved in the app. In the Markdown file only
+  checklist lines change; an export that is byte for byte what Minutae saved, but has no
+  Action Items section, gains one. `markdownNotice` is a sentence to show the user when an
+  existing file was left unchanged: it was edited in a way that can't be merged safely, no
+  single checklist can be located, it can't be verified as this meeting's export, or it was
+  kept after the in-app summary was deleted. Otherwise it is null. A saved summary whose own
+  checklist is ambiguous (older imports) keeps its text and never blocks a change. A command
+  fails, with the database and file unchanged, only on a real read or write failure such as an
+  unavailable folder. An edit leaves an absent export absent.
+- **Hand edits to the checklist.** Each add, edit, delete or tick compares three versions: the
+  checklist Minutae last wrote, the file now and the app's items. Nothing happens to a file
+  until one of those commands (or `set_action_done`) runs; the result may then hold more items
+  than the command touched, so refetch the meeting on `meetings://changed`.
+  - A task line (`- [ ]`, `* [x]`, `+ [ ]`) that Minutae did not write becomes an action item
+    with its tick state, after the item above it. Its line stays as typed.
+  - A hand-changed tick is taken into the app. Reworded text is taken too when the line sits
+    between the same unchanged neighbours and shares at least half its words with the old
+    text. Owner, due date and ` · m:ss` timestamp are kept while the new wording shows them.
+    A tick changed on one side and wording on the other combine.
+  - An item deleted in the app has its line removed, even if its tick was changed by hand. A
+    line Minutae removed or replaced for the app never comes back as a new item.
+  - Notes, prose, plain bullets, comments and subsections stay where they are.
+  - The file is left byte for byte unchanged, with `markdownNotice`, while the app change is
+    still saved and nothing is taken from the file, when: a line was removed by hand and its
+    item still exists; a rewrite can't be matched to one line; the app and the file changed
+    the same wording or tick differently; a line holds wording the app removed earlier (an
+    older copy of the file, or the same task typed again); a task is nested, quoted, numbered,
+    or continues on another line; or the section holds other text but no task. Later changes
+    merge again once the file no longer conflicts, for example after deleting in the app an
+    item whose line was removed by hand.
+  - The record of the last written checklist is `meetings.exported_checklist` (schema v7). For
+    exports made before it, the saved summary Markdown stands in. Deleting the summary clears it.
+- `summarize_again(id)` queues a summary job for a finished meeting with a saved transcript.
+  The meeting stays `done` with progress while the job runs. On failure, `meeting.failure` reports
+  the error and the previous summary and export remain available. A successful rerun writes the
+  new export. When the existing file differs from the last saved Markdown, Minutae first saves
+  those bytes to a sibling `*.edited-<uuid>.md` copy that it will never replace or clean up. A
+  task typed into the file but not yet taken into the app is in that copy, not in the new
+  export. If the saved path is missing and belongs to a previous folder, the rerun writes to
+  the current summaries folder. Until the first user checklist change, generated items can be replaced. After any
+  add, edit, delete or completion change, the entire checklist is curated. Reruns preserve its
+  rows, IDs, timestamps, completion and deletions. On upgrade, a checklist containing any
+  completed item is already considered curated.
+- `meeting_contents(id) → MeetingContents` lists `audio`, `transcript`, `summary` and
+  `markdown`. File sizes are measured on disk. SQLite parts show UTF-8 content payload sizes,
+  independent of database pages and indexes. A null size indicates a file could not be measured.
+  `blockedReason` explains why a part cannot be removed. `markdownNotice` is a message when no
+  export was found in known folders, otherwise null. On upgrade Minutae searches the current
+  and default folders in the background and records verified paths. It remembers previous
+  configured folders from then on. A newly remembered folder is searched once for meetings with
+  no saved path; busy meetings are returned to later, and opening, changing or deleting a
+  meeting searches its known folders first. Changing storage settings and starting a recording
+  wait for none of this. If a known folder is offline, legacy exports with no saved path remain
+  pending until the folder is available. Custom folders changed before this upgrade may be
+  unknown to Minutae.
+- `delete_meeting_parts(id, parts) → MeetingDeletion` accepts any nonempty selection on a saved
+  meeting. Audio, transcript, in-app summary and Markdown are independent. The summary includes
+  decisions, action items and marks. An export kept during summary deletion remains readable.
+  When all known content is gone the meeting row is removed. The result gives successful parts,
+  failures and the refreshed ledger. If Markdown was selected and no export was found,
+  `markdownNotice` explains the absence and Markdown is omitted from `deleted`. File cleanup uses the default or configured storage folders
+  and locations saved for the meeting, including folders used before a settings change.
+  User-chosen storage roots may resolve through symlinks. Cleanup opens files and directories
+  below the root without following symlinks. Exports are moved into place without replacing
+  anything, including on FAT, exFAT and network disks. It removes only recorder-owned names from the
+  meeting's ID directory, plus the exact imported audio filename when an import record verifies
+  it. Non-empty directories are left in place. Markdown must have a complete frontmatter block
+  with exactly one matching meeting ID. If cleanup is interrupted, the next file operation can
+  recover an adjacent `.minutae-pending-…` folder. After successful deletion the saved path is cleared. If a storage folder needed to locate a part is
+  unavailable, the part and its meeting record remain available for retry. Deletion waits for
+  active processing and retires queued work before changing inputs. Retiring jobs does not make
+  audio eligible for retention. A meeting whose processing was retired moves to `failed` and can
+  be retried explicitly.
+- `recording_discard_info(id) → RecordingDiscardInfo` reads active duration, WAV bytes on disk,
+  track count, visible caption line count and marks. It can be refreshed while the prompt is
+  open. `discard_recording(id) → RecordingDiscard` confirms for that ID, stops capture without
+  stitching or queuing processing, and removes the meeting from the library. Cleanup uses the
+  folder selected when recording began. If cleanup fails, including when that folder is
+  unavailable, `cleanupError` explains why and Minutae keeps a pending cleanup record to retry
+  on startup.
+
+- `erase_all()` applies the same file checks across known storage folders and pending discards,
+  then erases the library and resets settings. It retains file cleanup records for unavailable
+  meeting storage and retries them on startup. If anything could not be removed, the command
+  reports the affected locations or errors even if the library was erased.
+
+Browser mock switches include `?tape=ready|missing|deleted|unreadable`,
+`?meetingDelete=blocked|partial`, `?resummarize=failed|running`, `?checklist=unchanged` and
+`?state=recording&discard=blocked|cleanupError`.
+
 ## Dictation shapes and HUD
 
 Settings persist `dictationDefaultShape`, `dictationShapeEdits`, `dictationAppRules`, and

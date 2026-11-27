@@ -2,10 +2,11 @@
 //! events, windows, tray and global shortcuts. Contract: docs/IPC.md.
 
 pub mod calls;
-pub mod commands;
+mod commands;
 pub mod dictation;
 mod dictation_sound;
 pub mod dto;
+pub mod meeting_content;
 pub mod models;
 pub mod pipeline;
 pub mod platform;
@@ -15,6 +16,7 @@ pub mod shell;
 pub mod state;
 pub mod updater;
 pub mod util;
+mod waveform;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -105,29 +107,50 @@ pub async fn run_retention(app: &AppHandle) {
     let Ok(meetings) = store.call(|s| s.list_meetings(100_000, 0)).await else {
         return;
     };
-    let mut removed = 0;
+    let folders = Arc::new(meeting_content::ContentFolders::current(&st.settings()));
     for item in meetings
         .into_iter()
         .filter(|m| retention_eligible(&m.meeting, cutoff))
     {
         let id = item.meeting.id;
-        let Ok(tracks) = store.call(move |s| s.list_tracks(id)).await else {
-            continue;
-        };
-        for t in tracks {
-            if std::fs::remove_file(&t.path).is_ok() {
-                removed += 1;
-            }
-            if t.track == minutae_core::Track::Mic {
-                let clean =
-                    std::path::Path::new(&t.path).with_file_name(minutae_aec::CLEAN_MIC_FILE);
-                let _ = std::fs::remove_file(clean);
-            }
+        let operation = st.meeting_ops.lock(id).await;
+        let folders = folders.clone();
+        let result = store
+            .call(move |s| {
+                let _operation = operation;
+                if s.get_meeting(id)?
+                    .is_some_and(|m| retention_eligible(&m, cutoff))
+                {
+                    meeting_content::prune_audio(s, &folders, id)
+                        .map_err(minutae_store::StoreError::Invalid)?;
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(error) = result {
+            tracing::warn!(%id, %error, "could not prune meeting audio");
         }
     }
-    if removed > 0 {
-        tracing::info!(removed, days, "deleted old audio");
-    }
+}
+
+/// Find exports made before their paths were recorded, returning to busy
+/// meetings until each has been searched.
+pub(crate) fn spawn_export_backfill(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let st = app.state::<AppState>();
+        let default = paths::summaries_dir();
+        loop {
+            match meeting_content::backfill_exports(&st.store, &st.meeting_ops, &default).await {
+                Ok(0) => break,
+                Ok(_) => tokio::time::sleep(Duration::from_secs(60)).await,
+                Err(error) => {
+                    tracing::warn!(%error, "could not search for meeting exports");
+                    break;
+                }
+            }
+        }
+    });
 }
 
 fn spawn_background(
@@ -192,11 +215,38 @@ fn spawn_background(
                 }
             }
         });
+        {
+            // Database rows only: nothing here may wait for a disk or a job.
+            let _storage = st.storage_ops.lock().await;
+            let folders = meeting_content::ContentFolders::current(&st.settings());
+            if let Err(error) = st
+                .store
+                .call(move |store| meeting_content::remember_storage(store, &folders))
+                .await
+            {
+                tracing::warn!(%error, "could not record meeting storage locations");
+            }
+        }
         match runner.start().await {
             Ok(n) if n > 0 => tracing::info!(n, "resumed interrupted jobs"),
             Ok(_) => {}
             Err(e) => tracing::error!(error = %e, "job runner failed to start"),
         }
+        // File cleanup and export discovery may sit on a slow mount, so they
+        // run beside recording recovery instead of ahead of it.
+        let cleanup = a.clone();
+        tauri::async_runtime::spawn(async move {
+            let st = cleanup.state::<AppState>();
+            match meeting_content::recover_erased_files(&st).await {
+                Ok(errors) => {
+                    for error in errors {
+                        tracing::warn!(%error, "could not finish meeting file cleanup");
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "could not load pending file cleanup"),
+            }
+        });
+        spawn_export_backfill(&a);
         recording::recover(&a).await;
         let _ = runner; // keep alive in state
         loop {
@@ -350,6 +400,15 @@ pub fn run() {
             commands::get_meeting,
             commands::rename_meeting,
             commands::delete_meeting,
+            meeting_content::meeting_contents,
+            meeting_content::delete_meeting_parts,
+            meeting_content::add_action_item,
+            meeting_content::edit_action_item,
+            meeting_content::delete_action_item,
+            meeting_content::summarize_again,
+            waveform::meeting_waveform_levels,
+            recording::recording_discard_info,
+            recording::discard_recording,
             commands::retry_meeting,
             commands::set_action_done,
             commands::rename_speaker,

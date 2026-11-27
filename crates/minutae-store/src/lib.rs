@@ -10,6 +10,8 @@
 mod dictations;
 mod import;
 mod jobs;
+mod meeting_content;
+pub use meeting_content::PendingFileCleanup;
 mod meetings;
 pub mod schema;
 mod search;
@@ -35,7 +37,9 @@ pub use rusqlite;
 pub use search::{
     HitKind, SearchFilters, SearchHit, SearchKind, fts_and_query, fts_or_query, search_tokens,
 };
-pub use summaries::ActionItemRow;
+pub use summaries::{
+    ActionChange, ActionItemRow, ChecklistState, ChecklistUpdate, PublishChecklist, new_action_id,
+};
 pub use usage::{UsageAggregate, UsageEntry};
 
 #[derive(Debug, thiserror::Error)]

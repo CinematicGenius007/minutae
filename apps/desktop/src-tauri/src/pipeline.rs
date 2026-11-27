@@ -32,6 +32,9 @@ pub const DEFAULT_TITLE: &str = "Untitled meeting";
 
 /// What the pipeline needs from the app.
 pub trait Host: Send + Sync + 'static {
+    fn meeting_operations(&self) -> Option<Arc<crate::state::MeetingOperations>> {
+        None
+    }
     fn settings(&self) -> AppSettings;
     /// A loaded (or lazily loading) transcriber; `modelMissing` failure when not downloaded.
     fn transcriber(&self, model: WhisperModel) -> Result<Arc<dyn Transcriber>, Failure>;
@@ -56,20 +59,29 @@ impl JobHandler for PipelineHandler {
         let id = job
             .meeting_id
             .ok_or_else(|| internal("job has no meeting"))?;
+        let _operation = match self.host.meeting_operations() {
+            Some(operations) => Some(operations.lock(id).await),
+            None => None,
+        };
         let store = ctx.store().clone();
-        if store
-            .call(move |s| s.get_meeting(id))
+        let job_id = job.id;
+        if !store
+            .call(move |s| {
+                Ok(s.get_job(job_id)?
+                    .is_some_and(|job| job.state == JobState::Running))
+            })
             .await
             .map_err(store_failure)?
-            .is_none()
         {
-            // Deleted meanwhile: nothing to do.
+            // Deletion may have retired a job after it was claimed.
             return Ok(());
         }
         let r = match job.kind {
             JobKind::Transcribe => transcribe(&*self.host, &ctx, id).await,
             JobKind::Diarize => diarize(&*self.host, &ctx, id).await,
-            JobKind::Summarize => summarize_step(&*self.host, &ctx, id).await,
+            JobKind::Summarize => {
+                summarize_step(&*self.host, &ctx, id, job.payload["refresh"] == true).await
+            }
             JobKind::Index => index(&*self.host, &ctx, id).await,
             other => Err(internal(&format!("unexpected job kind {other:?}"))),
         };
@@ -133,7 +145,7 @@ async fn transcribe(host: &dyn Host, ctx: &JobContext, id: MeetingId) -> Result<
         .map_err(store_failure)?;
     let files: Vec<(Track, PathBuf, u64)> = tracks
         .iter()
-        .filter(|t| Path::new(&t.path).exists())
+        .filter(|t| !t.deleted && Path::new(&t.path).exists())
         .map(|t| {
             (
                 t.track,
@@ -156,7 +168,7 @@ async fn transcribe(host: &dyn Host, ctx: &JobContext, id: MeetingId) -> Result<
     if let Some(mic) = files.iter_mut().find(|f| f.0 == Track::Mic) {
         let system = tracks
             .iter()
-            .find(|t| t.track == Track::System)
+            .find(|t| t.track == Track::System && !t.deleted)
             .map(|t| PathBuf::from(&t.path));
         if let Some(clean) = echo_cancel(host, &store, id, &settings, &mic.1, system).await? {
             mic.1 = clean;
@@ -328,7 +340,7 @@ async fn diarize(host: &dyn Host, ctx: &JobContext, id: MeetingId) -> Result<(),
         .partition(|s| s.track == Track::Mic);
     let system_path = tracks
         .iter()
-        .find(|t| t.track == Track::System)
+        .find(|t| t.track == Track::System && !t.deleted)
         .map(|t| PathBuf::from(&t.path))
         .filter(|p| p.exists());
 
@@ -421,20 +433,17 @@ pub fn summary_file_name(m: &Meeting) -> String {
 }
 
 /// Existing markdown file for a meeting (title may have changed since it was written).
-pub fn find_summary_file(dir: &Path, id: MeetingId) -> Option<PathBuf> {
-    let suffix = format!("-{}.md", &id.simple().to_string()[..8]);
-    std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .find(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.ends_with(&suffix))
-        })
+#[cfg(test)]
+fn find_summary_file(dir: &Path, id: MeetingId) -> Option<PathBuf> {
+    crate::meeting_content::LocalMeetingFiles.find_markdown(dir, id)
 }
 
-async fn summarize_step(host: &dyn Host, ctx: &JobContext, id: MeetingId) -> Result<(), Failure> {
+async fn summarize_step(
+    host: &dyn Host,
+    ctx: &JobContext,
+    id: MeetingId,
+    refresh: bool,
+) -> Result<(), Failure> {
     let store = ctx.store().clone();
     let settings = host.settings();
     ctx.progress(Stage::Summarizing, 0.05, None);
@@ -526,42 +535,27 @@ async fn summarize_step(host: &dyn Host, ctx: &JobContext, id: MeetingId) -> Res
     ctx.progress(Stage::Summarizing, 0.9, None);
 
     let new_title = suggestion.filter(|_| is_default_title(&meeting));
-    let markdown = summary.markdown.clone();
-    let mut m2 = meeting.clone();
-    if let Some(t) = &new_title {
-        m2.title = t.clone();
+    let mut updated = meeting.clone();
+    if let Some(title) = &new_title {
+        updated.title.clone_from(title);
     }
+    let dir = host.summaries_dir();
     store
         .call(move |s| {
-            s.upsert_summary(&summary)?;
-            if let Some(t) = new_title {
-                s.rename_meeting(id, &t)?;
-            }
-            Ok(())
+            crate::meeting_content::publish_summary(
+                s,
+                &updated,
+                &summary,
+                new_title.as_deref(),
+                &dir,
+            )
         })
         .await
         .map_err(store_failure)?;
-
-    // Write the markdown file (replacing an older one for this meeting).
-    let dir = host.summaries_dir();
-    let write = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-        std::fs::create_dir_all(&dir)?;
-        if let Some(old) = find_summary_file(&dir, id) {
-            let _ = std::fs::remove_file(old);
-        }
-        std::fs::write(dir.join(summary_file_name(&m2)), markdown)
-    })
-    .await
-    .map_err(|e| internal(&e.to_string()))?;
-    if let Err(e) = write {
-        tracing::warn!(error = %e, "writing summary markdown failed");
-        return Err(Failure {
-            kind: FailureKind::Io,
-            message: "The summary couldn't be saved to the summaries folder.".into(),
-            fix: Some("Retry".into()),
-        });
-    }
     ctx.progress(Stage::Summarizing, 1.0, None);
+    if refresh {
+        return Ok(());
+    }
     ctx.enqueue(minutae_jobs::NewJob::new(
         JobKind::Index,
         json!({}),
@@ -603,8 +597,51 @@ pub fn apply_job_update(store: &Store, u: &JobUpdate) -> Option<MeetingId> {
     }
     match u.state {
         JobState::Failed | JobState::Cancelled => {
-            let f = u.failure.clone().unwrap_or_else(cancelled);
-            if let Err(e) = store.set_meeting_status(id, MeetingStatus::Failed, Some(&f)) {
+            let mut f = u.failure.clone().unwrap_or_else(cancelled);
+            if let Err(e) = store.transaction(|tx| {
+                use minutae_store::rusqlite::{OptionalExtension, params};
+                let payload: Option<String> = tx
+                    .query_row(
+                        "SELECT payload FROM jobs WHERE id=?1 AND state=?2 AND attempts=?3
+                       AND NOT EXISTS (SELECT 1 FROM jobs newer WHERE newer.meeting_id=jobs.meeting_id
+                                       AND newer.rowid > jobs.rowid)",
+                        params![
+                            u.job_id.to_string(),
+                            if u.state == JobState::Failed {
+                                "failed"
+                            } else {
+                                "cancelled"
+                            },
+                            u.attempts
+                        ],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let Some(payload) = payload else {
+                    return Ok(());
+                };
+                let refresh =
+                    serde_json::from_str::<serde_json::Value>(&payload)?["refresh"] == true;
+                if refresh {
+                    let has_summary: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM summaries WHERE meeting_id=?1)",
+                        [id.to_string()], |row| row.get(0),
+                    )?;
+                    if has_summary {
+                        f.message = format!("{} The previous summary is still available.", f.message);
+                    }
+                    f.fix = Some("Summarize again".into());
+                }
+                tx.execute(
+                    "UPDATE meetings SET status=?2, failure=?3 WHERE id=?1",
+                    params![
+                        id.to_string(),
+                        if refresh { "done" } else { "failed" },
+                        serde_json::to_string(&f)?
+                    ],
+                )?;
+                Ok(())
+            }) {
                 tracing::warn!(error = %e, "mark meeting failed");
             }
             Some(id)
@@ -907,6 +944,7 @@ mod tests {
                     path: p.to_string_lossy().into(),
                     duration_ms: Some(4000),
                     bytes: None,
+                    deleted: false,
                 })
                 .unwrap();
         }

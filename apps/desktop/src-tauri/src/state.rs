@@ -117,8 +117,37 @@ pub struct Download {
     pub fraction: f32,
 }
 
+#[derive(Default)]
+pub struct MeetingOperations {
+    locks: Mutex<HashMap<MeetingId, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+}
+
+impl MeetingOperations {
+    fn mutex(&self, id: MeetingId) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.locks.lock().unwrap_or_else(|e| e.into_inner());
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(&id).and_then(std::sync::Weak::upgrade) {
+            lock
+        } else {
+            let lock = Arc::new(tokio::sync::Mutex::new(()));
+            locks.insert(id, Arc::downgrade(&lock));
+            lock
+        }
+    }
+
+    pub async fn lock(&self, id: MeetingId) -> tokio::sync::OwnedMutexGuard<()> {
+        self.mutex(id).lock_owned().await
+    }
+
+    pub fn try_lock(&self, id: MeetingId) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        self.mutex(id).try_lock_owned().ok()
+    }
+}
+
 pub struct AppState {
     pub store: Store,
+    pub meeting_ops: Arc<MeetingOperations>,
+    pub storage_ops: tokio::sync::Mutex<()>,
     pub settings: Arc<RwLock<AppSettings>>,
     pub flags: Mutex<Flags>,
     pub runner: OnceLock<JobRunner>,
@@ -167,6 +196,8 @@ impl AppState {
         let router = Arc::new(build_router(&settings, secrets.clone(), usage_sink.clone()));
         Self {
             store,
+            meeting_ops: Default::default(),
+            storage_ops: Default::default(),
             settings: Arc::new(RwLock::new(settings)),
             flags: Mutex::new(flags),
             runner: OnceLock::new(),
@@ -298,6 +329,10 @@ pub struct AppHost {
 }
 
 impl Host for AppHost {
+    fn meeting_operations(&self) -> Option<Arc<MeetingOperations>> {
+        Some(self.app.state::<AppState>().meeting_ops.clone())
+    }
+
     fn settings(&self) -> AppSettings {
         self.app.state::<AppState>().settings()
     }

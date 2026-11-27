@@ -38,7 +38,7 @@ export interface WeekStats { recordedMs: number; openActions: number }
 
 export interface Speaker { id: Uuid; meetingId: Uuid; label: string; displayName: string | null; track: Track }
 export interface Segment { startMs: number; endMs: number; text: string; track: Track; speakerId: Uuid | null }
-export interface ActionItem { id: Uuid; text: string; owner: string | null; due: string | null; done: boolean }
+export interface ActionItem { id: Uuid; text: string; owner: string | null; due: string | null; done: boolean; sourceMs: number | null }
 export interface Moment { meetingId: Uuid; atMs: number; label: string }
 
 export interface Summary {
@@ -60,6 +60,39 @@ export interface MeetingDetail {
   /** What echo cancellation did before transcription; null for meetings transcribed before it existed. */
   echoCancel: EchoCancelReport | null;
 }
+
+// Meeting tape and content management.
+export interface WaveformRange { startMs: number; endMs: number }
+export type TrackWaveform =
+  | { state: "ready"; levels: number[] }
+  | { state: "missing" }
+  | { state: "deleted" }
+  | { state: "unreadable"; reason: string };
+export interface MeetingWaveform { range: WaveformRange; mic: TrackWaveform; system: TrackWaveform }
+export interface ActionItemInput { text: string; owner?: string | null; due?: string | null; sourceMs?: number | null }
+/** The change is saved. `markdownNotice` says why an existing Markdown file was left unchanged. */
+export interface ActionChangeResult { markdownNotice: string | null }
+export interface SavedActionItem extends ActionChangeResult { item: ActionItem }
+
+export type MeetingPart = "audio" | "transcript" | "summary" | "markdown";
+export interface MeetingPartInfo {
+  part: MeetingPart; present: boolean; bytes: number | null; blockedReason: string | null;
+}
+export interface MeetingContents {
+  parts: MeetingPartInfo[];
+  durationMs: number | null; trackCount: number; lineCount: number; speakerCount: number;
+  transcriptExcerpt: string | null; decisionCount: number; actionCount: number; markCount: number;
+  summaryExcerpt: string | null; markdownPath: string | null; markdownNotice: string | null;
+}
+export interface MeetingPartFailure { part: MeetingPart; reason: string }
+export interface MeetingDeletion {
+  deleted: MeetingPart[]; failures: MeetingPartFailure[]; meetingRemoved: boolean; remaining: MeetingContents | null;
+  markdownNotice: string | null;
+}
+export interface RecordingDiscardInfo {
+  meetingId: Uuid; durationMs: number; audioBytes: number; liveLineCount: number; markCount: number; trackCount: number;
+}
+export interface RecordingDiscard { meetingId: Uuid; cleanupError: string | null }
 
 /** Why the mic track was transcribed without echo cancellation. */
 export type EchoSkip = "off" | "noSystemTrack" | "systemSilent" | "noEcho" | "ineffective";
