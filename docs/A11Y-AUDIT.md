@@ -53,3 +53,42 @@ Audit of every component in `libs/ui/src/components/` across mouse, keyboard, sc
 | `PageHeader` / `Stat` / `EmptyState` | Non-interactive (except `EmptyState` `action` slot) | Flows to interactive children | `<header>` + `<h1>`, `EmptyState` uses `<h2>` | Standard `Canvas`/`CanvasText` | `Stat` renders value above caption as `<div>`s rather than `<dl>`/`<dt>`/`<dd>`, so value and caption are read sequentially rather than as a term/value pair. |
 | `Waveform` | Non-interactive | Not focusable | `role="img"` + `aria-label` | Bars inherit `CanvasText` (played/unplayed colour distinction collapses in forced-colors) | In `forced-colors: active`, played vs unplayed waveform bars cannot be distinguished by colour alone (purely decorative; `PlayerBar` exposes exact numeric progress). |
 | `PlayerBar` | Play/pause button, range scrubber (28 px tall), speed button | Tab through Play → Seek (←/→/Home/End) → Speed → Extra | `role="group" aria-label="Playback"`, play/pause `aria-label`, range `aria-label="Seek"` + `aria-valuetext`, speed `aria-label` | Play bordered in `ButtonText`; scrubber track `ButtonText` + thumb `Highlight`; focus outlines visible | Scrubber step is fixed at `1000` ms (1 s), which is fine for short calls but coarse/slow for hour-long meetings without PageUp/PageDown step customization. |
+
+---
+
+# Accessibility Audit — Dictate Screen (`apps/desktop/src/screens/dictate`)
+
+Audit of the Dictate screen only across default, empty, no-match search, loading, error, and Wayland states in light, dark, `prefers-contrast: more`, and `forced-colors: active`, covering keyboard order, focus visibility and restoration, screen reader names and live announcements, contrast (4.5:1 text / 3:1 meaningful non-text), hit targets (≥ 28 × 28 desktop, ≥ 44 × 44 narrow), 200% zoom and narrow-width reflow, and reduced motion. Dictation settings and the dictation HUD pill were intentionally excluded.
+
+## Defects found and fixed
+
+- **Skipped and inverted heading hierarchy (`h1` → `h3` → `h2`):** `GroupLabel` defaulted to `<h3>` under `<h1>Dictate</h1>`, skipping `<h2>` and placing `EmptyState`'s `<h2>` inside an `<h3>` section. Changed `<GroupLabel as="h2">` so headings follow `h1` → `h2`.
+- **Generic, identical overflow button names:** Every row's overflow button had `aria-label="More actions"`, giving screen reader users no context about which dictation it acted on. Updated to unique names (`More actions for “<snippet>”`, matching `Copy “<snippet>”` with clean ellipsis truncation) and replaced the inline SVG with Lucide `<MoreHorizontal aria-hidden />`.
+- **Redundant / raw-glyph shortcut speech in the how-to strip:** `<KeyCap>` read raw modifier glyphs (`⌥ Space`) next to `"hold"`, immediately followed by the title repeating the same glyph. Marked the decorative keycap group `aria-hidden` and paired raw modifier glyphs in the title with `mn-sr-only` spoken key names (`Option Space`, `Command`, `Control`, `Shift`).
+- **Missing live announcements for loading, error, and search filtering:**
+  - Loading state now exposes `role="status" aria-live="polite"` alongside `aria-busy="true"` on the Recent section; `Spinner` stops spinning under `prefers-reduced-motion: reduce`.
+  - Error state is wrapped in `role="alert"` and "Try again" reloads both the dictation list and weekly stats.
+  - Typing in "Search dictations" announces filtered result counts (`"1 dictation matches …"`, `"No dictations match …"`) via a polite `mn-sr-only` `role="status"` region.
+  - Added `role="list"` on `<ul className={s.list}>` so WebKit/VoiceOver retains list semantics despite `list-style: none`.
+- **Lost focus on dialog close, row deletion, and Clear search:**
+  - Cancelling or pressing `Escape` in the delete `ConfirmDialog` previously dropped focus to `document.body` (because the dialog opened from an unmounted `DropdownMenu` item). `onCloseAutoFocus` now restores focus to the triggering row's `More actions` button.
+  - Confirming deletion now moves focus to the adjacent surviving row's `Copy` button (or the search input when the last row is deleted).
+  - Clicking `Clear search` in the no-match state returns focus to the `SearchField` input.
+  - Added `/` shortcut to focus the Dictate search field (matching Meetings) while keeping `⌘K`/`Ctrl+K` global for Library.
+- **Desktop and narrow hit targets & hover-only overflow trigger:**
+  - Replaced the hand-rolled 24 px-tall `.copy` button with kit `<Button variant="quiet">` sized to ≥ 28 × 28 on desktop (`--s-8`), matching `.more` (28 × 28).
+  - At narrow widths (`max-width: 899px`), both `Copy` and `More actions` expand to ≥ 44 × 44 (`--s-10`), and `.more` stays visible (`opacity: 1`) without requiring hover (also revealed on `@media (hover: none)` and `.row:focus-within`).
+- **Narrow width and 200% zoom reflow:** Fixed-width lanes (`400 px` of chrome + gaps) previously crushed `.text` to a few characters and overflowed horizontally at 360–480 px (200% zoom on a 960 px window), and `.howtoLead` did not wrap. At `max-width: 899px`, rows now reflow into a full-width text line above a wrapped metadata + actions row, `.howtoLead` wraps, and `.search` fills 100% width with zero horizontal overflow across 820 px, 640 px, and 480 px viewports.
+- **`prefers-contrast: more` and `forced-colors: active`:** Added a `--line` border on `.howto` and hovered/open `.more` under `prefers-contrast: more`, and `CanvasText`/`Highlight` boundaries on `.howto`, `.bigCap`, and `.more` under `forced-colors: active` (no borders added in default light/dark modes).
+- **Token hygiene:** Removed remaining raw pixel spacing/line-height literals (`48px`, `14px`, `26px`, `18px`, `64px`, `120px`, `88px`, `28px`) in `dictate.module.css` in favour of `@minutae/ui` CSS tokens.
+
+## Dictate Screen Audit Summary
+
+| area | result | notes / remaining gaps |
+|---|---|---|
+| Keyboard order & focus | Pass | Tab order (`Search` → row `Copy` → row `More actions`), `/` search focus, visible offset focus rings in light/dark and `Highlight` outlines in `forced-colors: active`, deterministic focus restoration on dialog cancel/Esc/delete and `Clear search`. |
+| Screen reader & live regions | Pass | `h1` → `h2` hierarchy, unique row button names, spoken modifier keys, `role="status"` for loading & search filter counts, `role="alert"` for load failure, `role="list"` for WebKit/VoiceOver. Remaining gap: live assistive-tech verification (VoiceOver / NVDA) was not run in headless CI; `ConfirmDialog` uses kit `role="dialog"`. |
+| Contrast (light, dark, `prefers-contrast: more`, `forced-colors: active`) | Pass | All text tokens ≥ 4.5:1 (`--ink`, `--muted` on `--bg`/`--surface`/`--raised`) and non-text icons/focus rings ≥ 3:1 in both themes; verified by `tokens.test.ts`, axe-core WCAG 2.1 AA across normal/empty/loading/error states, and Playwright computed-token checks. |
+| Hit targets | Pass | Desktop interactive controls ≥ 28 × 28; narrow/200% zoom row actions ≥ 44 × 44 with no hover dependency. |
+| Narrow width & 200% zoom | Pass | Zero horizontal overflow at 820 px, 640 px (1280 @ 200%), and 480 px (960 @ 200%); full-width dictation text and visible actions. |
+| Reduced motion | Pass | Loading `Spinner` stops animating (`animation-name: none`); no transform animations on screen. |
