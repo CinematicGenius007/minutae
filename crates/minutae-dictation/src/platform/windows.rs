@@ -1,4 +1,4 @@
-//! Win32 foreground metadata and paste into verified standard edit controls.
+//! Win32 foreground metadata and native Edit password detection.
 
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HWND, LPARAM},
@@ -8,13 +8,13 @@ use windows_sys::Win32::{
     },
     UI::Controls::EM_GETPASSWORDCHAR,
     UI::WindowsAndMessaging::{
-        ES_PASSWORD, ES_READONLY, EnumWindows, GUITHREADINFO, GWL_STYLE, GetClassNameW,
-        GetForegroundWindow, GetGUIThreadInfo, GetWindowLongW, GetWindowThreadProcessId,
-        IsWindowVisible, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_PASTE,
+        ES_PASSWORD, EnumWindows, GUITHREADINFO, GWL_STYLE, GetClassNameW, GetForegroundWindow,
+        GetGUIThreadInfo, GetWindowLongW, GetWindowThreadProcessId, IsWindowVisible,
+        SMTO_ABORTIFHUNG, SendMessageTimeoutW,
     },
 };
 
-use crate::insert::{CopyReason, Preflight};
+use crate::insert::Preflight;
 
 fn executable_for(pid: u32) -> Option<String> {
     // SAFETY: every handle opened here is closed, and the buffer is sized in UTF-16 units.
@@ -38,15 +38,20 @@ fn executable_for(pid: u32) -> Option<String> {
     }
 }
 
-pub fn foreground_executable() -> Option<(String, u32)> {
-    // SAFETY: the API writes the PID into a live local.
+pub(crate) fn foreground_process() -> Option<u32> {
     let mut pid = 0;
-    unsafe { GetWindowThreadProcessId(GetForegroundWindow(), &mut pid) };
-    Some((executable_for(pid)?, pid))
+    // SAFETY: the API writes the PID into a live local.
+    let thread = unsafe { GetWindowThreadProcessId(GetForegroundWindow(), &mut pid) };
+    (thread != 0).then_some(pid)
+}
+
+pub(crate) fn foreground_executable() -> (Option<String>, Option<u32>) {
+    let pid = foreground_process();
+    (pid.and_then(executable_for), pid)
 }
 
 pub fn frontmost_app_name() -> Option<String> {
-    foreground_executable().map(|(name, _)| name)
+    foreground_executable().0
 }
 
 pub(crate) fn visible_executables() -> Vec<String> {
@@ -72,91 +77,36 @@ pub(crate) fn visible_executables() -> Vec<String> {
 }
 
 /// Native Edit controls expose ES_PASSWORD even when their value is empty.
-/// Custom, browser, and unknown controls fall back to the clipboard.
-fn focused_edit(process: u32) -> Result<HWND, CopyReason> {
+pub(crate) fn preflight() -> Preflight {
     // SAFETY: Win32 fills a sized local struct and the fixed class-name buffer.
     unsafe {
-        let window = GetForegroundWindow();
-        let mut pid = 0;
-        let thread = GetWindowThreadProcessId(window, &mut pid);
-        if thread == 0 || pid != process {
-            return Err(CopyReason::FocusChanged);
-        }
+        let thread = GetWindowThreadProcessId(GetForegroundWindow(), std::ptr::null_mut());
         let mut info = GUITHREADINFO {
             cbSize: size_of::<GUITHREADINFO>() as u32,
             ..Default::default()
         };
-        if GetGUIThreadInfo(thread, &mut info) == 0 || info.hwndFocus.is_null() {
-            return Err(CopyReason::UnverifiedField);
-        }
-        let mut focused_pid = 0;
-        GetWindowThreadProcessId(info.hwndFocus, &mut focused_pid);
-        if focused_pid != process || GetForegroundWindow() != window {
-            return Err(CopyReason::FocusChanged);
+        if thread == 0 || GetGUIThreadInfo(thread, &mut info) == 0 || info.hwndFocus.is_null() {
+            return Preflight::Paste;
         }
         let mut class = [0u16; 32];
         let len = GetClassNameW(info.hwndFocus, class.as_mut_ptr(), class.len() as i32) as usize;
-        if !String::from_utf16_lossy(&class[..len]).eq_ignore_ascii_case("Edit") {
-            return Err(CopyReason::UnverifiedField);
-        }
-        let style = GetWindowLongW(info.hwndFocus, GWL_STYLE) as u32;
-        if style == 0 || style & ES_READONLY as u32 != 0 {
-            return Err(CopyReason::NoTextField);
-        }
-        if style & ES_PASSWORD as u32 != 0 {
-            return Err(CopyReason::SecureInput);
-        }
-        let mut password_char = 0;
-        if SendMessageTimeoutW(
-            info.hwndFocus,
-            EM_GETPASSWORDCHAR,
-            0,
-            0,
-            SMTO_ABORTIFHUNG,
-            100,
-            &mut password_char,
-        ) == 0
-        {
-            return Err(CopyReason::UnverifiedField);
-        }
-        if password_char != 0 {
-            return Err(CopyReason::SecureInput);
-        }
-        let checked = info.hwndFocus;
-        if GetForegroundWindow() != window
-            || GetGUIThreadInfo(thread, &mut info) == 0
-            || info.hwndFocus != checked
-        {
-            return Err(CopyReason::FocusChanged);
-        }
-        Ok(info.hwndFocus)
-    }
-}
-
-pub(crate) fn preflight(process: u32) -> Preflight {
-    match focused_edit(process) {
-        Ok(_) => Preflight::Paste,
-        Err(reason) => Preflight::CopyOnly(reason),
-    }
-}
-
-pub(crate) fn paste(process: u32) -> Result<(), CopyReason> {
-    let target = focused_edit(process)?;
-    // SAFETY: WM_PASTE carries no pointers and is sent only to the verified control.
-    let sent = unsafe {
-        SendMessageTimeoutW(
-            target,
-            WM_PASTE,
-            0,
-            0,
-            SMTO_ABORTIFHUNG,
-            250,
-            std::ptr::null_mut(),
-        )
-    };
-    if sent == 0 {
-        Err(CopyReason::PasteFailed)
-    } else {
-        Ok(())
+        super::windows_field_copy_reason(&String::from_utf16_lossy(&class[..len]), || {
+            let style = GetWindowLongW(info.hwndFocus, GWL_STYLE) as u32;
+            if style & ES_PASSWORD as u32 != 0 {
+                return true;
+            }
+            let mut password_char = 0;
+            SendMessageTimeoutW(
+                info.hwndFocus,
+                EM_GETPASSWORDCHAR,
+                0,
+                0,
+                SMTO_ABORTIFHUNG,
+                100,
+                &mut password_char,
+            ) != 0
+                && password_char != 0
+        })
+        .map_or(Preflight::Paste, Preflight::CopyOnly)
     }
 }

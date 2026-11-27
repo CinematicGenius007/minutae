@@ -114,6 +114,7 @@ export interface AppMatcher {
 export interface DictationAppRule { app: AppMatcher; displayName: string; preset: ShapePreset }
 export interface DictationApp { app: AppMatcher; displayName: string; suggestedPreset: ShapePreset | null }
 export interface DictationCapabilities {
+  /** A passive HUD is available even when pointer controls are disabled. */
   hudVisible: boolean;
   hudInteractive: boolean;
   localRewriteAvailable: boolean;
@@ -137,7 +138,7 @@ export interface DictationStats { wordsThisWeek: number; minutesSaved: number }
 
 export type HudFixAction = "microphoneSettings" | "transcriptionSettings" | "retry" | "dictationSettings";
 export type CopyReason = "accessibilityNotTrusted" | "noTextField" | "wayland" | "secureInput"
-  | "pasteFailed" | "focusChanged" | "unverifiedField" | "multilineTerminal";
+  | "pasteFailed" | "focusChanged" | "multilineTerminal";
 
 export type HudState =
   | { state: "idle" }

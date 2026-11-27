@@ -2,6 +2,22 @@
 
 pub use minutae_core::dictation::AppIdentity;
 
+/// Missing metadata is inconclusive. Compare identifiers only when both
+/// observations expose the same kind.
+pub(crate) fn app_changed(original: Option<&AppIdentity>, current: Option<&AppIdentity>) -> bool {
+    let (Some(original), Some(current)) = (original, current) else {
+        return false;
+    };
+    match (original.matcher(), current.matcher()) {
+        (Some(expected), Some(actual))
+            if std::mem::discriminant(&expected) == std::mem::discriminant(&actual) =>
+        {
+            !expected.matches(current)
+        }
+        _ => false,
+    }
+}
+
 pub trait AppIdentityLookup: Send + Sync {
     fn frontmost_app(&self) -> Option<AppIdentity>;
     fn foreground_target(&self) -> (Option<AppIdentity>, Option<u32>) {
@@ -47,10 +63,8 @@ impl AppIdentityLookup for SystemAppIdentityLookup {
 
     #[cfg(target_os = "windows")]
     fn foreground_target(&self) -> (Option<AppIdentity>, Option<u32>) {
-        let Some((exe, pid)) = super::windows::foreground_executable() else {
-            return (None, None);
-        };
-        (Some(windows_identity(exe)), Some(pid))
+        let (exe, pid) = super::windows::foreground_executable();
+        (exe.map(windows_identity), pid)
     }
 
     #[cfg(target_os = "windows")]

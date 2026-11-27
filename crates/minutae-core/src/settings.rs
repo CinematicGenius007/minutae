@@ -152,7 +152,7 @@ impl Default for AppSettings {
             dictation_default_shape: None,
             dictation_shape_edits: BTreeMap::new(),
             dictation_app_rules: vec![],
-            dictation_start_sound: true,
+            dictation_start_sound: false,
             keep_dictation_audio: false,
             dictation_retention_days: None,
             vocabulary: vec![],

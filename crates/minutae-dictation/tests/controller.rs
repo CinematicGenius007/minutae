@@ -690,6 +690,8 @@ async fn undo_requires_the_current_result_and_foreground_target() {
 
 #[tokio::test]
 async fn start_cue_is_optional_and_only_emitted_after_capture_starts() {
+    let settings: minutae_core::AppSettings = serde_json::from_str("{}").unwrap();
+    assert!(!DictationConfig::from_settings(&settings).start_sound);
     for enabled in [false, true] {
         let mut r = rig_with(
             FakeSpeech::new("hello"),

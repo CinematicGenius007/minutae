@@ -37,7 +37,7 @@ use tokio::{
 
 use crate::{
     insert::{CopyReason, InsertOutcome, Inserter, InsertionControl, UndoTarget},
-    platform::identity::AppIdentityLookup,
+    platform::identity::{AppIdentityLookup, app_changed},
     postprocess,
     shapes::resolve_shape,
     source::{AudioSource, SAMPLE_RATE, SpeechToText},
@@ -70,7 +70,7 @@ impl Default for DictationConfig {
             max_duration: Duration::from_secs(120),
             default_shape: Shape::default(),
             app_rules: vec![],
-            start_sound: true,
+            start_sound: false,
             quick_shapes: QUICK_PRESETS.map(ShapePreset::shape),
             vocabulary: Vec::new(),
             keep_audio: false,
@@ -702,9 +702,7 @@ impl Shared {
         // Paste only into the app the user started dictating in. If they switched apps while
         // it was transcribing (to a terminal, a chat…), the text goes to the clipboard.
         let now_app = self.deps.apps.frontmost_app();
-        let outcome = if let (Some(then), Some(now)) = (&job.app, &now_app)
-            && then.matcher().is_some_and(|app| !app.matches(now))
-        {
+        let outcome = if app_changed(job.app.as_ref(), now_app.as_ref()) {
             self.deps
                 .inserter
                 .copy(&text, CopyReason::FocusChanged, job.control.clone())

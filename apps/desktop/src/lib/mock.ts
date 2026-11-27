@@ -81,7 +81,7 @@ const presets: Record<ShapePreset, Shape> = {
   codeAndCommit: { ...tidyShape, preset: "codeAndCommit", capitals: "asSaid", tidy: false, spokenPunctuation: false, lineBreaks: "preserve" },
 };
 const capabilities: DictationCapabilities = {
-  hudVisible: sessionKind !== "wayland",
+  hudVisible: true,
   hudInteractive: os === "macos" || os === "windows",
   localRewriteAvailable: false,
   cloudRewrite: "planned",
@@ -111,7 +111,7 @@ const hudFixtures: Record<string, HudState> = {
   listening, "listening-handsfree": { ...listening, handsFree: true },
   "listening-unknown": { ...listening, app: null, shape: "tidy" },
   processing: { state: "processing" },
-  inserted: { state: "inserted", words: 23, undoAvailable: os === "macos", resultId: os === "macos" ? "00000000-0000-4000-8000-000000000023" : null },
+  inserted: { state: "inserted", words: 23, undoAvailable: false, resultId: null },
   "inserted-no-undo": { state: "inserted", words: 23, undoAvailable: false, resultId: null },
   copied: { state: "copied", words: 23, reason: "You switched apps", reasonCode: "focusChanged" },
   "copied-secure": { state: "copied", words: 23, reason: "Secure input is on", reasonCode: "secureInput" },
@@ -152,7 +152,7 @@ let settings: AppSettings = {
   whisperModel: "small", language: null, labelSpeakers: true, liveCaptions: true, echoCancellation: "auto", transportOrder: ["codexCli", "ollama", "grokCli"],
   apiFallbackEnabled: false, summaryLength: "brief", summariesPath: null, codexModel: null, ollamaModel: "llama3.1:8b",
   dictationHotkey: "Alt+Space", dictationMode: "hold", tidyDictation: true, keepDictationAudio: false,
-  dictationDefaultShape: null, dictationShapeEdits: {}, dictationStartSound: true,
+  dictationDefaultShape: null, dictationShapeEdits: {}, dictationStartSound: false,
   dictationAppRules: empty ? [] : mockApps.slice(0, 4).map(({ app, displayName, suggestedPreset }) =>
     ({ app, displayName, preset: suggestedPreset ?? "tidy" })),
   dictationRetentionDays: null, vocabulary: ["Minutae", "whisper.cpp", "Priya Raman", "SwiftUI"], deleteAudioAfterDays: 30, recordingsPath: null,

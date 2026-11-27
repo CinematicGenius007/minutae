@@ -84,6 +84,7 @@ export const api = {
   listInputDevices: () => call<InputDevice[]>("list_input_devices"),
 
   // dictation
+  /** HUD visibility and pointer interaction are separate capabilities. */
   dictationShapeOptions: () => call<DictationShapeOptions>("dictation_shape_options"),
   listDictationAppRules: () => call<DictationAppRule[]>("list_dictation_app_rules"),
   saveDictationAppRule: (rule: DictationAppRule) => call<AppSettings>("save_dictation_app_rule", { rule }),
@@ -98,6 +99,7 @@ export const api = {
   setDictationHudInteraction: (hovered: boolean, focused: boolean) =>
     call<void>("set_dictation_hud_interaction", { hovered, focused }),
   dismissDictationHud: () => call<void>("dismiss_dictation_hud"),
+  /** Requires a visible Inserted result with undoAvailable and a matching result ID. */
   undoDictationInsert: (resultId: Uuid) => call<void>("undo_dictation_insert", { resultId }),
   fixDictationError: () => call<void>("fix_dictation_error"),
   listDictations: (limit = 100) => call<Dictation[]>("list_dictations", { limit }),

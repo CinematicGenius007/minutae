@@ -61,7 +61,7 @@ Mock switches for these screens: `?os=linux&session=wayland` (portal), `&portal=
 ## Dictation shapes and HUD
 
 Settings persist `dictationDefaultShape`, `dictationShapeEdits`, `dictationAppRules`, and
-`dictationStartSound`. With no explicit default preset, `tidyDictation: true` uses Tidy
+`dictationStartSound` (off by default). With no explicit default preset, `tidyDictation: true` uses Tidy
 and `false` uses the legacy cleanup-off rules (preserves capitalization and still handles
 spoken punctuation and vocabulary). Updating the toggle alone clears an explicit default.
 Resolution order is user app rule, automatic Verbatim for recognized terminals, then the
@@ -80,24 +80,45 @@ default. A quick switch applies to the current dictation only. History keeps the
 | `switch_dictation_shape(preset)` | Switch to a quick preset during listening. Option/Alt+1–5 is registered only during listening on native shortcut backends. |
 | `set_dictation_hud_interaction(hovered, focused)` | Set pointer-hover and keyboard-focus-within state together. Either pauses the remaining six-second timer for Inserted and Copied. Error has no timer. |
 | `dismiss_dictation_hud` | Hides a result or error. While listening or processing, requests cancellation. |
-| `undo_dictation_insert(resultId)` | Use the Inserted state's result ID only when `undoAvailable` is true. Requires the visible HUD and the original macOS process instance to still be frontmost. |
+| `undo_dictation_insert(resultId)` | Requires a visible Inserted result with `undoAvailable: true`, a matching result ID and the original process instance still frontmost. Native paste does not confirm insertion, so the native HUD currently reports Undo unavailable. |
 | `fix_dictation_error` | Performs the current Error state's `fixAction`. Retry starts a hands-free session. |
 
-Use `capabilities.hudInteractive` to gate pointer controls. macOS uses a non-key NSPanel and
-first-mouse clicks. Windows uses a non-activating HWND and handles `WM_MOUSEACTIVATE`.
-X11 uses a passive click-through HUD with GTK focus hints. The Wayland HUD stays hidden because
-the current window uses an ordinary compositor-managed toplevel. HUD events still reach the UI.
+The HUD is visible on macOS, Windows, X11 and Wayland. Use `capabilities.hudInteractive` to
+gate pointer controls. macOS enables first-mouse clicks on its non-activating NSPanel, and
+Windows handles `WM_MOUSEACTIVATE` on its non-activating HUD. X11 and Wayland use a passive,
+click-through HUD with GTK focus hints. Wayland placement and visibility depend on the compositor.
 
-macOS checks Accessibility role and secure keyboard input before dispatching a PID-targeted
-paste. An app that misreports a protected field as ordinary text can still defeat the check.
-Windows targets standard Edit controls after checking the password style and mask. Other
-controls fall back to copying. Linux copies on both X11 and Wayland. No insertion path sends
-Return. A known terminal receives clipboard-only results when the text contains line breaks or
-control characters. macOS Undo sends Command+Z to the verified original process. Windows and
-Linux report Undo unavailable.
+An insert stages text on the clipboard and sends Command+V on macOS or Ctrl+V on Windows and
+X11. Minutae checks the foreground app again immediately before sending the keystroke and
+copies when it detects a change. Focus can still change between the check and OS delivery.
+Identified terminals get clipboard-only results for text
+containing a line break or other control character. Paste delivery errors also leave the
+result on the clipboard.
+
+- **macOS** copies when Accessibility is untrusted, secure keyboard entry is active,
+  the focused Accessibility role or subrole is `AXSecureTextField`, or the role is a
+  known non-text control. Password fields that expose neither secure keyboard entry nor the
+  secure role or subrole are undetected, including fields with missing, unreadable or
+  misreported Accessibility attributes. Unknown and custom roles can receive a paste.
+- **Windows** copies when a focused Win32 `Edit` has `ES_PASSWORD` or reports a
+  nonzero mask through `EM_GETPASSWORDCHAR`. Password fields in non-`Edit` controls
+  are undetected, including browser and Electron fields, RichEdit, Office and WinUI.
+  A password field is also undetected when the focused control or its password metadata
+  cannot be read and neither check gives a positive signal.
+- **Linux X11** and **unknown sessions** attempt the keystroke. Linux does not inspect
+  the focused field for passwords. X11 uses optional EWMH/`xprop` window metadata for
+  app switching and terminal detection. Without that metadata those checks cannot identify
+  the target. **Wayland** always copies without inspecting the field or injecting input.
+
+Keystroke delivery cannot confirm that the app accepted the paste or that its next Undo
+would undo Minutae's edit. The native HUD reports Undo unavailable on all platforms.
+
+When enabled, the start sound plays while the microphone is already recording so
+capture starts immediately. Playback through speakers can reach the mic and affect
+transcription. Leave the sound off to keep the cue out of the dictated audio.
 
 Browser fixtures use `?state=listening|processing|inserted|inserted-no-undo|copied|error#/hud`
 (or `?hud=...`). Other fixtures include `listening-handsfree`, `listening-unknown`,
-`copied-secure`, `error-transcription`, `error-retry` and `error-insertion`. Use
-`?os=macos` to show the Undo fixture. Browser previews simulate the shape editor's design
-sample. The native Rust command processes arbitrary samples.
+`copied-secure`, `error-transcription`, `error-retry` and `error-insertion`. Browser
+previews simulate the shape editor's design sample. The native Rust command processes
+arbitrary samples.

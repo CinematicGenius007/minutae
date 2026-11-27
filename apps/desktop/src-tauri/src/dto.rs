@@ -427,7 +427,6 @@ pub fn copy_reason_text(r: minutae_dictation::CopyReason) -> &'static str {
         C::NoTextField => "No text field",
         C::Wayland => "Wayland doesn't allow typing into other apps",
         C::SecureInput => "Secure input is on",
-        C::UnverifiedField => "Couldn't verify a safe text field",
         C::MultilineTerminal => "Terminal text contains a line break or control character",
         C::PasteFailed => "Paste didn't work",
         C::FocusChanged => "You switched apps",

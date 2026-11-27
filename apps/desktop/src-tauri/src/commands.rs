@@ -724,7 +724,7 @@ pub fn dictation_shape_options(app: AppHandle) -> dto::DictationShapeOptions {
         quick_presets: minutae_dictation::QUICK_PRESETS,
         default_shape: settings.default_dictation_shape(),
         capabilities: dto::DictationCapabilities {
-            hud_visible: shell::hud_can_show(&app),
+            hud_visible: true,
             hud_interactive: shell::hud_interactive(&app),
             local_rewrite_available: false,
             cloud_rewrite: dto::DictationCloudRewrite::Planned,

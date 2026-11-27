@@ -100,6 +100,9 @@ pub fn create_aux_windows(app: &AppHandle) -> tauri::Result<()> {
                     .value(),
             );
             panel.set_hides_on_deactivate(false);
+            if label == HUD && !hud_interactive(app) {
+                window.set_ignore_cursor_events(true)?;
+            }
         }
         #[cfg(target_os = "windows")]
         if label == HUD {
@@ -114,8 +117,7 @@ pub fn create_aux_windows(app: &AppHandle) -> tauri::Result<()> {
             }
         }
         #[cfg(target_os = "linux")]
-        if label == HUD && minutae_dictation::session_kind() == minutae_dictation::SessionKind::X11
-        {
+        if label == HUD {
             use gtk::prelude::*;
             let gtk_window = window.gtk_window()?;
             gtk_window.set_focus_on_map(false);
@@ -256,13 +258,6 @@ fn place(app: &AppHandle, label: &str) {
     let _ = w.set_position(LogicalPosition::new(x, y));
 }
 
-pub fn hud_can_show(app: &AppHandle) -> bool {
-    if cfg!(target_os = "macos") {
-        return hud_interactive(app);
-    }
-    minutae_dictation::session_kind() != minutae_dictation::SessionKind::Wayland
-}
-
 pub fn hud_interactive(app: &AppHandle) -> bool {
     app.state::<AppState>()
         .hud_interactive
@@ -307,9 +302,6 @@ mod windows_hud {
 
 /// Show an auxiliary window without activating the app.
 pub fn show_aux(app: &AppHandle, label: &'static str) {
-    if label == HUD && !hud_can_show(app) {
-        return;
-    }
     let a = app.clone();
     let _ = app.run_on_main_thread(move || {
         place(&a, label);
@@ -328,8 +320,8 @@ pub fn show_aux(app: &AppHandle, label: &'static str) {
                 if let Ok(hwnd) = w.hwnd() {
                     // SAFETY: this is the live HUD HWND, on its UI thread.
                     unsafe { ShowWindow(hwnd.0.cast(), SW_SHOWNOACTIVATE) };
+                    return;
                 }
-                return;
             }
             let _ = w.show();
         }
@@ -354,8 +346,8 @@ pub fn hide_aux(app: &AppHandle, label: &'static str) {
                 if let Ok(hwnd) = w.hwnd() {
                     // SAFETY: this is the live HUD HWND, on its UI thread.
                     unsafe { ShowWindow(hwnd.0.cast(), SW_HIDE) };
+                    return;
                 }
-                return;
             }
             let _ = w.hide();
         }

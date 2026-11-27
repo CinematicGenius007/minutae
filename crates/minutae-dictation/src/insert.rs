@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     platform::{
         self,
-        identity::{AppIdentity, AppIdentityLookup, SystemAppIdentityLookup},
+        identity::{AppIdentity, AppIdentityLookup, SystemAppIdentityLookup, app_changed},
     },
     shapes::{ShapePreset, suggested_preset},
 };
@@ -44,9 +44,8 @@ pub enum CopyReason {
     NoTextField,
     /// Linux Wayland: other apps cannot be typed into.
     Wayland,
-    /// macOS secure keyboard entry is on (e.g. a password prompt or Terminal setting).
+    /// Password field detected, or macOS secure keyboard entry is on.
     SecureInput,
-    UnverifiedField,
     MultilineTerminal,
     /// Simulating the paste keystroke failed.
     PasteFailed,
@@ -138,6 +137,7 @@ pub trait Inserter: Send + Sync {
     }
     async fn insert(&self, text: &str, control: Arc<InsertionControl>) -> InsertOutcome;
 
+    // Keystroke delivery alone does not confirm that the target inserted the text.
     fn undo(&self, _target: UndoTarget) -> bool {
         false
     }
@@ -151,8 +151,6 @@ pub trait Inserter: Send + Sync {
 }
 
 /// What the platform layer decided before touching the clipboard.
-// Not every OS produces every variant.
-#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Preflight {
     Paste,
@@ -287,33 +285,18 @@ impl SystemInserter {
         if control.is_cancelled() {
             return InsertOutcome::Cancelled;
         }
+        let session = platform::session_kind();
+        if let Preflight::CopyOnly(reason) = platform::preflight(session) {
+            return copy_only(text, reason, control);
+        }
         let (app_now, process_now) = SystemAppIdentityLookup.foreground_target();
-        let (app, process) = control
-            .target
-            .as_ref()
-            .cloned()
-            .unwrap_or((app_now.clone(), process_now));
-        if platform::session_kind() == platform::SessionKind::Wayland {
-            return copy_only(text, CopyReason::Wayland, control);
-        }
-        if let Some(matcher) = app.as_ref().and_then(AppIdentity::matcher)
-            && !app_now.as_ref().is_some_and(|now| matcher.matches(now))
+        let (app, process) = control.target.as_ref().cloned().unwrap_or_default();
+        let app = app.or_else(|| app_now.clone());
+        let process = process.or(process_now);
+        if let Some(reason) =
+            target_copy_reason(text, app.as_ref(), process, app_now.as_ref(), process_now)
         {
-            return copy_only(text, CopyReason::FocusChanged, control);
-        }
-        let Some(process) = process else {
-            return copy_only(text, CopyReason::UnverifiedField, control);
-        };
-        if process_now != Some(process) {
-            return copy_only(text, CopyReason::FocusChanged, control);
-        }
-        let terminal = app.as_ref().and_then(suggested_preset) == Some(ShapePreset::Verbatim);
-        if terminal && text.chars().any(char::is_control) {
-            return copy_only(text, CopyReason::MultilineTerminal, control);
-        }
-        match platform::preflight(process) {
-            Preflight::Paste => {}
-            Preflight::CopyOnly(reason) => return copy_only(text, reason, control),
+            return copy_only(text, reason, control);
         }
 
         let mut clipboard = match arboard::Clipboard::new() {
@@ -327,17 +310,21 @@ impl SystemInserter {
             control,
             || thread::sleep(self.settle),
             || {
-                if let Preflight::CopyOnly(reason) = platform::preflight(process) {
-                    return Err(reason);
-                }
-                let undo_target = (!terminal)
-                    .then(|| platform::undo_target(process))
-                    .flatten();
-                platform::send_paste(process)?;
-                if let Some(target) = undo_target {
-                    control.record_undo_target(target);
-                }
-                Ok(())
+                send_paste(|| {
+                    if let Preflight::CopyOnly(reason) = platform::preflight(session) {
+                        return Err(reason);
+                    }
+                    let (current_app, current_process) =
+                        SystemAppIdentityLookup.foreground_target();
+                    target_copy_reason(
+                        text,
+                        app.as_ref(),
+                        process,
+                        current_app.as_ref(),
+                        current_process,
+                    )
+                    .map_or(Ok(()), Err)
+                })
             },
             || thread::sleep(restore_after),
         );
@@ -407,10 +394,6 @@ fn paste_with_clipboard(
 
 #[async_trait]
 impl Inserter for SystemInserter {
-    fn undo(&self, target: UndoTarget) -> bool {
-        platform::undo(target)
-    }
-
     fn target_app(&self) -> Option<String> {
         platform::frontmost_app_name()
     }
@@ -449,6 +432,67 @@ fn copy_only(text: &str, reason: CopyReason, control: &InsertionControl) -> Inse
         Some(Err(e)) => InsertOutcome::Failed(format!("couldn't copy to the clipboard: {e}")),
         None => InsertOutcome::Cancelled,
     }
+}
+
+fn target_copy_reason(
+    text: &str,
+    original_app: Option<&AppIdentity>,
+    original_process: Option<u32>,
+    current_app: Option<&AppIdentity>,
+    current_process: Option<u32>,
+) -> Option<CopyReason> {
+    let changed = match (original_process, current_process) {
+        (Some(then), Some(now)) => then != now,
+        _ => app_changed(original_app, current_app),
+    };
+    if changed {
+        return Some(CopyReason::FocusChanged);
+    }
+    let terminal = [current_app, original_app]
+        .into_iter()
+        .flatten()
+        .any(|app| suggested_preset(app) == Some(ShapePreset::Verbatim));
+    (terminal && text.chars().any(char::is_control)).then_some(CopyReason::MultilineTerminal)
+}
+
+/// ⌘V on macOS, Ctrl+V elsewhere.
+fn send_paste(check_target: impl FnOnce() -> Result<(), CopyReason>) -> Result<(), CopyReason> {
+    use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+
+    let settings = Settings {
+        open_prompt_to_get_permissions: false,
+        ..Settings::default()
+    };
+    let mut enigo = Enigo::new(&settings).map_err(paste_error)?;
+
+    #[cfg(target_os = "macos")]
+    let modifier = Key::Meta;
+    #[cfg(not(target_os = "macos"))]
+    let modifier = Key::Control;
+
+    check_target()?;
+    enigo.key(modifier, Direction::Press).map_err(paste_error)?;
+    let pressed = press_v(&mut enigo);
+    let released = enigo.key(modifier, Direction::Release);
+    pressed.and(released).map_err(paste_error)
+}
+
+fn paste_error(error: impl std::fmt::Display) -> CopyReason {
+    tracing::warn!(%error, "paste keystroke failed");
+    CopyReason::PasteFailed
+}
+
+fn press_v(enigo: &mut enigo::Enigo) -> enigo::InputResult<()> {
+    use enigo::{Direction, Keyboard};
+    // A raw keycode avoids enigo's keyboard-layout lookup, which must run on the
+    // main thread on recent macOS. The keycode for "v" in the current layout
+    // (47 on Dvorak) is cached by `platform::refresh_paste_keycode`; QWERTY's 9 otherwise.
+    #[cfg(target_os = "macos")]
+    return enigo.raw(platform::paste_keycode(), Direction::Click);
+    #[cfg(target_os = "windows")]
+    return enigo.key(enigo::Key::V, Direction::Click);
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    enigo.key(enigo::Key::Unicode('v'), Direction::Click)
 }
 
 #[cfg(test)]
@@ -517,6 +561,174 @@ mod tests {
                 _ => unreachable!(),
             };
             Ok(())
+        }
+    }
+
+    fn assert_dispatch(gate: Preflight, expected: InsertOutcome) {
+        let mut clipboard = FakeClipboard(Some("previous".into()));
+        let control = InsertionControl::default();
+        let outcome = paste_with_clipboard(
+            &mut clipboard,
+            "dictation",
+            &control,
+            || (),
+            || match gate {
+                Preflight::Paste => Ok(()),
+                Preflight::CopyOnly(reason) => Err(reason),
+            },
+            || (),
+        );
+        assert_eq!(outcome, expected);
+        assert_eq!(
+            clipboard.0.as_deref(),
+            Some(if expected == InsertOutcome::Inserted {
+                "previous"
+            } else {
+                "dictation"
+            })
+        );
+        assert!(control.undo_target().is_none());
+    }
+
+    #[test]
+    fn macos_unknown_and_custom_fields_insert_and_positive_field_signals_copy() {
+        for (role, subrole, expected) in [
+            (None, None, InsertOutcome::Inserted),
+            (Some("AXWebArea"), None, InsertOutcome::Inserted),
+            (Some("AXGroup"), Some("Custom"), InsertOutcome::Inserted),
+            (Some("AXTextArea"), None, InsertOutcome::Inserted),
+            (
+                Some("AXButton"),
+                None,
+                InsertOutcome::Copied(CopyReason::NoTextField),
+            ),
+            (
+                Some("AXSecureTextField"),
+                None,
+                InsertOutcome::Copied(CopyReason::SecureInput),
+            ),
+            (
+                None,
+                Some("AXSecureTextField"),
+                InsertOutcome::Copied(CopyReason::SecureInput),
+            ),
+        ] {
+            let gate = platform::preflight_for(platform::SessionKind::MacOs, || {
+                platform::macos_field_copy_reason(role, subrole)
+                    .map_or(Preflight::Paste, Preflight::CopyOnly)
+            });
+            assert_dispatch(gate, expected);
+        }
+    }
+
+    #[test]
+    fn windows_non_edit_and_unknown_controls_insert_and_password_edits_copy() {
+        for (class, masked, expected) in [
+            (
+                "Chrome_RenderWidgetHostHWND",
+                false,
+                InsertOutcome::Inserted,
+            ),
+            ("RichEdit50W", false, InsertOutcome::Inserted),
+            ("", false, InsertOutcome::Inserted),
+            ("Edit", false, InsertOutcome::Inserted),
+            ("EDIT", true, InsertOutcome::Copied(CopyReason::SecureInput)),
+        ] {
+            let gate = platform::preflight_for(platform::SessionKind::Windows, || {
+                platform::windows_field_copy_reason(class, || {
+                    assert!(class.eq_ignore_ascii_case("Edit"));
+                    masked
+                })
+                .map_or(Preflight::Paste, Preflight::CopyOnly)
+            });
+            assert_dispatch(gate, expected);
+        }
+    }
+
+    #[test]
+    fn x11_and_unknown_sessions_insert_and_wayland_copies() {
+        use platform::SessionKind;
+        for (session, expected) in [
+            (SessionKind::X11, InsertOutcome::Inserted),
+            (SessionKind::Unknown, InsertOutcome::Inserted),
+            (
+                SessionKind::Wayland,
+                InsertOutcome::Copied(CopyReason::Wayland),
+            ),
+        ] {
+            assert_dispatch(
+                platform::preflight_for(session, || panic!("no focused-field query")),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn target_guard_copies_for_focus_change_or_terminal_control_characters() {
+        let terminal = AppIdentity {
+            x11_window_class: Some("kitty".into()),
+            ..Default::default()
+        };
+        let editor = AppIdentity {
+            x11_window_class: Some("Code".into()),
+            ..Default::default()
+        };
+        for (text, original, pid, current, current_pid, expected) in [
+            ("text", None, None, None, None, InsertOutcome::Inserted),
+            (
+                "text",
+                Some(&editor),
+                Some(1),
+                None,
+                None,
+                InsertOutcome::Inserted,
+            ),
+            (
+                "text",
+                Some(&editor),
+                None,
+                Some(&terminal),
+                None,
+                InsertOutcome::Copied(CopyReason::FocusChanged),
+            ),
+            (
+                "text",
+                Some(&editor),
+                Some(1),
+                Some(&editor),
+                Some(2),
+                InsertOutcome::Copied(CopyReason::FocusChanged),
+            ),
+            (
+                "text",
+                Some(&terminal),
+                None,
+                Some(&terminal),
+                None,
+                InsertOutcome::Inserted,
+            ),
+            (
+                "text\nmore",
+                Some(&terminal),
+                None,
+                Some(&terminal),
+                None,
+                InsertOutcome::Copied(CopyReason::MultilineTerminal),
+            ),
+            (
+                "text\tmore",
+                None,
+                None,
+                Some(&terminal),
+                None,
+                InsertOutcome::Copied(CopyReason::MultilineTerminal),
+            ),
+        ] {
+            assert_dispatch(
+                target_copy_reason(text, original, pid, current, current_pid)
+                    .map_or(Preflight::Paste, Preflight::CopyOnly),
+                expected,
+            );
         }
     }
 
