@@ -4,6 +4,7 @@
 pub mod calls;
 pub mod commands;
 pub mod dictation;
+mod dictation_sound;
 pub mod dto;
 pub mod models;
 pub mod pipeline;
@@ -362,6 +363,20 @@ pub fn run() {
             commands::accept_call_prompt,
             commands::dismiss_call_prompt,
             commands::list_input_devices,
+            commands::dictation_shape_options,
+            commands::list_dictation_app_rules,
+            commands::save_dictation_app_rule,
+            commands::remove_dictation_app_rule,
+            commands::set_dictation_shape_edits,
+            commands::list_dictation_apps,
+            commands::preview_dictation_shape,
+            commands::get_dictation_hud,
+            commands::switch_dictation_shape,
+            commands::set_dictation_hud_interaction,
+            commands::dismiss_dictation_hud,
+            commands::dismiss_dictation_error,
+            commands::undo_dictation_insert,
+            commands::fix_dictation_error,
             commands::list_dictations,
             commands::dictation_stats,
             commands::delete_dictation,

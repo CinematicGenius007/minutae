@@ -96,19 +96,61 @@ export interface CaptionLine {
   atMs: number; endMs: number; text: string; final: boolean;
 }
 
+export type ShapePreset = "tidy" | "verbatim" | "chatMessage" | "email" | "notesAndLists" | "codeAndCommit";
+export type Capitals = "sentence" | "asSaid" | "relaxed";
+export type LineBreaks = "singleLine" | "preserve" | "spoken" | "email" | "notesAndLists";
+export interface Shape {
+  preset: ShapePreset; capitals: Capitals; dropFinalPeriod: boolean; tidy: boolean;
+  spokenPunctuation: boolean; lineBreaks: LineBreaks; rewriteWithLocalModel: boolean;
+}
+/** Applies to prose presets. Verbatim and Code & commit ignore these edits. */
+export interface ShapeEdits { capitals?: Capitals | null; dropFinalPeriod?: boolean | null }
+export interface AppIdentity {
+  macosBundleId: string | null; windowsExecutable: string | null; x11WindowClass: string | null; displayName: string | null;
+}
+export interface AppMatcher {
+  kind: "macosBundleId" | "windowsExecutable" | "x11WindowClass" | "displayName";
+  value: string;
+}
+export interface DictationAppRule { app: AppMatcher; displayName: string; preset: ShapePreset }
+export interface DictationApp { app: AppMatcher; displayName: string; suggestedPreset: ShapePreset | null }
+export interface DictationCapabilities {
+  /** A passive HUD is available even when pointer controls are disabled. */
+  hudVisible: boolean;
+  /** The HUD window can take clicks without stealing focus (macOS only). It still passes
+   * clicks through except while the current state shows a control (today: error). */
+  hudInteractive: boolean;
+  localRewriteAvailable: boolean;
+  cloudRewrite: "planned";
+}
+export interface DictationShapeOptions {
+  /** Factory values. Use these to display Reset shape before saving. */
+  presets: Shape[];
+  /** Ordered by Option/Alt plus digit, starting at 1. */
+  quickPresets: ShapePreset[];
+  defaultShape: Shape;
+  capabilities: DictationCapabilities;
+}
+
 export interface Dictation {
   id: Uuid; createdAt: string; text: string; rawText: string; targetApp: string | null;
   wordCount: number; durationMs: number; inserted: boolean;
+  appIdentity: AppIdentity | null; shape: Shape | null;
 }
 export interface DictationStats { wordsThisWeek: number; minutesSaved: number }
 
+export type HudFixAction = "microphoneSettings" | "transcriptionSettings" | "retry" | "dictationSettings";
+export type CopyReason = "accessibilityNotTrusted" | "noTextField" | "wayland" | "secureInput"
+  | "pasteFailed" | "focusChanged" | "multilineTerminal";
+
+/** A listening HUD reports only shortcut presets available with the current modifiers. */
 export type HudState =
   | { state: "idle" }
-  | { state: "listening"; level: number; handsFree: boolean }
+  | { state: "listening"; level: number; handsFree: boolean; app: string | null; shape: ShapePreset; shortcutPresets: ShapePreset[] }
   | { state: "processing" }
-  | { state: "inserted"; words: number }
-  | { state: "copied"; words: number; reason: string }
-  | { state: "error"; message: string };
+  | { state: "inserted"; words: number; undoAvailable: boolean; resultId: Uuid | null }
+  | { state: "copied"; words: number; reason: string; reasonCode: CopyReason }
+  | { state: "error"; message: string; fixAction: HudFixAction };
 
 export type SearchKind = "all" | "meetings" | "dictations" | "actionItems";
 export interface SearchHit {
@@ -134,6 +176,8 @@ export interface AppSettings {
   transportOrder: Transport[]; apiFallbackEnabled: boolean; summaryLength: "brief" | "detailed";
   summariesPath: string | null; codexModel: string | null; ollamaModel: string;
   dictationHotkey: string; dictationMode: "hold" | "toggle"; tidyDictation: boolean; keepDictationAudio: boolean;
+  dictationDefaultShape: ShapePreset | null; dictationShapeEdits: Partial<Record<ShapePreset, ShapeEdits>>;
+  dictationAppRules: DictationAppRule[]; dictationStartSound: boolean;
   dictationRetentionDays: number | null; vocabulary: string[]; deleteAudioAfterDays: number | null; recordingsPath: string | null;
 }
 

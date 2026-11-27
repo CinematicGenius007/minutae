@@ -9,15 +9,16 @@ use std::time::Duration;
 use async_trait::async_trait;
 use minutae_asr::{ModelManager, TranscribeOptions, Transcriber};
 use minutae_audio::{CaptureConfig, Recorder, RecordingHandle};
-use minutae_core::{AppSettings, WhisperModel};
+use minutae_core::{AppSettings, WhisperModel, dictation::ShapePreset};
 use minutae_dictation::{
     AudioSource, DictationConfig, DictationController, DictationDeps, DictationEvent,
-    FinishedDictation, HudState, SpeechToText, SystemInserter,
+    FinishedDictation, HudFixAction, HudState, QUICK_PRESETS, SpeechToText, SystemInserter,
+    platform::identity::SystemAppIdentityLookup,
 };
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tokio::{
-    sync::{mpsc, watch},
+    sync::{mpsc, oneshot, watch},
     time::Instant,
 };
 
@@ -171,58 +172,226 @@ pub fn init(app: &AppHandle, rt: tokio::runtime::Handle) {
             cache: st.transcribers.clone(),
         }),
         inserter: Arc::new(SystemInserter::default()),
+        apps: Arc::new(SystemAppIdentityLookup),
     };
     let (controller, mut rx) =
         DictationController::new(deps, DictationConfig::from_settings(&st.settings()), rt);
     let _ = st.dictation.set(controller);
     spawn_key_worker(app);
+    let (hud_tx, mut requests) = mpsc::channel(32);
+    let _ = st.hud_commands.set(hud_tx);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let mut deadline = None;
-        while let Some(event) = next_event(&mut rx, &mut deadline).await {
-            match event {
-                DictationEvent::Hud(h) => {
-                    sync_escape(&app, hud_is_active(&h));
-                    on_hud(&app, &h);
+        let mut hud = HudState::Idle;
+        let mut clock = HudClock::default();
+        loop {
+            let next = tokio::select! {
+                biased;
+                event = rx.recv() => match event {
+                    Some(DictationEvent::Hud(h)) => h,
+                    Some(DictationEvent::StartSound) => {
+                        tauri::async_runtime::spawn_blocking(|| {
+                            if let Err(e) = crate::dictation_sound::play() {
+                                tracing::debug!(error = %e, "dictation cue unavailable");
+                            }
+                        });
+                        continue;
+                    }
+                    Some(DictationEvent::Finished(f)) => {
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move { persist(&app, *f).await });
+                        continue;
+                    }
+                    None => break,
+                },
+                () = wait_for_expiry(clock.deadline) => HudState::Idle,
+                Some(request) = requests.recv() => {
+                    if handle_hud_request(&app, request, &mut hud, &mut clock) {
+                        HudState::Idle
+                    } else {
+                        continue;
+                    }
                 }
-                DictationEvent::Finished(f) => {
-                    let app = app.clone();
-                    tauri::async_runtime::spawn(async move { persist(&app, *f).await });
+            };
+            sync_escape(&app, hud_is_active(&next));
+            sync_shape_shortcuts(&app, matches!(next, HudState::Listening { .. }));
+            // Meter updates should never cause another window show/position call.
+            if std::mem::discriminant(&hud) != std::mem::discriminant(&next) {
+                clock.set_state(&next);
+                crate::shell::present_hud(&app, &next);
+            }
+            hud = next;
+            emit_hud(&app, &hud);
+        }
+        release_escape(&app);
+    });
+}
+
+pub(crate) enum HudCommand {
+    Get,
+    Switch(ShapePreset),
+    Interaction { hovered: bool, focused: bool },
+    Dismiss,
+    DismissError,
+    Undo(uuid::Uuid),
+    Fix,
+}
+
+pub(crate) struct HudRequest {
+    command: HudCommand,
+    reply: oneshot::Sender<Result<dto::HudState, String>>,
+}
+
+pub(crate) async fn hud_request(
+    app: &AppHandle,
+    command: HudCommand,
+) -> Result<dto::HudState, String> {
+    let st = app.state::<AppState>();
+    let tx = st.hud_commands.get().ok_or("Dictation is unavailable.")?;
+    let (reply, result) = oneshot::channel();
+    tx.send(HudRequest { command, reply })
+        .await
+        .map_err(|_| "Dictation is unavailable.")?;
+    result.await.map_err(|_| "Dictation is unavailable.")?
+}
+
+fn handle_hud_request(
+    app: &AppHandle,
+    request: HudRequest,
+    hud: &mut HudState,
+    clock: &mut HudClock,
+) -> bool {
+    let st = app.state::<AppState>();
+    let mut hide = false;
+    let result = (|| {
+        if crate::shell::is_quitting() {
+            return Err("Minutae is quitting.".into());
+        }
+        let controller = st.dictation.get().ok_or("Dictation is unavailable.")?;
+        match request.command {
+            HudCommand::Get => {}
+            HudCommand::Switch(preset) => {
+                if !controller.switch_shape(preset) {
+                    return Err("Choose a shape while listening.".into());
                 }
             }
+            HudCommand::Interaction { hovered, focused } => clock.interact(hovered || focused),
+            HudCommand::Dismiss if hud_is_active(hud) => {
+                if controller.request_cancel() {
+                    send_key(app, DictationKey::Cancel);
+                }
+            }
+            HudCommand::Dismiss => hide = true,
+            // An error button or tray click queued during an error must never dismiss a
+            // newer session.
+            HudCommand::DismissError => hide = matches!(hud, HudState::Error { .. }),
+            HudCommand::Undo(result_id) => {
+                let HudState::Inserted {
+                    result_id: Some(id),
+                    undo_available,
+                    ..
+                } = hud
+                else {
+                    return Err("Nothing to undo.".into());
+                };
+                if result_id != *id
+                    || !*undo_available
+                    || !app
+                        .get_webview_window(crate::shell::HUD)
+                        .is_some_and(|w| w.is_visible().unwrap_or(false))
+                {
+                    return Err("Undo is unavailable.".into());
+                }
+                if !controller.undo_visible_insertion(*id) {
+                    *undo_available = false;
+                    emit_hud(app, hud);
+                    return Err("Undo is unavailable for the current text field.".into());
+                }
+                hide = true;
+            }
+            HudCommand::Fix => {
+                let HudState::Error { fix_action, .. } = hud else {
+                    return Err("There is no dictation error to fix.".into());
+                };
+                match fix_action {
+                    HudFixAction::MicrophoneSettings => {
+                        if crate::platform::settings_url(dto::PermissionKind::Microphone).is_some()
+                        {
+                            crate::commands::open_system_settings(
+                                app.clone(),
+                                dto::PermissionKind::Microphone,
+                            )?;
+                        } else {
+                            crate::shell::navigate(app, "/settings/general");
+                        }
+                    }
+                    HudFixAction::TranscriptionSettings => {
+                        crate::shell::navigate(app, "/settings/transcription")
+                    }
+                    HudFixAction::DictationSettings => {
+                        crate::shell::navigate(app, "/settings/dictation")
+                    }
+                    HudFixAction::Retry => send_key(app, DictationKey::Retry),
+                }
+                // Keep reporting the error until dismissed or a new dictation starts.
+            }
         }
-        sync_escape(&app, false);
-    });
+        Ok(if hide {
+            dto::HudState::Idle
+        } else {
+            hud_dto(app, hud)
+        })
+    })();
+    let _ = request.reply.send(result);
+    hide
 }
 
 fn hud_is_active(hud: &HudState) -> bool {
     matches!(hud, HudState::Listening { .. } | HudState::Processing)
 }
 
-fn hud_duration(hud: &HudState) -> Option<Duration> {
-    Some(Duration::from_millis(match hud {
-        HudState::Inserted { .. } => 1500,
-        HudState::Copied { .. } => 4000,
-        HudState::Error { .. } => 6000,
-        _ => return None,
-    }))
+#[derive(Default)]
+struct HudClock {
+    deadline: Option<Instant>,
+    remaining: Option<Duration>,
+    interacting: bool,
 }
 
-/// HUD events and expiry run serially. A newer event takes precedence over a
-/// previous HUD's timer, even if they become ready at the same time.
-async fn next_event(
-    events: &mut mpsc::UnboundedReceiver<DictationEvent>,
-    deadline: &mut Option<Instant>,
-) -> Option<DictationEvent> {
-    let event = tokio::select! {
-        biased;
-        event = events.recv() => event,
-        () = wait_for_expiry(*deadline) => Some(DictationEvent::Hud(HudState::Idle)),
-    };
-    if let Some(DictationEvent::Hud(hud)) = &event {
-        *deadline = hud_duration(hud).map(|duration| Instant::now() + duration);
+impl HudClock {
+    fn set_state(&mut self, hud: &HudState) {
+        // A new or finished session: hover and focus on the old result are gone.
+        if matches!(
+            hud,
+            HudState::Idle | HudState::Listening { .. } | HudState::Processing
+        ) {
+            self.interacting = false;
+        }
+        let duration = matches!(hud, HudState::Inserted { .. } | HudState::Copied { .. })
+            .then_some(Duration::from_secs(6));
+        if self.interacting {
+            self.remaining = duration;
+            self.deadline = None;
+        } else {
+            self.remaining = None;
+            self.deadline = duration.map(|d| Instant::now() + d);
+        }
     }
-    event
+
+    fn interact(&mut self, interacting: bool) {
+        if self.interacting == interacting {
+            return;
+        }
+        self.interacting = interacting;
+        let now = Instant::now();
+        if interacting {
+            self.remaining = self
+                .deadline
+                .take()
+                .map(|deadline| deadline.saturating_duration_since(now));
+        } else {
+            self.deadline = self.remaining.take().map(|duration| now + duration);
+        }
+    }
 }
 
 async fn wait_for_expiry(deadline: Option<Instant>) {
@@ -347,8 +516,63 @@ fn register_escape(app: &AppHandle, bindings: &mut Vec<Shortcut>) -> Option<Stri
     }
 }
 
+const SHAPE_KEYS: [Code; 5] = [
+    Code::Digit1,
+    Code::Digit2,
+    Code::Digit3,
+    Code::Digit4,
+    Code::Digit5,
+];
+
+fn held_shape_modifiers(st: &AppState) -> Modifiers {
+    let binding = st
+        .shortcuts
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .dictate;
+    Modifiers::ALT | binding.map_or_else(Modifiers::empty, |key| key.mods)
+}
+
+fn sync_shape_shortcuts(app: &AppHandle, listening: bool) {
+    let st = app.state::<AppState>();
+    let mut registered = st
+        .shape_registration
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    registered.transition(
+        listening && !crate::shell::is_quitting() && !crate::portal::use_portal(),
+        |bindings| {
+            let held = held_shape_modifiers(&st);
+            let held_modifiers = (held != Modifiers::ALT
+                && st.settings().dictation_mode == minutae_core::HotkeyMode::Hold)
+                .then_some(held);
+            let shortcuts = app.global_shortcut();
+            for (code, preset) in SHAPE_KEYS.into_iter().zip(QUICK_PRESETS) {
+                for mods in std::iter::once(Modifiers::ALT).chain(held_modifiers) {
+                    let key = Shortcut::new(Some(mods), code);
+                    if !bindings.contains(&key) && !shortcuts.is_registered(key) {
+                        match shortcuts.on_shortcut(key, move |app, _, event| {
+                            if event.state == ShortcutState::Pressed {
+                                send_key(app, DictationKey::Shape(preset));
+                            }
+                        }) {
+                            Ok(()) => bindings.push(key),
+                            Err(error) => tracing::debug!(%key, %error, "dictation shape shortcut unavailable"),
+                        }
+                    }
+                }
+            }
+            None
+        },
+        |key| app.global_shortcut().unregister(key).map_err(|error| {
+            tracing::warn!(%key, %error, "could not release dictation shape shortcut");
+        }).is_ok(),
+    );
+}
+
 pub fn release_escape(app: &AppHandle) {
     sync_escape(app, false);
+    sync_shape_shortcuts(app, false);
 }
 
 /// A dictation key event from a global shortcut (plugin or portal) or the CLI.
@@ -357,6 +581,8 @@ pub enum DictationKey {
     Down,
     Up,
     Cancel,
+    Shape(ShapePreset),
+    Retry,
     /// `--toggle-dictation`: start or stop whatever the hotkey mode.
     Toggle,
 }
@@ -387,6 +613,10 @@ fn spawn_key_worker(app: &AppHandle) {
                         DictationKey::Up => c.key_up(),
                         DictationKey::Toggle => c.toggle(),
                         DictationKey::Cancel => c.finish_cancel(),
+                        DictationKey::Shape(preset) => {
+                            c.switch_shape(preset);
+                        }
+                        DictationKey::Retry => c.retry(),
                     }
                 }
             }
@@ -535,13 +765,44 @@ pub fn save_dictation_audio(path: &std::path::Path, samples: &[f32]) -> std::io:
     w.finalize().map_err(std::io::Error::other)
 }
 
-fn on_hud(app: &AppHandle, h: &HudState) {
-    let _ = app.emit(ev::HUD, dto::HudState::from(h));
-    match h {
-        HudState::Idle => crate::shell::hide_aux(app, crate::shell::HUD),
-        HudState::Listening { level, .. } if *level > 0.0 => {} // already visible; avoid meter-rate show calls
-        _ => crate::shell::show_aux(app, crate::shell::HUD),
+fn hud_dto(app: &AppHandle, hud: &HudState) -> dto::HudState {
+    let mut dto = dto::HudState::from(hud);
+    if let (
+        HudState::Listening { hotkey_held, .. },
+        dto::HudState::Listening {
+            shortcut_presets, ..
+        },
+    ) = (hud, &mut dto)
+    {
+        let st = app.state::<AppState>();
+        let registered = st
+            .shape_registration
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let modifiers = if *hotkey_held {
+            held_shape_modifiers(&st)
+        } else {
+            Modifiers::ALT
+        };
+        *shortcut_presets = registered_shape_presets(&registered.bindings, modifiers);
     }
+    dto
+}
+
+fn registered_shape_presets(bindings: &[Shortcut], modifiers: Modifiers) -> Vec<ShapePreset> {
+    SHAPE_KEYS
+        .into_iter()
+        .zip(QUICK_PRESETS)
+        .filter_map(|(code, preset)| {
+            bindings
+                .contains(&Shortcut::new(Some(modifiers), code))
+                .then_some(preset)
+        })
+        .collect()
+}
+
+fn emit_hud(app: &AppHandle, hud: &HudState) {
+    let _ = app.emit(ev::HUD, hud_dto(app, hud));
 }
 
 pub fn apply_settings(app: &AppHandle, settings: &AppSettings) {
@@ -566,6 +827,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shape_shortcuts_require_registration_for_the_current_modifiers() {
+        let plain = Modifiers::ALT;
+        let held = Modifiers::ALT | Modifiers::CONTROL;
+        let keys = [
+            Shortcut::new(Some(plain), Code::Digit1),
+            Shortcut::new(Some(held), Code::Digit2),
+        ];
+        assert_eq!(
+            registered_shape_presets(&keys, held),
+            [ShapePreset::ChatMessage]
+        );
+        assert_eq!(
+            registered_shape_presets(&keys, plain),
+            [ShapePreset::Verbatim]
+        );
+    }
+
+    #[test]
     fn hold_becomes_toggle_without_releases() {
         use minutae_core::HotkeyMode;
         let s = AppSettings {
@@ -578,58 +857,52 @@ mod tests {
     }
 
     #[test]
-    fn escape_is_registered_only_during_an_active_dictation() {
-        let mut escape = EscapeRegistration::default();
-        let changes = std::cell::RefCell::new(Vec::new());
-        for hud in [
-            HudState::Listening {
+    fn escape_and_shape_shortcuts_release_on_every_listening_exit() {
+        fn exercise(active: impl Fn(&HudState) -> bool, expected: &[bool]) {
+            let mut registration = EscapeRegistration::default();
+            let changes = std::cell::RefCell::new(Vec::new());
+            let listening = HudState::Listening {
                 level: 0.0,
                 hands_free: false,
-            },
-            HudState::Listening {
-                level: 0.5,
-                hands_free: true,
-            },
-            HudState::Processing,
-            HudState::Idle,
-            HudState::Listening {
-                level: 0.0,
-                hands_free: false,
-            },
-            HudState::Inserted { words: 1 },
-            HudState::Listening {
-                level: 0.0,
-                hands_free: false,
-            },
-            HudState::Error {
-                message: "no speech".into(),
-            },
-            HudState::Listening {
-                level: 0.0,
-                hands_free: false,
-            },
-            HudState::Copied {
-                words: 1,
-                reason: minutae_dictation::CopyReason::Wayland,
-            },
-        ] {
-            escape.transition(
-                hud_is_active(&hud),
-                |bindings| {
-                    changes.borrow_mut().push(true);
-                    bindings.push(escape_shortcut());
-                    None
+                hotkey_held: true,
+                app: None,
+                shape: ShapePreset::Tidy,
+            };
+            for hud in [
+                listening.clone(),
+                listening.clone(),
+                HudState::Processing,
+                HudState::Idle,
+                listening.clone(),
+                HudState::Idle,
+                listening,
+                HudState::Error {
+                    message: "No speech".into(),
+                    fix_action: HudFixAction::Retry,
                 },
-                |_| {
-                    changes.borrow_mut().push(false);
-                    true
-                },
-            );
+            ] {
+                registration.transition(
+                    active(&hud),
+                    |bindings| {
+                        changes.borrow_mut().push(true);
+                        bindings.push(escape_shortcut());
+                        None
+                    },
+                    |_| {
+                        changes.borrow_mut().push(false);
+                        true
+                    },
+                );
+            }
+            assert_eq!(changes.into_inner(), expected);
+            assert!(registration.bindings.is_empty());
         }
-        assert_eq!(
-            changes.into_inner(),
-            [true, false, true, false, true, false, true, false]
+        exercise(hud_is_active, &[true, false, true, false, true, false]);
+        exercise(
+            |hud| matches!(hud, HudState::Listening { .. }),
+            &[true, false, true, false, true, false],
         );
+        assert!(hud_is_active(&HudState::Processing));
     }
 
     #[test]
@@ -657,60 +930,72 @@ mod tests {
         );
     }
 
-    #[test]
-    fn hud_outcomes_have_distinct_timeouts() {
-        assert_eq!(
-            hud_duration(&HudState::Inserted { words: 1 }),
-            Some(Duration::from_millis(1500))
-        );
-        assert_eq!(
-            hud_duration(&HudState::Copied {
+    #[tokio::test(start_paused = true)]
+    async fn hud_times_both_results_and_pauses_for_interaction() {
+        for result in [
+            HudState::Inserted {
                 words: 1,
-                reason: minutae_dictation::CopyReason::NoTextField
-            }),
-            Some(Duration::from_secs(4))
-        );
-        assert_eq!(
-            hud_duration(&HudState::Error {
-                message: "no speech".into()
-            }),
-            Some(Duration::from_secs(6))
-        );
-        assert_eq!(hud_duration(&HudState::Processing), None);
-        assert_eq!(hud_duration(&HudState::Idle), None);
+                undo_available: true,
+                result_id: None,
+            },
+            HudState::Copied {
+                words: 1,
+                reason: minutae_dictation::CopyReason::NoTextField,
+            },
+        ] {
+            let mut clock = HudClock::default();
+            clock.set_state(&result);
+            assert_eq!(
+                clock.deadline,
+                Some(Instant::now() + Duration::from_secs(6))
+            );
+            tokio::time::advance(Duration::from_secs(2)).await;
+            clock.interact(true);
+            tokio::time::advance(Duration::from_secs(10)).await;
+            assert_eq!(clock.deadline, None);
+            clock.interact(false);
+            assert_eq!(
+                clock.deadline,
+                Some(Instant::now() + Duration::from_secs(4))
+            );
+            clock.set_state(&HudState::Error {
+                message: "No speech".into(),
+                fix_action: HudFixAction::Retry,
+            });
+            assert_eq!(clock.deadline, None);
+        }
     }
 
     #[tokio::test(start_paused = true)]
-    async fn old_timeout_cannot_hide_a_new_dictation() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut deadline = None;
-        let inserted = DictationEvent::Hud(HudState::Inserted { words: 1 });
-        tx.send(inserted.clone()).unwrap();
-        assert_eq!(next_event(&mut rx, &mut deadline).await, Some(inserted));
-
-        tokio::time::advance(Duration::from_millis(1500)).await;
-        let listening = DictationEvent::Hud(HudState::Listening {
-            level: 0.0,
-            hands_free: false,
-        });
-        tx.send(listening.clone()).unwrap();
-        assert_eq!(next_event(&mut rx, &mut deadline).await, Some(listening));
-        assert!(
-            tokio::time::timeout(Duration::from_secs(2), next_event(&mut rx, &mut deadline))
-                .await
-                .is_err()
-        );
-
-        let error = DictationEvent::Hud(HudState::Error {
-            message: "no speech".into(),
-        });
-        tx.send(error.clone()).unwrap();
-        assert_eq!(next_event(&mut rx, &mut deadline).await, Some(error));
-        assert_eq!(
-            next_event(&mut rx, &mut deadline).await,
-            Some(DictationEvent::Hud(HudState::Idle))
-        );
-        assert!(deadline.is_none());
+    async fn hud_interaction_does_not_carry_into_a_new_dictation() {
+        let inserted = HudState::Inserted {
+            words: 1,
+            undo_available: false,
+            result_id: None,
+        };
+        for next in [
+            HudState::Idle,
+            HudState::Listening {
+                level: 0.0,
+                hands_free: false,
+                hotkey_held: true,
+                app: None,
+                shape: ShapePreset::Tidy,
+            },
+            HudState::Processing,
+        ] {
+            let mut clock = HudClock::default();
+            clock.set_state(&inserted);
+            clock.interact(true);
+            clock.set_state(&next);
+            assert_eq!(clock.deadline, None);
+            clock.set_state(&inserted);
+            assert_eq!(
+                clock.deadline,
+                Some(Instant::now() + Duration::from_secs(6)),
+                "result after {next:?} must expire"
+            );
+        }
     }
 
     fn dictation_with_audio(
@@ -722,6 +1007,8 @@ mod tests {
         let path = audio_path(&root.join("dictations"), id);
         store
             .insert_dictation(&minutae_core::Dictation {
+                app_identity: None,
+                shape: None,
                 id,
                 created_at,
                 text: "test".into(),

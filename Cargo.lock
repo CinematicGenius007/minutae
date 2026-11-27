@@ -3191,6 +3191,8 @@ dependencies = [
  "async-trait",
  "block2",
  "chrono",
+ "cpal",
+ "gtk",
  "hound",
  "minutae-aec",
  "minutae-asr",
@@ -3227,6 +3229,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "windows-sys 0.61.2",
  "zip 2.6.1",
 ]
 

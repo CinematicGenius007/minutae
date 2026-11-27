@@ -2,9 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-use crate::insert::CopyReason;
-use crate::insert::Preflight;
+use crate::insert::{CopyReason, Preflight};
 
 pub mod identity;
 #[cfg(target_os = "macos")]
@@ -63,7 +61,11 @@ pub fn session_kind() -> SessionKind {
 }
 
 pub fn insertion_support() -> InsertionSupport {
-    match session_kind() {
+    insertion_support_for(session_kind())
+}
+
+fn insertion_support_for(session: SessionKind) -> InsertionSupport {
+    match session {
         SessionKind::Wayland => InsertionSupport::CopyOnly,
         _ => InsertionSupport::Paste,
     }
@@ -97,16 +99,74 @@ pub fn frontmost_app_name() -> Option<String> {
     None
 }
 
-pub(crate) fn preflight() -> Preflight {
-    #[cfg(target_os = "macos")]
-    return macos::preflight();
-    #[cfg(target_os = "windows")]
-    return windows::preflight();
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    match session_kind() {
+pub(crate) fn preflight(session: SessionKind) -> Preflight {
+    preflight_for(session, || {
+        #[cfg(target_os = "macos")]
+        return macos::preflight();
+        #[cfg(target_os = "windows")]
+        return windows::preflight();
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        Preflight::Paste
+    })
+}
+
+pub(crate) fn preflight_for(
+    session: SessionKind,
+    focused_field: impl FnOnce() -> Preflight,
+) -> Preflight {
+    match session {
         SessionKind::Wayland => Preflight::CopyOnly(CopyReason::Wayland),
-        _ => Preflight::Paste,
+        SessionKind::X11 | SessionKind::Unknown => Preflight::Paste,
+        SessionKind::MacOs | SessionKind::Windows => focused_field(),
     }
+}
+
+#[cfg(any(target_os = "macos", test))]
+/// Roles that clearly cannot take typed text. Anything else, including
+/// web areas, groups and unknown roles (Electron, browsers), is attempted.
+const NON_TEXT_ROLES: &[&str] = &[
+    "AXButton",
+    "AXCheckBox",
+    "AXRadioButton",
+    "AXMenuItem",
+    "AXMenuBarItem",
+    "AXMenuButton",
+    "AXPopUpButton",
+    "AXImage",
+    "AXWindow",
+    "AXApplication",
+    "AXList",
+    "AXTable",
+    "AXOutline",
+    "AXRow",
+    "AXCell",
+    "AXSlider",
+    "AXLink",
+    "AXTabGroup",
+    "AXToolbar",
+    "AXDisclosureTriangle",
+    "AXStaticText",
+    "AXDockItem",
+];
+
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn macos_field_copy_reason(
+    role: Option<&str>,
+    subrole: Option<&str>,
+) -> Option<CopyReason> {
+    if [role, subrole].contains(&Some("AXSecureTextField")) {
+        return Some(CopyReason::SecureInput);
+    }
+    role.filter(|role| NON_TEXT_ROLES.contains(role))
+        .map(|_| CopyReason::NoTextField)
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn windows_field_copy_reason(
+    class: &str,
+    edit_is_masked: impl FnOnce() -> bool,
+) -> Option<CopyReason> {
+    (class.eq_ignore_ascii_case("Edit") && edit_is_masked()).then_some(CopyReason::SecureInput)
 }
 
 /// macOS: cached keycode for the "v" of ⌘V in the current keyboard layout (QWERTY's 9 until

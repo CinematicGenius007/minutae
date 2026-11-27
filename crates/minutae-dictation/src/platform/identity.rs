@@ -1,19 +1,32 @@
 //! Foreground application metadata. No window titles or contents are read.
 
-use serde::{Deserialize, Serialize};
+pub use minutae_core::dictation::AppIdentity;
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppIdentity {
-    pub macos_bundle_id: Option<String>,
-    /// The executable stem reported by Win32, e.g. "notepad".
-    pub windows_executable: Option<String>,
-    pub x11_window_class: Option<String>,
-    pub display_name: Option<String>,
+/// Missing metadata is inconclusive. Compare identifiers only when both
+/// observations expose the same kind.
+pub(crate) fn app_changed(original: Option<&AppIdentity>, current: Option<&AppIdentity>) -> bool {
+    let (Some(original), Some(current)) = (original, current) else {
+        return false;
+    };
+    match (original.matcher(), current.matcher()) {
+        (Some(expected), Some(actual))
+            if std::mem::discriminant(&expected) == std::mem::discriminant(&actual) =>
+        {
+            !expected.matches(current)
+        }
+        _ => false,
+    }
 }
 
 pub trait AppIdentityLookup: Send + Sync {
     fn frontmost_app(&self) -> Option<AppIdentity>;
+    /// App identity and a native target ID (process ID on macOS/Windows, window ID on X11).
+    fn foreground_target(&self) -> (Option<AppIdentity>, Option<u32>) {
+        (self.frontmost_app(), None)
+    }
+    fn available_apps(&self) -> Vec<AppIdentity> {
+        self.frontmost_app().into_iter().collect()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -22,6 +35,78 @@ pub struct SystemAppIdentityLookup;
 impl AppIdentityLookup for SystemAppIdentityLookup {
     fn frontmost_app(&self) -> Option<AppIdentity> {
         frontmost_app_identity()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn foreground_target(&self) -> (Option<AppIdentity>, Option<u32>) {
+        let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        let Some(app) = workspace.frontmostApplication() else {
+            return (None, None);
+        };
+        (
+            mac_identity(&app),
+            u32::try_from(app.processIdentifier()).ok(),
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    fn available_apps(&self) -> Vec<AppIdentity> {
+        use objc2_app_kit::NSApplicationActivationPolicy;
+        let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        workspace
+            .runningApplications()
+            .iter()
+            .filter(|app| app.activationPolicy() == NSApplicationActivationPolicy::Regular)
+            .filter(|app| app.processIdentifier() as u32 != std::process::id())
+            .filter_map(|app| mac_identity(&app))
+            .collect()
+    }
+
+    #[cfg(target_os = "windows")]
+    fn foreground_target(&self) -> (Option<AppIdentity>, Option<u32>) {
+        let (exe, pid) = super::windows::foreground_executable();
+        (exe.map(windows_identity), pid)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn available_apps(&self) -> Vec<AppIdentity> {
+        super::windows::visible_executables()
+            .into_iter()
+            .map(windows_identity)
+            .collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn foreground_target(&self) -> (Option<AppIdentity>, Option<u32>) {
+        x11_active_target().unwrap_or_default()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn available_apps(&self) -> Vec<AppIdentity> {
+        use std::process::Command;
+        if super::session_kind() != super::SessionKind::X11 {
+            return Vec::new();
+        }
+        let Ok(output) = Command::new("xprop")
+            .args(["-root", "-notype", "_NET_CLIENT_LIST"])
+            .output()
+        else {
+            return Vec::new();
+        };
+        let Ok(text) = std::str::from_utf8(&output.stdout) else {
+            return Vec::new();
+        };
+        let Some(ids) = text.trim().strip_prefix("_NET_CLIENT_LIST: window id # ") else {
+            return Vec::new();
+        };
+        ids.split(", ")
+            .take(100)
+            .filter_map(|id| u32::from_str_radix(id.strip_prefix("0x")?, 16).ok())
+            .filter_map(|id| {
+                let properties = x11_window_properties(id, &["WM_CLASS", "_NET_WM_PID"])?;
+                x11_picker_identity(&properties, std::process::id())
+            })
+            .collect()
     }
 }
 
@@ -39,6 +124,11 @@ impl AppIdentityLookup for FakeAppIdentityLookup {
 pub fn frontmost_app_identity() -> Option<AppIdentity> {
     let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
     let app = workspace.frontmostApplication()?;
+    mac_identity(&app)
+}
+
+#[cfg(target_os = "macos")]
+fn mac_identity(app: &objc2_app_kit::NSRunningApplication) -> Option<AppIdentity> {
     let macos_bundle_id = app.bundleIdentifier().map(|id| id.to_string());
     let display_name = app.localizedName().map(|name| name.to_string());
     (macos_bundle_id.is_some() || display_name.is_some()).then_some(AppIdentity {
@@ -50,16 +140,25 @@ pub fn frontmost_app_identity() -> Option<AppIdentity> {
 
 #[cfg(target_os = "windows")]
 pub fn frontmost_app_identity() -> Option<AppIdentity> {
-    let executable = super::windows::frontmost_app_name()?;
-    Some(AppIdentity {
+    Some(windows_identity(super::windows::frontmost_app_name()?))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_identity(executable: String) -> AppIdentity {
+    AppIdentity {
         display_name: Some(executable.clone()),
         windows_executable: Some(executable),
         ..AppIdentity::default()
-    })
+    }
 }
 
 #[cfg(target_os = "linux")]
 pub fn frontmost_app_identity() -> Option<AppIdentity> {
+    x11_active_target()?.0
+}
+
+#[cfg(target_os = "linux")]
+fn x11_active_target() -> Option<(Option<AppIdentity>, Option<u32>)> {
     use std::process::Command;
 
     if super::session_kind() != super::SessionKind::X11 {
@@ -72,12 +171,47 @@ pub fn frontmost_app_identity() -> Option<AppIdentity> {
         .args(["-root", "-notype", "_NET_ACTIVE_WINDOW"])
         .output()
         .ok()?;
-    let id = active_window_id(&active.status.success().then_some(active.stdout)?)?;
-    let property = Command::new("xprop")
-        .args(["-id", &format!("0x{id:x}"), "-notype", "WM_CLASS"])
+    x11_target(&active.status.success().then_some(active.stdout)?, |id| {
+        x11_identity(&x11_window_properties(id, &["WM_CLASS"])?)
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn x11_target(
+    active: &[u8],
+    lookup: impl FnOnce(u32) -> Option<AppIdentity>,
+) -> Option<(Option<AppIdentity>, Option<u32>)> {
+    let id = active_window_id(active)?;
+    Some((lookup(id), Some(id)))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn x11_picker_identity(properties: &str, own_pid: u32) -> Option<AppIdentity> {
+    let pid = properties.lines().find_map(|line| {
+        line.strip_prefix("_NET_WM_PID = ")?
+            .trim()
+            .parse::<u32>()
+            .ok()
+    });
+    if pid == Some(own_pid) {
+        return None;
+    }
+    x11_identity(properties)
+}
+
+#[cfg(target_os = "linux")]
+fn x11_window_properties(id: u32, properties: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("xprop")
+        .args(["-id", &format!("0x{id:x}"), "-notype"])
+        .args(properties)
         .output()
         .ok()?;
-    let class = window_class(&property.status.success().then_some(property.stdout)?)?;
+    String::from_utf8(output.status.success().then_some(output.stdout)?).ok()
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn x11_identity(properties: &str) -> Option<AppIdentity> {
+    let class = properties.lines().find_map(window_class)?;
     Some(AppIdentity {
         display_name: Some(class.clone()),
         x11_window_class: Some(class),
@@ -101,8 +235,7 @@ fn active_window_id(output: &[u8]) -> Option<u32> {
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn window_class(output: &[u8]) -> Option<String> {
-    let output = std::str::from_utf8(output).ok()?;
+fn window_class(output: &str) -> Option<String> {
     // The class is the last quoted field (the first field is the instance).
     let (_, class) = output
         .trim()
@@ -115,6 +248,19 @@ fn window_class(output: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn x11_picker_excludes_own_pid_but_keeps_unknown_pid() {
+        let properties = |pid: &str| format!("WM_CLASS = \"minutae\", \"Minutae\"\n{pid}");
+        for (pid, visible) in [
+            ("_NET_WM_PID = 17", false),
+            ("_NET_WM_PID = 18", true),
+            ("_NET_WM_PID:  not found.", true),
+        ] {
+            let properties = properties(pid);
+            assert_eq!(x11_picker_identity(&properties, 17).is_some(), visible);
+        }
+    }
 
     #[test]
     fn parses_x11_active_window_and_class() {
@@ -141,11 +287,7 @@ mod tests {
             ("WM_CLASS = \"just-one-field\"\n", None),
             ("WM_CLASS:  not found.\n", None),
         ] {
-            assert_eq!(
-                window_class(input.as_bytes()).as_deref(),
-                expected,
-                "{input}"
-            );
+            assert_eq!(window_class(input).as_deref(), expected, "{input}");
         }
     }
 }

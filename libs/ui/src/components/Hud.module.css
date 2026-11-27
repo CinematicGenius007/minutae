@@ -18,7 +18,8 @@
 }
 .listening { padding-left: var(--s-4); }
 .inserted, .copied, .error { gap: var(--s-3); }
-.error { max-width: 420px; }
+.error { max-width: min(420px, calc(100% - var(--s-4))); }
+.hudAction { flex-shrink: 0; pointer-events: auto; }
 .message { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .alert { display: inline-flex; flex-shrink: 0; color: var(--on-hud); }
 .timer {

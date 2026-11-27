@@ -25,6 +25,7 @@ pub const PROMPT: &str = "prompt";
 /// macOS menu-bar panel (route `#/tray`), anchored under the tray icon.
 pub const TRAY_PANEL: &str = "tray";
 const TRAY_ID: &str = "minutae";
+const DISMISS_DICTATION_ERROR: &str = "dismiss_dictation_error";
 
 const HUD_SIZE: (f64, f64) = (320.0, 64.0);
 const PROMPT_SIZE: (f64, f64) = (380.0, 200.0);
@@ -76,6 +77,7 @@ pub fn create_aux_windows(app: &AppHandle) -> tauri::Result<()> {
         .skip_taskbar(true)
         .focused(false)
         .focusable(false)
+        .accept_first_mouse(label == HUD)
         .visible(false)
         .build()?;
         #[cfg(target_os = "macos")]
@@ -83,8 +85,14 @@ pub fn create_aux_windows(app: &AppHandle) -> tauri::Result<()> {
             use tauri_nspanel::{CollectionBehavior, PanelLevel, StyleMask, WebviewWindowExt};
             let panel = window.to_panel::<MinutaePanel>()?;
             panel.set_level(PanelLevel::Status.value());
-            if let Err(e) = panel.add_style_mask(StyleMask::empty().nonactivating_panel().value()) {
-                tracing::warn!(?e, "nonactivating panel style");
+            // Only a natively non-activating HUD may ever take the pointer.
+            match panel.add_style_mask(StyleMask::empty().nonactivating_panel().value()) {
+                Ok(()) if label == HUD => app
+                    .state::<AppState>()
+                    .hud_interactive
+                    .store(true, std::sync::atomic::Ordering::Relaxed),
+                Err(e) => tracing::warn!(?e, "nonactivating panel style"),
+                _ => {}
             }
             panel.set_collection_behavior(
                 CollectionBehavior::new()
@@ -95,11 +103,41 @@ pub fn create_aux_windows(app: &AppHandle) -> tauri::Result<()> {
             );
             panel.set_hides_on_deactivate(false);
         }
-        #[cfg(not(target_os = "macos"))]
-        let _ = window;
+        #[cfg(target_os = "linux")]
+        if label == HUD {
+            use gtk::prelude::*;
+            let gtk_window = window.gtk_window()?;
+            gtk_window.set_focus_on_map(false);
+            gtk_window.set_accept_focus(false);
+            gtk_window.realize();
+        }
+        // The HUD floats over other apps: it starts click-through everywhere.
+        if label == HUD {
+            set_hud_pointer(&window, false)?;
+            #[cfg(target_os = "windows")]
+            show_layered_hud(&window)?;
+        }
     }
     #[cfg(target_os = "macos")]
     create_tray_panel(app)?;
+    Ok(())
+}
+
+/// Click-through on Windows makes the window layered (`WS_EX_LAYERED`), and Windows
+/// does not draw a layered window until its attributes are set. Full opacity here;
+/// the page's own transparency is unaffected. Must run on the main thread, after the
+/// window has been made click-through.
+#[cfg(target_os = "windows")]
+fn show_layered_hud(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{LWA_ALPHA, SetLayeredWindowAttributes};
+    let hwnd = window.hwnd()?;
+    // SAFETY: this is the live HUD HWND, on its UI thread.
+    if unsafe { SetLayeredWindowAttributes(hwnd.0.cast(), 0, u8::MAX, LWA_ALPHA) } == 0 {
+        tracing::warn!(
+            error = %std::io::Error::last_os_error(),
+            "HUD layered window attributes"
+        );
+    }
     Ok(())
 }
 
@@ -230,6 +268,66 @@ fn place(app: &AppHandle, label: &str) {
     let _ = w.set_position(LogicalPosition::new(x, y));
 }
 
+pub fn hud_interactive(app: &AppHandle) -> bool {
+    app.state::<AppState>()
+        .hud_interactive
+        .load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether the HUD window takes the pointer: only where the window is natively
+/// non-activating (a click cannot take focus from the app being dictated into), and
+/// only while the state renders a control the user can press. Everywhere else clicks
+/// pass through to the app underneath.
+fn hud_accepts_pointer(non_activating: bool, hud: &minutae_dictation::HudState) -> bool {
+    use minutae_dictation::HudState;
+    non_activating
+        && match hud {
+            HudState::Error { .. } => true,
+            HudState::Idle
+            | HudState::Listening { .. }
+            | HudState::Processing
+            | HudState::Inserted { .. }
+            | HudState::Copied { .. } => false,
+        }
+}
+
+/// Must run on the main thread.
+fn set_hud_pointer(window: &tauri::WebviewWindow, accepts: bool) -> tauri::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::*;
+        // An empty input region; tao's `set_ignore_cursor_events` leaves one pixel.
+        let region = (!accepts).then(gtk::cairo::Region::create);
+        window
+            .gtk_window()?
+            .input_shape_combine_region(region.as_ref());
+        Ok(())
+    }
+    // On Windows the HUD never accepts, so the flag never changes after creation. That
+    // matters: tao would hide a window it did not show itself when its flags change.
+    #[cfg(not(target_os = "linux"))]
+    window.set_ignore_cursor_events(!accepts)
+}
+
+/// Apply a HUD state to its window and the tray: pointer policy first, then visibility.
+pub(crate) fn present_hud(app: &AppHandle, hud: &minutae_dictation::HudState) {
+    sync_tray_dictation_error(app, hud);
+    let accepts = hud_accepts_pointer(hud_interactive(app), hud);
+    let a = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(w) = a.get_webview_window(HUD)
+            && let Err(e) = set_hud_pointer(&w, accepts)
+        {
+            tracing::warn!(error = %e, "HUD pointer handling");
+        }
+    });
+    if matches!(hud, minutae_dictation::HudState::Idle) {
+        hide_aux(app, HUD);
+    } else {
+        show_aux(app, HUD);
+    }
+}
+
 /// Show an auxiliary window without activating the app.
 pub fn show_aux(app: &AppHandle, label: &'static str) {
     let a = app.clone();
@@ -244,6 +342,15 @@ pub fn show_aux(app: &AppHandle, label: &'static str) {
             }
         }
         if let Some(w) = a.get_webview_window(label) {
+            #[cfg(target_os = "windows")]
+            if label == HUD {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, ShowWindow};
+                if let Ok(hwnd) = w.hwnd() {
+                    // SAFETY: this is the live HUD HWND, on its UI thread.
+                    unsafe { ShowWindow(hwnd.0.cast(), SW_SHOWNOACTIVATE) };
+                    return;
+                }
+            }
             let _ = w.show();
         }
     });
@@ -261,6 +368,15 @@ pub fn hide_aux(app: &AppHandle, label: &'static str) {
             }
         }
         if let Some(w) = a.get_webview_window(label) {
+            #[cfg(target_os = "windows")]
+            if label == HUD {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
+                if let Ok(hwnd) = w.hwnd() {
+                    // SAFETY: this is the live HUD HWND, on its UI thread.
+                    unsafe { ShowWindow(hwnd.0.cast(), SW_HIDE) };
+                    return;
+                }
+            }
             let _ = w.hide();
         }
     });
@@ -360,7 +476,24 @@ fn build_menu(
         .collect::<tauri::Result<_>>()?;
     let recent_header =
         MenuItem::with_id(app, "recent_header", "Recent meetings", false, None::<&str>)?;
-    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&record, &hint, &sep1];
+    let dismiss_error = st
+        .tray_dictation_error
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .then(|| {
+            MenuItem::with_id(
+                app,
+                DISMISS_DICTATION_ERROR,
+                "Dismiss dictation error",
+                true,
+                None::<&str>,
+            )
+        })
+        .transpose()?;
+    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&record, &hint];
+    if let Some(dismiss) = &dismiss_error {
+        items.push(dismiss);
+    }
+    items.push(&sep1);
     if !recent_items.is_empty() {
         items.push(&recent_header);
         for i in &recent_items {
@@ -411,6 +544,14 @@ fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         "record" => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move { crate::recording::toggle(&app).await });
+        }
+        DISMISS_DICTATION_ERROR => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ =
+                    crate::dictation::hud_request(&app, crate::dictation::HudCommand::DismissError)
+                        .await;
+            });
         }
         "open" => show_main(app),
         "settings" => navigate(app, "/settings/general"),
@@ -499,7 +640,23 @@ pub fn update_tray_recording(app: &AppHandle, rec: &RecordingState) {
     }
 }
 
-/// Rebuild the tray menu (recent meetings, labels).
+/// Offer a native tray action when the HUD cannot receive clicks.
+fn sync_tray_dictation_error(app: &AppHandle, hud: &minutae_dictation::HudState) {
+    let show = passive_dictation_error(hud_interactive(app), hud);
+    let previous = app
+        .state::<AppState>()
+        .tray_dictation_error
+        .swap(show, std::sync::atomic::Ordering::Relaxed);
+    if previous != show {
+        refresh_tray(app);
+    }
+}
+
+fn passive_dictation_error(interactive: bool, hud: &minutae_dictation::HudState) -> bool {
+    !interactive && matches!(hud, minutae_dictation::HudState::Error { .. })
+}
+
+/// Rebuild the tray menu (recent meetings, labels and dictation error action).
 pub fn refresh_tray(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -612,6 +769,78 @@ pub fn on_shortcut(app: &AppHandle, shortcut: &Shortcut, state: ShortcutState) {
 
 #[cfg(test)]
 mod tray_tests {
+    #[test]
+    fn passive_hud_tray_action_exists_only_while_showing_an_error() {
+        use minutae_dictation::{HudFixAction, HudState};
+
+        let error = HudState::Error {
+            message: "No speech detected".into(),
+            fix_action: HudFixAction::Retry,
+        };
+        assert!(super::passive_dictation_error(false, &error));
+        assert!(!super::passive_dictation_error(true, &error));
+        for state in [
+            HudState::Idle,
+            HudState::Processing,
+            HudState::Listening {
+                level: 0.0,
+                hands_free: false,
+                hotkey_held: true,
+                app: None,
+                shape: Default::default(),
+            },
+        ] {
+            assert!(!super::passive_dictation_error(false, &state));
+        }
+    }
+
+    #[test]
+    fn hud_takes_the_pointer_only_for_a_control_on_a_non_activating_window() {
+        use minutae_dictation::{CopyReason, HudFixAction, HudState};
+
+        let error = HudState::Error {
+            message: "No speech detected".into(),
+            fix_action: HudFixAction::Retry,
+        };
+        let listening = HudState::Listening {
+            level: 0.0,
+            hands_free: false,
+            hotkey_held: true,
+            app: None,
+            shape: Default::default(),
+        };
+        // An error replaced by a new dictation, then dismissed from the tray.
+        let states = [
+            HudState::Idle,
+            listening.clone(),
+            HudState::Processing,
+            HudState::Inserted {
+                words: 1,
+                undo_available: false,
+                result_id: None,
+            },
+            HudState::Copied {
+                words: 1,
+                reason: CopyReason::NoTextField,
+            },
+            error.clone(),
+            listening,
+            error,
+            HudState::Idle,
+        ];
+        let accepts = |non_activating| {
+            states
+                .iter()
+                .map(|hud| super::hud_accepts_pointer(non_activating, hud))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            accepts(true),
+            [false, false, false, false, false, true, false, true, false]
+        );
+        assert_eq!(accepts(false), [false; 9]);
+    }
+
     #[test]
     fn tray_panel_sits_centred_under_the_icon_and_on_screen() {
         assert_eq!(

@@ -57,3 +57,85 @@ Mock switches for these screens: `?os=linux&session=wayland` (portal), `&portal=
 - `MeetingDetail.echoCancel: EchoCancelReport | null`, `null` for meetings transcribed before the step existed:
   `{ ran, skipped, erleDb, delayMs, driftPpm, elapsedMs }`. `ran: true` means the transcript came from `recordings/<id>/mic.clean.wav` (the original `mic.wav` is kept and is what the player plays). `skipped` is one of `"off" | "noSystemTrack" | "systemSilent" | "noEcho" | "ineffective"`; `erleDb` is how much quieter the speaker echo got.
 - Rust: `minutae_core::{EchoCancelMode, EchoCancelReport, EchoSkip}`, `dto::MeetingDetail::echo_cancel`, stored in `meetings.echo_cancel` (schema v4).
+
+## Dictation shapes and HUD
+
+Settings persist `dictationDefaultShape`, `dictationShapeEdits`, `dictationAppRules`, and
+`dictationStartSound` (off by default). With no explicit default preset, `tidyDictation: true` uses Tidy
+and `false` uses the legacy cleanup-off rules, bypassing saved Tidy edits. Cleanup-off preserves
+capitalization and still handles spoken punctuation and vocabulary. Updating the toggle alone clears an explicit default.
+Resolution order is user app rule, automatic Verbatim for recognized terminals, then the
+default. A quick switch applies to the current dictation only. History keeps the start app's
+`appIdentity` and the actual `shape`, including edited rules. Older rows return null for both.
+
+| Command | Contract |
+|---|---|
+| `dictation_shape_options` | `DictationShapeOptions`: factory presets, ordered quick presets, effective default and capabilities. Local rewrite is unavailable. Cloud rewrite is `planned`. |
+| `list_dictation_app_rules` | Saved `DictationAppRule[]` with display names. |
+| `save_dictation_app_rule(rule)` / `remove_dictation_app_rule(matcher)` | Upsert or remove by app matcher. Returns `AppSettings` and emits `settings://changed`. |
+| `list_dictation_apps` | `DictationApp[]` with matcher, display name and nullable suggested preset. Combines history with running macOS apps, visible Windows apps or X11 window classes when EWMH and `xprop` are available. Wayland supplies no foreground app metadata. |
+| `set_dictation_shape_edits(preset, edits)` | Save per-preset capitalization and single-line final-period settings. Pass null for Reset shape. Verbatim and Code & commit ignore both edits to protect identifiers, including edits already saved or supplied to Preview. |
+| `preview_dictation_shape(sample, preset, edits)` | Runs the Rust rules and current vocabulary. Omit edits or pass null to use saved edits. Pass an object for a draft (empty object for factory rules). |
+| `get_dictation_hud` / `dictation://hud` | Snapshot and event stream, both `HudState`. Listening has the app label and preset. `shortcutPresets` lists successful temporary bindings for the current modifier combination and can be empty. Use `quickPresets` for the digit order (Verbatim, Chat message, Email, Notes and lists, Code & commit). |
+| `switch_dictation_shape(preset)` | Switch to a quick preset during listening. Option/Alt+1–5 is registered only during listening on native shortcut backends. While the dictation hotkey is down, its modifiers are part of the combination. |
+| `set_dictation_hud_interaction(hovered, focused)` | Set pointer-hover and keyboard-focus-within state together. Either pauses the remaining six-second timer for Inserted and Copied. Error has no timer. Idle, Listening and Processing reset it. No current control calls it, and Inserted and Copied receive no pointer events. |
+| `dismiss_dictation_hud` | Hides a result or error. While listening or processing, requests cancellation. No current control calls it. |
+| `dismiss_dictation_error` | Hides the HUD only while its state is Error; otherwise does nothing, so a late click never cancels a newer dictation. Used by the error pill's Dismiss button; the tray item does the same. |
+| `undo_dictation_insert(resultId)` | Requires a visible Inserted result with `undoAvailable: true`, a matching result ID and the original process instance still frontmost. Native paste does not confirm insertion, so the native HUD currently reports Undo unavailable. |
+| `fix_dictation_error` | Performs the current Error state's `fixAction`. Retry starts a hands-free session. |
+
+The HUD is visible on macOS, Windows, X11 and Wayland, and never takes focus from the app being
+dictated into. It is created click-through on every platform.
+
+| Platform | Clickable HUD (`capabilities.hudInteractive`) |
+|---|---|
+| macOS | Yes: a non-activating `NSPanel`. `false` if the panel style cannot be applied. |
+| Windows | No. A click on the WebView2 child window could activate the HUD despite `WS_EX_NOACTIVATE`. |
+| Linux X11 | No. GTK focus hints and an empty input region. |
+| Linux Wayland | No. Same as X11; placement and visibility depend on the compositor. |
+
+A clickable HUD accepts the pointer only while the current state renders a control the user can
+press (today: Error). In every other state, including Listening, Processing, Inserted and Copied,
+clicks pass through to the app underneath. While it accepts the pointer, the whole 320×64 HUD
+window does, not only the pill. `hud_accepts_pointer` in `shell.rs` holds this rule; a state that
+gains a control must be added there. Gate pointer controls on `capabilities.hudInteractive`.
+
+Errors stay visible until dismissed or replaced by a new dictation. A clickable error pill
+offers a Dismiss button. A passive HUD (Windows and Linux) exposes Dismiss dictation error in the
+native tray menu only while an error is visible.
+
+An insert stages text on the clipboard and sends Command+V on macOS or Ctrl+V on Windows and
+X11. Minutae checks the foreground app again immediately before sending the keystroke and
+copies when it detects a change. Focus can still change between the check and OS delivery.
+Identified terminals get clipboard-only results for text
+containing a line break or other control character. Paste delivery errors also leave the
+result on the clipboard.
+
+- **macOS** copies when Accessibility is untrusted, secure keyboard entry is active,
+  the focused Accessibility role or subrole is `AXSecureTextField`, or the role is a
+  known non-text control. Password fields that expose neither secure keyboard entry nor the
+  secure role or subrole are undetected, including fields with missing, unreadable or
+  misreported Accessibility attributes. Unknown and custom roles can receive a paste.
+- **Windows** copies when a focused Win32 `Edit` has `ES_PASSWORD` or reports a
+  nonzero mask through `EM_GETPASSWORDCHAR`. Password fields in non-`Edit` controls
+  are undetected, including browser and Electron fields, RichEdit, Office and WinUI.
+  A password field is also undetected when the focused control or its password metadata
+  cannot be read and neither check gives a positive signal.
+- **Linux X11** and **unknown sessions** attempt the keystroke. Linux does not inspect
+  the focused field for passwords. X11 uses the EWMH active window ID to detect focus changes,
+  including between windows with the same class. When IDs are unavailable, it compares available
+  app identities. The class also identifies terminals. The app picker excludes windows with
+  Minutae’s process ID when EWMH supplies it. **Wayland** always copies without inspecting the field or injecting input.
+
+Keystroke delivery cannot confirm that the app accepted the paste or that its next Undo
+would undo Minutae's edit. The native HUD reports Undo unavailable on all platforms.
+
+When enabled, the start sound plays while the microphone is already recording so
+capture starts immediately. Playback through speakers can reach the mic and affect
+transcription. Leave the sound off to keep the cue out of the dictated audio.
+
+Browser fixtures use `?state=listening|processing|inserted|inserted-no-undo|copied|error#/hud`
+(or `?hud=...`). Other fixtures include `listening-handsfree`, `listening-unknown`,
+`copied-secure`, `error-transcription`, `error-retry` and `error-insertion`. Browser
+previews simulate the shape editor's design sample. The native Rust command processes
+arbitrary samples.

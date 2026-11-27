@@ -241,8 +241,16 @@ fn summary_upsert_keeps_done_and_toggle() {
 fn dictations_and_stats() {
     let s = Store::open_in_memory().unwrap();
     let now = Utc::now();
+    let mail = minutae_core::dictation::AppIdentity {
+        display_name: Some("Mail".into()),
+        macos_bundle_id: Some("com.apple.mail".into()),
+        ..Default::default()
+    };
+    let email = minutae_core::dictation::ShapePreset::Email.shape();
     for (i, words) in [5u32, 7, 11].iter().enumerate() {
         s.insert_dictation(&Dictation {
+            app_identity: (i == 0).then_some(mail.clone()),
+            shape: (i == 0).then_some(email),
             id: Uuid::new_v4(),
             created_at: now - Duration::days(i as i64 * 5),
             text: format!("please email the quarterly report number {i}"),
@@ -256,6 +264,19 @@ fn dictations_and_stats() {
     }
     let list = s.list_dictations(10, 0).unwrap();
     assert_eq!(list.len(), 3);
+    assert_eq!(list[0].app_identity, Some(mail.clone()));
+    assert_eq!(list[0].shape, Some(email));
+    assert_eq!(list[1].shape, None);
+    assert_eq!(
+        s.dictation_apps().unwrap(),
+        vec![
+            mail,
+            minutae_core::dictation::AppIdentity {
+                display_name: Some("Mail".into()),
+                ..Default::default()
+            }
+        ]
+    );
     let st = s.dictation_stats(now - Duration::days(7)).unwrap();
     assert_eq!((st.count, st.words), (2, 12));
     let hits = s
@@ -727,6 +748,8 @@ fn v2_migration_backfills_title_key() {
             "ALTER TABLE meetings DROP COLUMN title_lc;
              ALTER TABLE meetings DROP COLUMN echo_cancel;
              DROP TABLE legacy_imports;
+             ALTER TABLE dictations DROP COLUMN app_identity;
+             ALTER TABLE dictations DROP COLUMN shape;
              PRAGMA user_version = 1;",
         )?;
         Ok(())

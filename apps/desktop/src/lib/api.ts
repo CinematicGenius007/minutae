@@ -6,6 +6,7 @@ import type {
   Answer, AppSettings, ApiProvider, CaptionLine, DayGroup, DiarizeModelInfo, Dictation, DictationStats,
   HudState, InputDevice, LevelFrame, MeetingDetail, Moment, ModelInfo, Permissions, PlatformInfo, Progress,
   ProviderStatus, RecordingState, SearchHit, SearchKind, ShortcutStatus, StorageUsage, UsageMonth, Uuid, WhisperModel, Route,
+  AppMatcher, DictationApp, DictationAppRule, DictationShapeOptions, ShapeEdits, ShapePreset,
   Meeting, LegacyScan, ImportProgress, ImportFinished, UpdateStatus,
 } from "./types";
 import { mockInvoke, mockListen } from "./mock";
@@ -83,6 +84,27 @@ export const api = {
   listInputDevices: () => call<InputDevice[]>("list_input_devices"),
 
   // dictation
+  /** HUD visibility and pointer interaction are separate capabilities. */
+  dictationShapeOptions: () => call<DictationShapeOptions>("dictation_shape_options"),
+  listDictationAppRules: () => call<DictationAppRule[]>("list_dictation_app_rules"),
+  saveDictationAppRule: (rule: DictationAppRule) => call<AppSettings>("save_dictation_app_rule", { rule }),
+  removeDictationAppRule: (matcher: AppMatcher) => call<AppSettings>("remove_dictation_app_rule", { matcher }),
+  /** Verbatim and Code & commit ignore capitalization and final-period edits. */
+  setDictationShapeEdits: (preset: ShapePreset, edits: ShapeEdits | null) =>
+    call<AppSettings>("set_dictation_shape_edits", { preset, edits }),
+  listDictationApps: () => call<DictationApp[]>("list_dictation_apps"),
+  previewDictationShape: (sample: string, preset: ShapePreset, edits: ShapeEdits | null = null) =>
+    call<string>("preview_dictation_shape", { sample, preset, edits }),
+  getDictationHud: () => call<HudState>("get_dictation_hud"),
+  switchDictationShape: (preset: ShapePreset) => call<void>("switch_dictation_shape", { preset }),
+  setDictationHudInteraction: (hovered: boolean, focused: boolean) =>
+    call<void>("set_dictation_hud_interaction", { hovered, focused }),
+  /** Hide a result or error, or cancel an active dictation. */
+  dismissDictationHud: () => call<void>("dismiss_dictation_hud"),
+  dismissDictationError: () => call<void>("dismiss_dictation_error"),
+  /** Requires a visible Inserted result with undoAvailable and a matching result ID. */
+  undoDictationInsert: (resultId: Uuid) => call<void>("undo_dictation_insert", { resultId }),
+  fixDictationError: () => call<void>("fix_dictation_error"),
   listDictations: (limit = 100) => call<Dictation[]>("list_dictations", { limit }),
   dictationStats: () => call<DictationStats>("dictation_stats"),
   deleteAllDictations: () => call<void>("delete_all_dictations"),
