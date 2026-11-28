@@ -6,7 +6,7 @@ A meeting recorder and dictation app that runs on your computer. It writes plain
 - License: MIT
 - Source: <https://github.com/CinematicGenius007/minutae>
 - Docs: <https://github.com/CinematicGenius007/minutae/tree/main/docs/install>
-- Agent install guide: <https://minutae.vercel.app/agents.md>
+- Agent install guide: <https://minutae.cinematicgenius007.com/agents.md>
 
 ## Install
 
@@ -88,5 +88,5 @@ This is the one step that can leave your computer. Pick Ollama and it doesn't. P
 - [Install guides](https://github.com/CinematicGenius007/minutae/tree/main/docs/install)
 - [Read the source](https://github.com/CinematicGenius007/minutae)
 - [Releases (none published yet)](https://github.com/CinematicGenius007/minutae/releases)
-- [AI agent guide](https://minutae.vercel.app/agents.md)
-- [llms.txt](https://minutae.vercel.app/llms.txt)
+- [AI agent guide](https://minutae.cinematicgenius007.com/agents.md)
+- [llms.txt](https://minutae.cinematicgenius007.com/llms.txt)

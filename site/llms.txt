@@ -60,9 +60,9 @@ scoop install https://github.com/CinematicGenius007/minutae/releases/latest/down
 
 ## Links
 
-- [Home page](https://minutae.vercel.app/)
-- [Home page (Markdown)](https://minutae.vercel.app/index.md)
-- [Install brief for AI agents](https://minutae.vercel.app/agents.md)
+- [Home page](https://minutae.cinematicgenius007.com/)
+- [Home page (Markdown)](https://minutae.cinematicgenius007.com/index.md)
+- [Install brief for AI agents](https://minutae.cinematicgenius007.com/agents.md)
 - [Authoritative agent install guide in repository](https://github.com/CinematicGenius007/minutae/blob/main/docs/agents/INSTALL.md)
 - [Install guides](https://github.com/CinematicGenius007/minutae/tree/main/docs/install)
 - [Releases (none published yet)](https://github.com/CinematicGenius007/minutae/releases)

@@ -55,9 +55,9 @@ When editing:
 
 Create a project with **Root Directory** `site/`, no framework preset and no build command. `ignoreCommand` skips a build only when git can show that `site/` is unchanged since the previous deployment; otherwise it builds.
 
-## Placeholder origin (`https://minutae.vercel.app`)
+## Production origin (`https://minutae.cinematicgenius007.com`)
 
-Replace it in every file below when the production domain is final (the check fails if any is missed):
+Add this domain to the Vercel project (Settings, Domains) and create the DNS record Vercel shows. If the domain ever changes, replace it in every file below (the check fails if any is missed):
 
 1. `index.html`: `<link rel="canonical">`, `og:url`, `og:image`, `twitter:image`, JSON-LD `url`.
 2. `robots.txt`: `Sitemap:`.

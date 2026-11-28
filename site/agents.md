@@ -81,4 +81,4 @@ Only remove when the user asks, and **never delete the user's data folder** unle
 - [`docs/install/windows.md`](https://github.com/CinematicGenius007/minutae/blob/main/docs/install/windows.md)
 - [`docs/install/linux.md`](https://github.com/CinematicGenius007/minutae/blob/main/docs/install/linux.md)
 - [`docs/install/source.md`](https://github.com/CinematicGenius007/minutae/blob/main/docs/install/source.md)
-- [LLM summary (`/llms.txt`)](https://minutae.vercel.app/llms.txt)
+- [LLM summary (`/llms.txt`)](https://minutae.cinematicgenius007.com/llms.txt)
