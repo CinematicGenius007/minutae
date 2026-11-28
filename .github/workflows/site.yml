@@ -1,0 +1,31 @@
+# The static website in site/ (deployed by Vercel, not from here). One dependency-free check:
+# CSP hash, local references, third-party requests, JSON, origin and size budgets.
+name: site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "scripts/check-site.mjs"
+      - ".github/workflows/site.yml"
+  pull_request:
+    paths:
+      - "site/**"
+      - "scripts/check-site.mjs"
+      - ".github/workflows/site.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Uses the Node that ships with the runner; the script has no dependencies.
+      - run: node scripts/check-site.mjs

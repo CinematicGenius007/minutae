@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://minutae.cinematicgenius007.com/sitemap.xml
